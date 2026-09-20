@@ -75,7 +75,13 @@ function buildProvider() {
   });
   if (prefer === "jev") return new FallbackProvider([jev, rule], warn);
   if (prefer === "laya") return new FallbackProvider([laya, rule], warn);
-  return key ? new FallbackProvider([jev, laya, rule], warn) : new FallbackProvider([laya, rule], warn);
+
+  // ★ 默认用规则判定器，**不自动去连本地 sidecar**。
+  //   原因：开源的 Laya checkpoint 零样本做"选哪个工具"这类新任务能力不足
+  //   （实测：正确和错误的选项概率都挤在 0.55–0.66，没有区分度）。
+  //   自动连上去只会让 `npm run demo` 输出一堆看不懂的升级。
+  //   想看真实判定：显式加 --laya 或 --jev。
+  return rule;
 }
 // 降级只提示一次 —— 每次判定都打一遍会把 trace 淹掉
 let warned = false;

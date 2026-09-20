@@ -18,7 +18,7 @@
  */
 
 import { defineDecision, noul, choice, score } from "./types.ts";
-import { gte, probGte, scoreGte } from "./policy.ts";
+import { topGte, probGte, scoreGte } from "./policy.ts";
 import { clip } from "./budget.ts";
 
 // ═══════════════════════════════════════════════════════════
@@ -111,10 +111,12 @@ export const pickTool = defineDecision({
 
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
-    cwd: ctx.cwd,
+    // ★ 用一句话讲清"已经做过什么"，而不是丢一个数组让模型自己解析。
+    //   决策帧的表达方式直接决定判定质量 —— 实测：只放数组时，
+    //   模型会重复选已经做过的动作。
+    already_done: describeDone(ctx),
     files_known: (ctx.files ?? []).slice(0, 20),
-    steps_done: (ctx.history ?? []).length,
-    recent: (ctx.history ?? []).slice(-3).map((h) => `${h.tool}(${h.input}) → ${clip(h.result, 120)}`),
+    last_result: clip(ctx.lastResult ?? "", 300),
   }),
 
   questions: (ctx: AgentCtx) => ({
@@ -122,7 +124,7 @@ export const pickTool = defineDecision({
   }),
 
   policy: [
-    { when: gte("tool", T.toolAuto), action: "call", reason: `tool 置信度 ≥ ${T.toolAuto}` },
+    { when: topGte("tool", T.toolAuto), action: "call", reason: `选中项概率 ≥ ${T.toolAuto}` },
     { action: "escalate", reason: "工具选择置信度不足 → 交回上层，不猜" },
   ],
 });
@@ -134,18 +136,40 @@ export const pickTool = defineDecision({
  * 去选一个已经不适用的动作。** 所以候选要跟着状态走。
  */
 function toolsFor(ctx: AgentCtx): Record<string, string> {
-  const out: Record<string, string> = {
-    list_dir: "列出工作目录里的文件",
-    read_file: "读取一个文件的内容",
-  };
-  // 已知文件之后才谈得上读/写具体文件
-  if ((ctx.files ?? []).length === 0) return out;
+  const done = new Set((ctx.history ?? []).map((h) => h.tool));
+  const out: Record<string, string> = {};
 
-  out.write_file = "写入或修改一个文件的内容";
-  out.done = "任务已经完成，不需要再调用工具";
-  // 已经反复读过同一个文件、却还没写 → 提示可以动手了
-  if ((ctx.history ?? []).some((h) => h.tool === "write_file")) delete out.write_file;
+  // ★ 两条经验都写在这里：
+  //
+  //   1. **做过的动作不再是候选** —— 固定候选列表会让模型去选一个
+  //      已经不适用的动作。
+  //
+  //   2. **criteria 要写成"什么条件下该选它"，不是名词标签。**
+  //      实测对比：写成 "列出工作目录里的文件" 时，模型列完文件就选了 done；
+  //      写成条件句之后它才知道"任务还没做完"。
+  //      （Jev Engineering 规则 2：问题 ID 不会到达模型，判据必须写进指令和选项里）
+
+  if (!done.has("list_dir"))
+    out.list_dir = "The agent does not yet know which files exist in the working directory.";
+
+  if ((ctx.files ?? []).length > 0) {
+    if (!done.has("read_file"))
+      out.read_file = "The content of an existing file is needed to make progress, and has not been read yet.";
+    out.write_file = "A file must be created or its content changed.";
+  }
+
+  out.done =
+    "Everything the task asks for has already been done; calling any other tool would not add information.";
+
   return out;
+}
+
+/** 把"已经做过什么"写成一句人能读的话，喂给判定模型 */
+function describeDone(ctx: AgentCtx): string {
+  const h = ctx.history ?? [];
+  if (!h.length) return "nothing yet";
+  const tools = [...new Set(h.map((x) => x.tool))];
+  return `already called: ${tools.join(", ")} (${h.length} step${h.length > 1 ? "s" : ""})`;
 }
 
 // ═══════════════════════════════════════════════════════════

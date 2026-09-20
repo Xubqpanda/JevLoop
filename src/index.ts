@@ -32,7 +32,7 @@ export { noul, choice, score, defineDecision, isDecision, confidenceOf } from ".
 // ── 判定 ─────────────────────────────────────────────────────
 export { Decider } from "./decide.ts";
 export type { DeciderOptions, DecideOptions } from "./decide.ts";
-export { resolvePolicy, gte, probGte, probLt, scoreGte, picked, probabilityOf } from "./policy.ts";
+export { resolvePolicy, gte, topGte, probGte, probLt, scoreGte, picked, probabilityOf } from "./policy.ts";
 export type { PolicyOutcome, PolicyWarning } from "./policy.ts";
 export { clip, pick, estimateTokens, validate, LIMITS } from "./budget.ts";
 export type { BudgetWarning, Checkpoint } from "./budget.ts";

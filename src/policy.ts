@@ -83,11 +83,38 @@ export function resolvePolicy<A extends AnswerSet>(
 
 // ── 策略里最常用的几个判断 ───────────────────────────────────
 
-/** 置信度门限：`when: gte("tool", 0.9)` */
+/**
+ * 置信度门限：`when: gte("risky", 0.9)`
+ *
+ * ⚠️ **不要拿它卡 choice 问题。** Laya 的 `confidence` 是归一化熵
+ * （`1 - H(p)/log(k)`，k = 选项个数），不是最大概率：
+ *
+ *     p = [0.80, 0.20]  →  confidence = 0.269
+ *
+ * 也就是说同一个阈值在 2 个选项和 20 个选项下含义完全不同 ——
+ * 选项越少，要越过同一个门槛需要的概率就越极端。
+ * choice 请用下面的 `topGte`。
+ */
 export const gte =
   (id: string, threshold: number) =>
   (a: AnswerSet): boolean =>
     confidenceOf(a[id]) >= threshold;
+
+/**
+ * 选中项的概率门限：`when: topGte("tool", 0.6)`
+ *
+ * **choice 问题应该用这个。** 它直接可解释（"选中的那个拿到多少概率质量"），
+ * 而且和选项个数无关 —— 加一个选项不会改变门槛的含义。
+ */
+export const topGte =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean => {
+    const ans = a[id];
+    if (!ans) return false;
+    if (ans.type === "choice") return (ans.probabilities?.[ans.choice] ?? 0) >= threshold;
+    if (ans.type === "noul") return Math.max(ans.noul, 1 - ans.noul) >= threshold;
+    return (ans.confidence ?? 0) >= threshold;
+  };
 
 /** 布尔概率门限：`when: probGte("risky", 0.7)` */
 export const probGte =

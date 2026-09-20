@@ -172,6 +172,35 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 Swapping either one touches exactly one file. The loop and the decision specs don't move.
 
+## Two gotchas we hit so you don't have to
+
+Both were found by running this loop against a real Laya checkpoint on an A100, not by reading docs.
+
+### 1. `confidence` is not the top probability
+
+Laya's `confidence` for a choice is **normalised Shannon entropy** (`1 - H(p)/log(k)`, where `k` is the number of options) — not the probability of the winning option.
+
+```
+p = [0.80, 0.20]   →   confidence = 0.269
+```
+
+So a fixed `confidence` threshold means a completely different thing at 2 options than at 20: the fewer the options, the more extreme the required probability. **Gate a `choice` on the winning option's probability instead** — that's what `topGte()` is for, and it's independent of how many options you offer.
+
+### 2. A base checkpoint will not do a novel decision task zero-shot
+
+Measured on `laya-typed-decisions` (fine-tuned for invoice processing, security incidents, customer service and agent-trace observability) on the question *"which tool next?"*:
+
+| Decision | Chosen | Top probability |
+|---|---|---|
+| step 1, pick a tool | `list_dir` ✓ | 0.646 |
+| step 2, pick a tool | `done` ✗ | **0.660** |
+
+The wrong answer scored *higher* than the right one, and every answer across four different decision points landed in a 0.55–0.66 band with no separation. **No threshold fixes that** — it's a capability gap, not a calibration gap.
+
+What this means in practice: the loop, the state projection and the policy all work; the open-weight checkpoint is a **fast base to specialise**, not a drop-in judge for your task. Expect to fine-tune on a few thousand labelled examples, or use a stronger decision model.
+
+Both gotchas are the same lesson from [Jev Engineering](https://madewithjev.com/what-is-jev-engineering): *the call is the easy part — the work is in the state you send and the threshold you act on.*
+
 ## What this is not
 
 - **Not a replacement for an LLM.** Drafting, coding and summarising still need one.
