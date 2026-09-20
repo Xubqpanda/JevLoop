@@ -1,0 +1,129 @@
+/**
+ * nanojev · Policy Engine
+ *
+ * 概率 → 动作。
+ *
+ * 这一层是**纯代码**，不碰模型。所以：
+ *   · 调一个阈值不需要重跑任何判定
+ *   · 同一次运行的答案可以拿去反复试不同的策略
+ *   · 策略可以被单元测试覆盖（模型不能）
+ */
+
+import type { AnswerSet, PolicyRule } from "./types.ts";
+import { confidenceOf } from "./types.ts";
+
+export interface PolicyOutcome {
+  action: string;
+  reason: string;
+  /** 命中的规则下标，-1 = 没有规则命中 */
+  ruleIndex: number;
+  /** 求值中发现的问题（策略函数抛异常、兜底规则位置不对） */
+  warnings: PolicyWarning[];
+}
+
+export interface PolicyWarning {
+  level: "warn" | "error";
+  code: string;
+  message: string;
+}
+
+/**
+ * 按顺序求值，第一个 when 为真的规则胜出。
+ * 没有 when 的规则 = 兜底，必须放最后。
+ * 一条都没命中 → action = "escalate"（宁可交给上层，也不要瞎猜一个动作）。
+ */
+export function resolvePolicy<A extends AnswerSet>(
+  rules: PolicyRule<A>[],
+  answers: A,
+  onWarn?: (w: PolicyWarning) => void,
+): PolicyOutcome {
+  const warnings: PolicyWarning[] = [];
+  const emit = (w: PolicyWarning) => {
+    warnings.push(w);
+    onWarn?.(w);
+  };
+
+  // 静态检查：「兜底必须放最后」如果不查，写错了是**静默**的
+  const firstCatchAll = rules.findIndex((r) => !r.when);
+  if (firstCatchAll >= 0 && firstCatchAll !== rules.length - 1) {
+    emit({
+      level: "warn",
+      code: "catch_all_not_last",
+      message: `第 ${firstCatchAll + 1} 条是无条件兜底，后面还有 ${rules.length - firstCatchAll - 1} 条规则 —— 那些永远不会被求值`,
+    });
+  }
+
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    if (!r) continue;
+    if (!r.when) return { action: r.action, reason: r.reason ?? "兜底规则", ruleIndex: i, warnings };
+
+    let hit = false;
+    try {
+      hit = !!r.when(answers);
+    } catch (err) {
+      // 不静默：一个拼写错误（a.spamm.noul）和"模型判定不符合阈值"
+      // 在日志上必须能区分开，否则排查是场灾难
+      emit({
+        level: "warn",
+        code: "when_threw",
+        message: `第 ${i + 1} 条（action=${r.action}）的 when 抛异常：${(err as Error)?.message ?? String(err)}。已按"条件不满足"处理`,
+      });
+    }
+    if (hit) return { action: r.action, reason: r.reason ?? `命中第 ${i + 1} 条规则`, ruleIndex: i, warnings };
+  }
+
+  return {
+    action: "escalate",
+    reason: "没有策略命中，且没有兜底规则 → 交回上层",
+    ruleIndex: -1,
+    warnings,
+  };
+}
+
+// ── 策略里最常用的几个判断 ───────────────────────────────────
+
+/** 置信度门限：`when: gte("tool", 0.9)` */
+export const gte =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean =>
+    confidenceOf(a[id]) >= threshold;
+
+/** 布尔概率门限：`when: probGte("risky", 0.7)` */
+export const probGte =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean => {
+    const ans = a[id];
+    return ans?.type === "noul" ? ans.noul >= threshold : false;
+  };
+
+export const probLt =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean => {
+    const ans = a[id];
+    return ans?.type === "noul" ? ans.noul < threshold : false;
+  };
+
+/** 分数门限：`when: scoreGte("risk", 2)` */
+export const scoreGte =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean => {
+    const ans = a[id];
+    return ans?.type === "score" ? ans.score >= threshold : false;
+  };
+
+/** 选了某个选项：`when: picked("tool", "read_file")` */
+export const picked =
+  (id: string, option: string) =>
+  (a: AnswerSet): boolean => {
+    const ans = a[id];
+    return ans?.type === "choice" ? ans.choice === option : false;
+  };
+
+/** 取某个选项的概率（做分级审批时用） */
+export function probabilityOf(a: AnswerSet, id: string, option?: string): number {
+  const ans = a[id];
+  if (!ans) return 0;
+  if (ans.type === "noul") return ans.noul;
+  return option ? (ans.probabilities?.[option] ?? 0) : (ans.confidence ?? 0);
+}

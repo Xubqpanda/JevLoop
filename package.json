@@ -1,0 +1,27 @@
+{
+  "name": "nanojev",
+  "version": "0.1.0",
+  "description": "The agent loop where decisions don't cost a model call.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "demo": "node --experimental-strip-types examples/demo.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test \"tests/*.test.ts\""
+  },
+  "keywords": [
+    "agent",
+    "jev",
+    "decision-model",
+    "system-one",
+    "agent-framework",
+    "llm"
+  ],
+  "devDependencies": {
+    "typescript": "5.7.2",
+    "@types/node": "^22.0.0"
+  }
+}
