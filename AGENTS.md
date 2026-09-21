@@ -110,8 +110,67 @@ Service Provider     实现（可以有多个）
 Consumer             使用者
 ```
 
-JevLoop 现有的两条缝：`Provider`（判定后端）和 `Generator`（生成后端）。
-新增能力请照这个形状切。
+JevLoop 现有**三条**缝。每条缝的三个角要分列在不同文件里 ——
+一个文件同时是接口、实现和消费路径，就不叫缝（换实现要改内核）。
+
+| 缝 | 定义角 | 提供者角 | 消费角 |
+|---|---|---|---|
+| `Provider` 判定 | `seam-provider.ts` | `provider.ts`（Http / Mock / Fallback） | `decide.ts` |
+| `Generator` 生成 | `llm.ts` | `llm.ts`（Scripted / Http） | `agent.ts` |
+| `Tool` 行动 | `tools.ts` | `tools.ts` —— **待分离** | `agent.ts` |
+
+**`Tool` 是当前唯一不合格的一条，也是后果最重的一条**：它是全仓库唯一产生
+真实副作用的地方，却是最不可替换的 —— 接口、本地文件系统实现、注册表、
+调用路径全挤在 `tools.ts` 里，想把它指向沙箱或远程 FS 必须改内核。
+分离方案（`act.ts` + `act-local.ts`）见
+[`../docs/DESIGN-layers-2026-09-21.md`](../docs/DESIGN-layers-2026-09-21.md) 的 P1-c，**尚未落地**。
+
+新增能力请照这个形状切：三个角，三个位置。
+
+---
+
+## 11. 分层：依赖只能指向编号更小的层
+
+层按「这个文件**知道**什么」划分，不按目录。完整设计见
+[`../docs/DESIGN-layers-2026-09-21.md`](../docs/DESIGN-layers-2026-09-21.md)。
+
+| 层 | 名字 | 知道 | **不知道** |
+|---|---|---|---|
+| L0 | 词汇 | 无 | 一切 |
+| L1 | 机制 | L0 | IO、领域知识 |
+| L2 | 接缝 | L0-L1 | agent、判定节点 |
+| L3 | 编译 | L0-L1 | IO、循环、具体工具 |
+| L4 | 节点 | L0-L3 | IO、循环 |
+| L5 | 循环 | L0-L4 | 具体后端选择 |
+| L6 | 组合 | 全部 | —— |
+
+**规则**：一个文件只能 import 编号**严格更小**的层。两个例外：
+
+- **L0 内部互相引用合法** —— 词汇天然互相指涉；
+- **L2 内部只允许「提供者 / 消费者 → 定义角」**（即指向 `seam-provider.ts`）。
+  反向永远违规：定义角 import 某个具体提供者，缝就不成缝了。
+
+### 这条规则是机器检查的，不是靠记
+
+```sh
+npm run check          # 含 layers 规则
+```
+
+`scripts/check.ts` 里有一张 `LAYER` 表，**新增 `src/*.ts` 必须同时登记，
+否则算违规** —— 层表因此不会悄悄腐烂。违反时报出两边的层名：
+
+```
+✖ layers —— 1 处
+    src/vocab.ts:115  L0 词汇 依赖 L5 循环（agent.ts）—— 依赖只能指向编号更小的层
+```
+
+### 为什么值得守
+
+第七轮 C1（`headBudget` 声明未用）与第八轮 P1（`policy_no_catch_all` 分支
+在移植时消失）是同一类 bug 的两个实例：**边界靠人记就会漏**。
+第十轮 R2/R5 也是同一类 —— 两条都住在帧编译里，而帧编译当时没有自己的文件，
+所以只能靠整个 agent 才能复现。分层不自动修 bug，但它让「这块代码该在哪、
+能依赖谁」变成一个退不掉的检查。
 
 ---
 
@@ -120,6 +179,7 @@ JevLoop 现有的两条缝：`Provider`（判定后端）和 `Generator`（生�
 改完必须跑：
 
 ```sh
+npm run check                     # 代码规范 + 分层方向，0 违规
 npx tsc --noEmit                  # 0 error
 npm test                          # 全绿
 npm run demo                      # 跑完，打印记账
