@@ -23,6 +23,12 @@
  *                             │
  *                        loop.canDeliver  ↗ 能交付吗？
  *
+ * ## 待拆（485 行）
+ *
+ * 两件事：**loop 本身**（`runAgent`）与**给工具定输入**（`resolveInput`）。
+ * 接缝清楚 —— `resolveInput` 只依赖 `frame.ts` 的候选与 `pickInput` 判定，
+ * 不认识 loop 的状态机。切它排在 `docs/PLAN-layering-2026-09-21.md` 第五节的队列里。
+ *
  * @module JevLoop/agent
  */
 
@@ -128,7 +134,20 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // 上文压成**一句话**进 ctx —— 判定帧是**有界**的（§8.2），把整段对话
   // 塞进去会把真正要看的东西挤掉。只留每一轮「问过什么」，因为判定需要的是
   // **指代关系**（"再读一遍那个文件"里的"那个"），不是上一轮的完整过程。
-  const earlier = (opts.history ?? []).map((t) => t.task).join(' / ')
+  //
+  // ★ **倒序拼接**。`clip` 保留的是**头部**（见 `budget.ts` 的 `slice(0, …)`），
+  //   所以拼接方向决定了有限预算留给哪一端。这里要和 `context.ts` 的
+  //   `fitEvidence` 对齐 —— 它也**从最近往回取**，理由同样是「最新的最相关」：
+  //   与当前这一步最相关的是**紧邻的上一轮**（用户刚改了什么要求、刚澄清了什么），
+  //   不是第 1 轮。
+  //
+  //   实测（8 轮、拼接 221 字符、预算 `EARLIER_MAX_CHARS = 200`）：
+  //     正序 → 保留第 1–7 轮，**第 8 轮（最近的）被截掉**
+  //     倒序 → 保留第 8–2 轮，第 1 轮被截掉          ← 这才是想要的
+  //
+  //   **别看它"顺序不对"就顺手正过来** —— 这个方向是故意的；
+  //   正过来就退回成「模型看得见第 1 轮、看不见用户在最后一轮改的口径」。
+  const earlier = (opts.history ?? []).slice().reverse().map((t) => t.task).join(' / ')
   const ctx: AgentCtx = {
     task: opts.task,
     cwd: opts.cwd,

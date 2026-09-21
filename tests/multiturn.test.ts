@@ -169,7 +169,10 @@ test('runAgent 把 history 交给了生成器，并压进了 ctx.earlier', async
   })
 
   assert.deepEqual(seenHistory, TURNS, '生成器必须收到完整的 history')
-  assert.equal(seenFrame?.earlier, '列出目录里的文件 / 读一下 invoice.ts', '判定帧也必须看到上文')
+  // ★ **顺序是倒的，这是刻意的**（见 `agent.ts` 那段注释）：`clip` 保留头部，
+  //   所以只有倒序拼接才能把有限的 `EARLIER_MAX_CHARS` 留给**最近**那几轮。
+  //   这条断言以前写的是正序 —— 它编码的正是 M1 要修的那个行为。
+  assert.equal(seenFrame?.earlier, '读一下 invoice.ts / 列出目录里的文件', '判定帧也必须看到上文')
 })
 
 test('runAgent 不带 history 时，生成器收到的是 undefined 而不是空数组', async () => {
@@ -195,4 +198,44 @@ test('runAgent 不带 history 时，生成器收到的是 undefined 而不是空
     maxSteps: 1,
   })
   assert.equal(seen, undefined)
+})
+
+test('★ M1：上文截断保留的是**最近**几轮，不是最早的', async () => {
+  // `clip` 保留的是**头部**（`budget.ts` 的 `slice(0, …)`），所以拼接方向
+  // 决定有限的 `EARLIER_MAX_CHARS` 留给哪一端。**正序拼接（修之前）会把最近的
+  // 那几轮截掉**，留下的全是对话开头 —— 而多轮 agent 里与当前这一步最相关的
+  // 恰恰是紧邻的上一轮（用户刚改了什么要求）。`context.ts` 的 `fitEvidence`
+  // 特意从最近往回取，这里要和它对齐。
+  let seenFrame: Record<string, unknown> | undefined
+  const decider = new Decider({
+    meter: new Meter(),
+    provider: {
+      name: 'spy',
+      decide: async (req: { state: Record<string, unknown> }) => {
+        if (seenFrame === undefined) seenFrame = req.state
+        // needs_tool 给低分 → 直接去生成，不进工具循环
+        return { answers: { needs_tool: { type: 'noul', noul: 0.05 } }, provider: 'spy', latencyMs: 0 }
+      },
+    } as never,
+  })
+  const turns = Array.from({ length: 8 }, (_, i) => ({
+    task: `第${i + 1}轮：把 invoice-${i + 1}.ts 的函数名改掉`,
+    answer: 'ok',
+  }))
+  await runAgent({
+    task: '第九轮',
+    cwd: '/tmp',
+    decider,
+    history: turns,
+    generator: {
+      name: 'noop',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'noop' }),
+    },
+    maxSteps: 1,
+  })
+
+  const earlier = String(seenFrame?.earlier ?? '')
+  assert.ok(earlier.length <= 200, `必须被 clip 住，实际 ${earlier.length} 字符`)
+  assert.ok(earlier.includes('第8轮'), `最近的必须留下，实际：${earlier}`)
+  assert.ok(!earlier.includes('第1轮'), `最早的必须让位给最近的，实际：${earlier}`)
 })
