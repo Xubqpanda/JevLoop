@@ -23,11 +23,12 @@
  *                             │
  *                        loop.canDeliver  ↗ 能交付吗？
  *
- * ## 待拆（485 行）
+ * ## 待拆
  *
  * 两件事：**loop 本身**（`runAgent`）与**给工具定输入**（`resolveInput`）。
  * 接缝清楚 —— `resolveInput` 只依赖 `frame.ts` 的候选与 `pickInput` 判定，
- * 不认识 loop 的状态机。切它排在 `docs/PLAN-layering-2026-09-21.md` 第五节的队列里。
+ * 不认识 loop 的状态机。排在 `AGENTS.md` §12 的待拆队列里。
+ * **行数不在这里写** —— 它会漂，而且这行注释本身就在改变它（见 §12）。
  *
  * @module JevLoop/agent
  */

@@ -37,7 +37,7 @@
  */
 
 import { readFileSync, globSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, join } from 'node:path'
 import ts from 'typescript'
 
 interface Violation {
@@ -48,6 +48,20 @@ interface Violation {
 }
 
 const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts']
+
+/**
+ * `dir` 下的全部 TS 文件，**含子目录**。
+ *
+ * 四条语义规则（层号 / 公开面 / 公开类型 / 体量）过去各写一遍
+ * `globSync(\`${dir}/*.ts\`)`，而那个 `*` 不含 `/` —— 于是
+ * `src/convert/foo.ts` 会**同时逃过全部四条**，`npm run check` 照样全绿。
+ * 四条规则里三条都「碰巧对」，是因为今天 `src/` 是平的，不是因为写法对。
+ *
+ * 现在扫描范围**只有这一处**：修一处漏一处的前提是先有第二处（round58 B3）。
+ */
+function tsFilesUnder(dir: string): string[] {
+  return [...globSync(`${dir}/**/*.ts`)]
+}
 
 /**
  * 从 AST 找出两类词法违规。
@@ -235,7 +249,7 @@ function layerViolations(dir: string): Violation[] {
   const out: Violation[] = []
   const stems = new Set<string>()
 
-  for (const f of globSync(`${dir}/*.ts`)) {
+  for (const f of tsFilesUnder(dir)) {
     const stem = basename(f, '.ts')
     stems.add(stem)
     if (stem === FACADE) continue
@@ -340,7 +354,7 @@ function publicSurfaceViolations(dir: string): Violation[] {
   const documented = new Set<string>()
   const valueNames = new Set<string>()
 
-  for (const f of globSync(`${dir}/*.ts`)) {
+  for (const f of tsFilesUnder(dir)) {
     const raw = readFileSync(f, 'utf8')
     const sf = ts.createSourceFile(f, raw, ts.ScriptTarget.Latest, false)
     for (const st of sf.statements) {
@@ -401,7 +415,7 @@ function publicTypeSurfaceViolations(dir: string): Violation[] {
   const typeNames = new Set<string>()
   const referenced = new Map<string, Set<string>>()
 
-  for (const f of globSync(`${dir}/*.ts`)) {
+  for (const f of tsFilesUnder(dir)) {
     const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, false)
 
     for (const st of sf.statements) {
@@ -516,14 +530,37 @@ function cssTierViolations(): Violation[] {
 
 const FILE_FOCUS_LIMIT = 300
 
-/** 超线文件的模块 JSDoc 必须说明「为什么不能再拆」或「待拆」 */
-function fileFocusViolations(dir: string): Violation[] {
+/**
+ * 体量规则豁免的文件 —— **只有列在这里的**。
+ *
+ * 它们是照搬件：来源在别处，我们只做机械改名。长度不由我们决定，
+ * 拆它等于和上游分叉。**用显式路径而不是模式** —— 加一个进来是一次决定，
+ * 就该看起来像一次决定。
+ */
+const FILE_FOCUS_EXEMPT = new Set(['web/tokens.css'])
+
+/**
+ * 体量规则扫哪些文件。
+ *
+ * `src/` 是 TS，`web/` 是 JS 与 CSS —— **这个列表曾经只有 `src/*.ts`**，
+ * 于是 §12 写了「前端的同一件事」，而检查一个前端文件都没扫过（round58 B2）。
+ * 规则宣称的范围和它实际扫的范围**必须是同一个**，否则规则是装饰。
+ */
+const FILE_FOCUS_ROOTS = ['src/**/*.ts', 'web/**/*.js', 'web/**/*.css']
+
+/**
+ * 超线文件的模块 JSDoc 必须说明「为什么不能再拆」或「待拆」
+ *
+ * 基线键是**相对路径**（`src/agent.ts`），不是文件名 —— 现在 `src/` 与 `web/`
+ * 都会被扫到，`app.js` 这类名字跨目录重名时不会互相顶替。
+ */
+function fileFocusViolations(): Violation[] {
   const baseline = new Set<string>(
-    JSON.parse(readFileSync(join(dirname(dir), 'scripts/file-focus-baseline.json'), 'utf8')).files,
+    JSON.parse(readFileSync('scripts/file-focus-baseline.json', 'utf8')).files,
   )
   const out: Violation[] = []
-  for (const f of globSync(`${dir}/*.ts`)) {
-    if (baseline.has(basename(f))) continue   // 基线存的是文件名（含 .ts）
+  for (const f of FILE_FOCUS_ROOTS.flatMap((pattern) => [...globSync(pattern)])) {
+    if (FILE_FOCUS_EXEMPT.has(f) || baseline.has(f)) continue
     const raw = readFileSync(f, 'utf8')
     const n = raw.split('\n').length - 1
     if (n <= FILE_FOCUS_LIMIT) continue
@@ -551,7 +588,7 @@ const violations = [
   ...publicSurfaceViolations('src'),
   ...publicTypeSurfaceViolations('src'),
   ...cssTierViolations(),
-  ...fileFocusViolations('src'),
+  ...fileFocusViolations(),
 ]
 
 if (violations.length === 0) {
