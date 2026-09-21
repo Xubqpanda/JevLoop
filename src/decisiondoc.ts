@@ -77,6 +77,8 @@
  * （`summarize` / `headline`，只是派生视图，可以随解析留着也可以再切）。
  * 解析本身是自洽的一件事（两趟：切段、逐段解释），**再切需要先重新理解它**，
  * 排在 `docs/PLAN-layering-2026-09-21.md` 第五节的队列里。
+ *
+ * @module JevLoop/decisiondoc
  */
 
 import { ACTIONS } from './vocab-decision.ts'
