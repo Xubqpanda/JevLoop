@@ -309,6 +309,10 @@ examples/
   rule-judge.ts  deterministic stand-in for a decision model
 ```
 
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. It says what we merge, what we close without discussion, and where the open work actually is.
+
 ## License
 
 Apache-2.0

@@ -311,6 +311,10 @@ examples/
   rule-judge.ts  确定性的判定模型替身
 ```
 
+## 参与贡献
+
+先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（英文）。里面写了我们收什么样的改动、什么样的会直接关掉，以及现在真正开着的活在哪。
+
 ## License
 
 Apache-2.0
