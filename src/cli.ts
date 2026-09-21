@@ -41,13 +41,28 @@ const bold = paint(1)
 const yellow = paint(33)
 const green = paint(32)
 
-/** 降级只提示一次 —— 每次判定都打一遍会把 trace 淹掉（同 `examples/demo.ts`）。 */
+/**
+ * 降级/重试的提示。
+ *
+ * 按**每一个转换**各报一次，不是一个全局标志位：重试也走这个回调
+ * （`from === to`），全局标志会让先到的重试把后面真正的降级吃掉，
+ * 而降级是这两件事里更重要的那个。
+ *
+ * 两种情况分开说 —— 同一个后端再试一次**不是**降级，套用降级的句子
+ * 会印出「laya unavailable, falling back to laya」。
+ */
 function onceNotifier(): (err: unknown, from: string, to: string) => void {
-  let warned = false
+  const notified = new Set<string>()
   return (err, from, to) => {
-    if (warned) return
-    warned = true
-    console.error(yellow(`  ▲ ${from} unavailable (${(err as Error).message.slice(0, 60)}), falling back to ${to}`))
+    const key = `${from}→${to}`
+    if (notified.has(key)) return
+    notified.add(key)
+    const why = (err as Error).message.slice(0, 60)
+    console.error(
+      from === to
+        ? yellow(`  ▲ ${from}: ${why}`)
+        : yellow(`  ▲ ${from} unavailable (${why}), falling back to ${to}`),
+    )
   }
 }
 

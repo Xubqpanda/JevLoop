@@ -147,7 +147,10 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
       // 而真实情况是主后端在过载 —— 那两件事的排查方向完全不同
       onRetry: (info) =>
         notice?.(
-          new Error(`${info.code}，等 ${Math.round(info.delayMs)}ms 后重试${info.fromServer ? '（服务端要求的）' : ''}`),
+          new Error(
+            `${info.code}, retrying in ${Math.round(info.delayMs)}ms` +
+              (info.fromServer ? ' (the server asked for it)' : ''),
+          ),
           info.who,
           info.who,
         ),

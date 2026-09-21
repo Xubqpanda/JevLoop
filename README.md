@@ -2,7 +2,7 @@
 
 **Every fork in your agent loop is a full LLM call. Not one of them is generation.**
 
-*Should I act? Which tool? Is this safe? Did it work? Am I done? Can I ship this?* A conventional agent answers each of those by writing a sentence and parsing it back. But each is a pick, a score or a yes/no answer: one forward pass over a fixed candidate set, ~10–40 ms, no tokens generated.
+*Should I act? Which tool? Which file? Is this safe? Did it work? Am I done? Can I ship this?* A conventional agent answers each of those by writing a sentence and parsing it back. But each is a pick, a score or a yes/no answer: one forward pass over a fixed candidate set, ~10–40 ms, no tokens generated.
 
 JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
@@ -22,28 +22,31 @@ JevLoop · demo
   generator : scripted — set DEEPSEEK_API_KEY for a real LLM
 
   ── loop trace ──────────────────────────────────────────
-  ▲ laya unavailable (fetch failed), falling back to rule-judge
+  ▲ laya: TRANSPORT, retrying in 258ms
+  ▲ laya unavailable (laya is unreachable: fetch failed), falling back to rule-judge
   cleared: list_dir (auto)
   cleared: read_file (auto)
 
   ── every decision ──────────────────────────────────────
   step 1
-     decide  loop.needsTool         use_tool           4.3ms  needs_tool=0.95
-     decide  loop.pickTool          call               4.3ms  tool=list_dir
-     decide  loop.gradeRisk         auto               4.2ms  risk=0.0 needs_auth=0.05
-     decide  loop.stepOk            continue           4.1ms  ok=0.92
-     decide  loop.isDone            keep_going         4.0ms  done=0.10
+   ~ decide  loop.needsTool         use_tool           4.9ms  needs_tool=0.95
+   ~ decide  loop.pickTool          call               4.9ms  tool=list_dir
+   ~ decide  loop.gradeRisk         auto               4.7ms  risk=0.0 needs_auth=0.05
+   ~ decide  loop.stepOk            continue           4.3ms  ok=0.92
+   ~ decide  loop.isDone            keep_going         4.0ms  done=0.10
   ...
   step 3
-     decide  loop.canDeliver        deliver            4.3ms  deliverable=0.90 unsupported=0.08
-     model   generate (scripted)                       601ms
+   ~ decide  loop.canDeliver        deliver            4.5ms  deliverable=0.90 unsupported=0.08
+     model   generate (scripted)                       600ms
 
   ── accounting ──────────────────────────────────────────
-  decisions  12     50ms (4.2ms each)
-  model       1     601.2ms
+  decisions  12     53ms (4.4ms each)
+  model       1     600.2ms
 
-  decisions : model = 12.0:1   decisions are 7.7% of wall clock
+  decisions : model = 12.0:1   decisions are 8.2% of wall clock
 ```
+
+> `~` marks a degraded answer — the bundled judge is a rule table, so every decision it gives is flagged as one. Wall-clock shares move a point or two between runs.
 
 Zero dependencies. Zero build step. Runs offline with no API key.
 
@@ -76,7 +79,7 @@ JevLoop — the model is outside it
    └──▶ [ LLM call ] ── write ──▶ [ Jev ] ── gate ──▶ answer
 ```
 
-The conventional agent asks the model at every turn of the loop — *should I act? which tool? is this safe? did it work? am I done?* — and pays a full generation for each answer. JevLoop answers those inside the loop and calls the model **once**, to write.
+The conventional agent asks the model at every turn of the loop — *should I act? which tool? is this safe? did it work? am I done?* — and pays a full generation for each answer. JevLoop answers those inside the loop and calls the model only to write: **once**, plus at most one revision when the delivery gate rejects the draft.
 
 | Question the loop asks | Conventional agent | JevLoop |
 |---|---|---|
@@ -202,6 +205,8 @@ policy:
        │
        ├─ loop.pickTool    ↗ which tool?  (options rebuilt every step)
        │
+       ├─ loop.pickInput   ↗ which file?  (only when the tool takes one)
+       │
        ├─ loop.gradeRisk   ↗ how dangerous is this?  ──▶ ask a human
        │
        ├─ [ tool runs ]     ← the only place with real side effects
@@ -213,36 +218,38 @@ policy:
                             ▼
                        [ LLM generates ]   ← the only expensive call
                             │
-                       loop.canDeliver  ↗ is this shippable?
+                       loop.canDeliver  ↗ is this shippable?  ──revise──▶ one more generate
 ```
 
-**All six decision points live in one file: [`src/decisions.ts`](src/decisions.ts).** If you read one file in this repo, read that one — it's the whole idea.
+**All seven decision points live in one file: [`src/decisions.ts`](src/decisions.ts).** If you read one file in this repo, read that one — it's the whole idea.
 
 ### A decision is three things
 
 ```ts
 export const pickTool = defineDecision({
-  id: "loop.pickTool",
+  id: 'loop.pickTool',
 
   // ① Project the agent state into a BOUNDED decision frame.
   //    This caps what the model can judge: what isn't in the
   //    frame cannot be decided.
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
+    already_done: describeDone(ctx),
     files_known: (ctx.files ?? []).slice(0, 20),
-    recent: (ctx.history ?? []).slice(-3).map(h => `${h.tool}(${h.input}) → ${clip(h.result, 120)}`),
+    already_read: (ctx.readFiles ?? []).slice(0, 10),
+    last_result: clip(ctx.lastResult ?? '', 300),
   }),
 
-  // ② Typed questions. Answered in ONE forward pass.
+  // ② Typed questions. The wording comes from DECISION.md; the
+  //    candidates cannot, because a Markdown file cannot hold a
+  //    function — `dynamic: toolsFor(ctx)` is how the file says so.
   questions: (ctx: AgentCtx) => ({
-    tool: choice("Which tool should the agent call next?", toolsFor(ctx)),
+    tool: choice(askOf('pick_tool', ['tool']), toolsFor(ctx)),
   }),
 
-  // ③ Policy: answers → action. Pure code. No model involved.
-  policy: [
-    { when: gte("tool", 0.6), action: "call" },
-    { action: "escalate", reason: "not confident enough — hand back, don't guess" },
-  ],
+  // ③ Policy: answers → action. Also from DECISION.md, and pure code
+  //    once compiled. No model involved.
+  ...policyOf('pick_tool'),
 });
 ```
 
@@ -278,7 +285,7 @@ The same loop against three decision backends. The ratio that matters is decisio
 
 | Decision backend | Per decision | decisions : model | decision share of wall clock | Quality |
 |---|---:|---:|---:|---|
-| `examples/rule-judge.ts` (offline demo) | 4 ms | 12 : 1 | **7.7 %** | a rule table, not a model |
+| `examples/rule-judge.ts` (offline demo) | 4 ms | 12 : 1 | **~8 %** | a rule table, not a model |
 | Laya `typed-decisions`, local A100 | 30–85 ms | 8 : 1 | ~38 % | **not enough zero-shot** (below) |
 | Jev `jev-latest`, hosted API | ~390 ms | 13 : 1 | **79 %** | decisive and correct on every decision |
 
@@ -358,27 +365,28 @@ It has no authentication and binds to loopback only. `HOST=0.0.0.0` means *anyon
 
 ## Layout
 
-```
-DECISION.md      ★ the decisions as a file — compiled (questions and policy; frames stay in code)
-src/
-  vocab.ts       Question / Answer / Decision — the whole vocabulary
-  decisions.ts   ★ all six of the agent's judgements, one file
-  decisiondoc.ts the DECISION.md parser (nothing is silently dropped)
-  decision-compile.ts  blocks → questions + policy
-  decide.ts      the six steps of one decision
-  policy.ts      answers → action (pure code, unit-testable)
-  seam-provider.ts     the decision-backend interface
-  provider-http.ts     Jev / Laya — swap by baseUrl
-  provider-mock.ts     a stand-in that never guesses
-  provider-fallback.ts try them in order, report every downgrade
-  meter.ts       ★ decisions vs model calls
-  agent.ts       ★ the loop
-  tools.ts       list / read / write, path-locked to cwd
-  llm.ts         the one place that generates
-examples/
-  demo.ts        runs offline
-  rule-judge.ts  deterministic stand-in for a decision model
-```
+Six files carry the idea. Read them in this order:
+
+| File | What it is |
+|---|---|
+| [`DECISION.md`](DECISION.md) | the judgements, as a document the runtime compiles |
+| [`src/decisions.ts`](src/decisions.ts) | ★ all seven of them, one file — the whole idea |
+| [`src/agent.ts`](src/agent.ts) | ★ the loop that asks them |
+| [`src/decide.ts`](src/decide.ts) | the six steps one decision takes |
+| [`src/policy.ts`](src/policy.ts) | answers → action, pure code |
+| [`src/meter.ts`](src/meter.ts) | ★ decisions against model calls |
+
+Everything else is plumbing. The parts you are most likely to want to replace:
+
+| To change | Go to |
+|---|---|
+| where judgements get answered | [`src/seam-provider.ts`](src/seam-provider.ts) defines the interface; `provider-http` / `provider-mock` / `provider-fallback` implement it |
+| what writes the answer | [`src/llm.ts`](src/llm.ts) |
+| what the tools can do | [`src/tools.ts`](src/tools.ts) |
+| the UI | [`web/`](web/) and [`src/server.ts`](src/server.ts) |
+| the CLI | [`src/cli.ts`](src/cli.ts) |
+
+[`examples/demo.ts`](examples/demo.ts) runs offline on the rule judge in [`examples/rule-judge.ts`](examples/rule-judge.ts). For the full tree, `ls src/` — this section is an index, not an inventory, because an inventory of forty-four files goes stale in a day.
 
 ## Contributing
 

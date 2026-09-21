@@ -205,6 +205,8 @@ export function httpFailure(
 export function transportFailure(who: string, err: unknown, timedOut: boolean, timeoutMs: number): ProviderError {
   if (err instanceof ProviderError) return err
   const code: ProviderErrorCode = timedOut ? 'TIMEOUT' : 'TRANSPORT'
-  const what = timedOut ? `超时（${timeoutMs}ms）` : '连不上'
-  return new ProviderError(`${who} ${what}：${(err as Error).message}`, code, { cause: err })
+  // 英文：这条消息会一路冒到 CLI / demo 的输出里（`▲ laya unavailable (…)`），
+  // 而那些面是给外面的人看的。同 `examples/demo.ts` 的输出语言。
+  const what = timedOut ? `timed out after ${timeoutMs}ms` : 'is unreachable'
+  return new ProviderError(`${who} ${what}: ${(err as Error).message}`, code, { cause: err })
 }

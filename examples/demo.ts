@@ -61,12 +61,22 @@ await writeFile(join(cwd, 'notes.md'), '# Notes\n\nA demo directory.\n', 'utf8')
 
 // ── 组装 ─────────────────────────────────────────────────────
 
-// 降级只提示一次 —— 每次判定都打一遍会把 trace 淹掉
-let warned = false
+// 降级只提示一次 —— 每次判定都打一遍会把 trace 淹掉。
+//
+// ⚠️ 但「一次」是按**每一个转换**算的，不是一个全局标志位。重试也走这个回调
+// （`from === to`），所以一个全局 flag 会让**先到的重试把后面真正的降级吃掉** ——
+// 而降级是这两件事里更重要的那个。
+const notified = new Set<string>()
 const notice = (err: unknown, from: string, to: string) => {
-  if (warned) return
-  warned = true
-  console.error(`  ▲ ${from} unavailable (${(err as Error).message.slice(0, 60)}), falling back to ${to}`)
+  const key = `${from}→${to}`
+  if (notified.has(key)) return
+  notified.add(key)
+  const why = (err as Error).message.slice(0, 60)
+  console.error(
+    from === to
+      ? `  ▲ ${from}: ${why}` // 同一个后端再试一次，不是降级
+      : `  ▲ ${from} unavailable (${why}), falling back to ${to}`,
+  )
 }
 
 // 判定后端：--rule 强制规则表；--jev / --laya 强制指定；否则按可用性自动解析

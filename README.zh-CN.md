@@ -2,7 +2,7 @@
 
 **你的 agent loop 里每一个岔路口都是一次完整的大模型调用。而它们没有一个是「生成」。**
 
-*要不要动手？用哪个工具？这个操作安全吗？成功了吗？做完了吗？这个回答能发出去吗？* —— 常规 agent 对每一个的回答方式，都是让大模型写一段话，再由代码解析回来。但这六件事分别是**挑选、打分、是非题**：一次前向传播，在固定的候选集上给出答案，约 10–40 ms，不生成任何 token。
+*要不要动手？用哪个工具？读哪个文件？这个操作安全吗？成功了吗？做完了吗？这个回答能发出去吗？* —— 常规 agent 对每一个的回答方式，都是让大模型写一段话，再由代码解析回来。但这七件事分别是**挑选、打分、是非题**：一次前向传播，在固定的候选集上给出答案，约 10–40 ms，不生成任何 token。
 
 JevLoop 把它们交给判定模型（[Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)），把大模型留给它唯一不可替代的那件事：**写**。
 
@@ -22,28 +22,31 @@ JevLoop · demo
   generator : scripted — set DEEPSEEK_API_KEY for a real LLM
 
   ── loop trace ──────────────────────────────────────────
-  ▲ laya unavailable (fetch failed), falling back to rule-judge
+  ▲ laya: TRANSPORT, retrying in 258ms
+  ▲ laya unavailable (laya is unreachable: fetch failed), falling back to rule-judge
   cleared: list_dir (auto)
   cleared: read_file (auto)
 
   ── every decision ──────────────────────────────────────
   step 1
-     decide  loop.needsTool         use_tool           4.3ms  needs_tool=0.95
-     decide  loop.pickTool          call               4.3ms  tool=list_dir
-     decide  loop.gradeRisk         auto               4.2ms  risk=0.0 needs_auth=0.05
-     decide  loop.stepOk            continue           4.1ms  ok=0.92
-     decide  loop.isDone            keep_going         4.0ms  done=0.10
+   ~ decide  loop.needsTool         use_tool           4.9ms  needs_tool=0.95
+   ~ decide  loop.pickTool          call               4.9ms  tool=list_dir
+   ~ decide  loop.gradeRisk         auto               4.7ms  risk=0.0 needs_auth=0.05
+   ~ decide  loop.stepOk            continue           4.3ms  ok=0.92
+   ~ decide  loop.isDone            keep_going         4.0ms  done=0.10
   ...
   step 3
-     decide  loop.canDeliver        deliver            4.3ms  deliverable=0.90 unsupported=0.08
-     model   generate (scripted)                       601ms
+   ~ decide  loop.canDeliver        deliver            4.5ms  deliverable=0.90 unsupported=0.08
+     model   generate (scripted)                       600ms
 
   ── accounting ──────────────────────────────────────────
-  decisions  12     50ms (4.2ms each)
-  model       1     601.2ms
+  decisions  12     53ms (4.4ms each)
+  model       1     600.2ms
 
-  decisions : model = 12.0:1   decisions are 7.7% of wall clock
+  decisions : model = 12.0:1   decisions are 8.2% of wall clock
 ```
+
+> `~` 表示这个答案是 degraded 的 —— 自带的判定器是规则表，所以它给的每个判定都带这个标记。墙钟占比会在不同运行之间浮动一两个百分点。
 
 零依赖、零构建步骤、无 key 无网络也能跑完整条 loop。
 
@@ -205,6 +208,8 @@ policy:
        │
        ├─ loop.pickTool    ↗ 用哪个工具？（候选每步重建）
        │
+       ├─ loop.pickInput   ↗ 读哪个文件？（只在工具确实要参数时）
+       │
        ├─ loop.gradeRisk   ↗ 这个操作多危险？  ──▶ 问人
        │
        ├─ [ 工具执行 ]      ← 全流程唯一产生真实副作用的地方
@@ -216,35 +221,36 @@ policy:
                             ▼
                        [ 大模型生成 ]   ← 唯一昂贵的一次调用
                             │
-                       loop.canDeliver  ↗ 这个回答能发出去吗？
+                       loop.canDeliver  ↗ 这个回答能发出去吗？  ──revise──▶ 再生成一次
 ```
 
-**六个判定点全在一个文件里：[`src/decisions.ts`](src/decisions.ts)。** 如果你只看这个仓库的一个文件，看那个 —— 它就是全部主张。
+**七个判定点全在一个文件里：[`src/decisions.ts`](src/decisions.ts)。** 如果你只看这个仓库的一个文件，看那个 —— 它就是全部主张。
 
 ### 一个判定由三样东西组成
 
 ```ts
 export const pickTool = defineDecision({
-  id: "loop.pickTool",
+  id: 'loop.pickTool',
 
   // ① 把 agent 状态投影成一个**有界**的决策帧。
   //    它决定了判定的上限：帧里没有的东西，判不出来。
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
+    already_done: describeDone(ctx),
     files_known: (ctx.files ?? []).slice(0, 20),
-    recent: (ctx.history ?? []).slice(-3).map(h => `${h.tool}(${h.input}) → ${clip(h.result, 120)}`),
+    already_read: (ctx.readFiles ?? []).slice(0, 10),
+    last_result: clip(ctx.lastResult ?? '', 300),
   }),
 
-  // ② 类型化的问题。一次前向传播全部答完。
+  // ② 类型化的问题。**问法来自 DECISION.md**；候选不能来自文件，
+  //    因为 Markdown 装不下一个函数 —— 文件里写 `dynamic: toolsFor(ctx)`
+  //    就是在声明这件事。
   questions: (ctx: AgentCtx) => ({
-    tool: choice("Which tool should the agent call next?", toolsFor(ctx)),
+    tool: choice(askOf('pick_tool', ['tool']), toolsFor(ctx)),
   }),
 
-  // ③ 策略：答案 → 动作。纯代码，没有模型参与。
-  policy: [
-    { when: gte("tool", 0.6), action: "call" },
-    { action: "escalate", reason: "not confident enough — hand back, don't guess" },
-  ],
+  // ③ 策略：答案 → 动作。**同样来自 DECISION.md**，编译之后是纯代码，没有模型参与。
+  ...policyOf('pick_tool'),
 });
 ```
 
@@ -280,7 +286,7 @@ policy: [
 
 | 判定后端 | 每次判定 | 判定 : 模型 | 判定占墙钟 | 质量 |
 |---|---:|---:|---:|---|
-| `examples/rule-judge.ts`（离线 demo） | 4 ms | 12 : 1 | **7.7 %** | 规则表，不是模型 |
+| `examples/rule-judge.ts`（离线 demo） | 4 ms | 12 : 1 | **~8 %** | 规则表，不是模型 |
 | Laya `typed-decisions`，本地 A100 | 30–85 ms | 8 : 1 | ~38 % | **零样本不够用**（见下） |
 | Jev `jev-latest`，托管 API | ~390 ms | 13 : 1 | **79 %** | 每个判定都果断且正确 |
 
@@ -360,27 +366,28 @@ CWD_ROOT=./你的项目 PORT=7800 npm run serve
 
 ## 目录结构
 
-```
-DECISION.md      ★ 决策文件 —— 被编译（问题与策略；帧仍在代码里）
-src/
-  vocab.ts       Question / Answer / Decision —— 全部词汇
-  decisions.ts   ★ 这个 agent 的全部判定，一个文件
-  decisiondoc.ts DECISION.md 的解析器（什么都不静默丢）
-  decision-compile.ts  块 → 问题 + 策略
-  decide.ts      一次判定的六个步骤
-  policy.ts      答案 → 动作（纯代码，可单元测试）
-  seam-provider.ts     判定后端的接口
-  provider-http.ts     Jev / Laya —— 换 baseUrl 就换后端
-  provider-mock.ts     一个从不猜测的替身
-  provider-fallback.ts 按顺序试，每次降级都报出来
-  meter.ts       ★ 判定 vs 模型调用
-  agent.ts       ★ 这条 loop
-  tools.ts       list / read / write，路径锁在 cwd
-  llm.ts         唯一生成文本的地方
-examples/
-  demo.ts        离线可跑
-  rule-judge.ts  确定性的判定模型替身
-```
+**六个文件装着全部主张**，按这个顺序读：
+
+| 文件 | 是什么 |
+|---|---|
+| [`DECISION.md`](DECISION.md) | 这些判定，写成一份运行时编译的文档 |
+| [`src/decisions.ts`](src/decisions.ts) | ★ 七个判定全在一个文件里 —— 就是全部主张 |
+| [`src/agent.ts`](src/agent.ts) | ★ 问它们的那条 loop |
+| [`src/decide.ts`](src/decide.ts) | 一次判定走的六个步骤 |
+| [`src/policy.ts`](src/policy.ts) | 答案 → 动作，纯代码 |
+| [`src/meter.ts`](src/meter.ts) | ★ 判定与模型调用的对账 |
+
+其余都是接线。最可能想换掉的那几块：
+
+| 想改什么 | 去哪 |
+|---|---|
+| 判定由谁回答 | [`src/seam-provider.ts`](src/seam-provider.ts) 定义接口；`provider-http` / `provider-mock` / `provider-fallback` 实现它 |
+| 用什么写回答 | [`src/llm.ts`](src/llm.ts) |
+| 工具能做什么 | [`src/tools.ts`](src/tools.ts) |
+| 界面 | [`web/`](web/) 和 [`src/server.ts`](src/server.ts) |
+| 命令行 | [`src/cli.ts`](src/cli.ts) |
+
+[`examples/demo.ts`](examples/demo.ts) 离线可跑，用的是 [`examples/rule-judge.ts`](examples/rule-judge.ts) 那个确定性判定器。完整目录跑 `ls src/` —— 这一节是索引，不是清单，因为四十四个文件的清单一天就会过期。
 
 ## 参与贡献
 
