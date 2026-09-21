@@ -64,7 +64,7 @@ export type { AgentCtx, StepRecord } from './frame.ts'
 
 // ── 环境 ─────────────────────────────────────────────────────
 export { loadEnv } from './env.ts'
-export type { LoadEnvOptions } from './env.ts'
+export type { LoadEnvOptions, LoadEnvResult } from './env.ts'
 
 // ── 后端解析 ─────────────────────────────────────────────────
 export { resolveProvider, resolveGenerator } from './backends.ts'

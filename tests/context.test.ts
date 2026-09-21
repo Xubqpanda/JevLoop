@@ -143,6 +143,20 @@ test('retain ≥ trigger 时必须抛 —— 否则会陷入「每轮都压、�
   assert.throws(() => resolveEvidencePolicy({ triggerChars: 100, retainChars: 200 }), /必须 < triggerChars/)
 })
 
+test('★ 目标线必须容得下单条结果裁剪后的最大体积', () => {
+  // 实测发现的：默认值原本是 retain 4800，而单条裁剪后最大
+  // 4096 + 标记 58 + 1024 = 5178 —— 于是「压到只剩一条」时永远报 overRetain，
+  // 而那是**不可能满足**的：最后一条不会被丢，它自己就比目标大。
+  const mismatch = EVIDENCE_POLICY.retainChars < PRUNE_DEFAULTS.headChars + 58 + PRUNE_DEFAULTS.tailChars
+  assert.equal(mismatch, false, '默认的 retainChars 容不下单条，目标线是个摆设')
+
+  // 显式构造一组不容得下的，必须抛（在 fitEvidence 里 —— 那里两样都知道）
+  assert.throws(
+    () => fitEvidence(['x'.repeat(100)], policy(100_000, 1_000)),
+    /小于单条结果裁剪后的最大体积/,
+  )
+})
+
 test('策略的两个数都必须是整数', () => {
   assert.throws(() => resolveEvidencePolicy({ triggerChars: 0 }), /必须是 ≥ 1 的整数/)
   assert.throws(() => resolveEvidencePolicy({ retainChars: -1 }), /整数/)
@@ -156,7 +170,7 @@ const policy = (triggerChars: number, retainChars: number) => resolveEvidencePol
 
 test('没到触发线时**什么都不做**，一个字都不动', () => {
   const parts = ['a'.repeat(100), 'b'.repeat(100)]
-  const { text, report } = fitEvidence(parts, policy(1000, 100))
+  const { text, report } = fitEvidence(parts, policy(20_000, 6_000))
   assert.equal(report.acted, false)
   assert.equal(report.prunedCount, 0)
   assert.equal(report.droppedCount, 0)
@@ -185,21 +199,27 @@ test('剪完还超目标线，就从**最老的整条**丢', () => {
 })
 
 test('★ 最新的一条永远不会被丢空', () => {
-  const { text } = fitEvidence(['X'.repeat(50_000)], policy(100, 10))
+  const { text } = fitEvidence(['X'.repeat(50_000)], policy(20_000, 6_000))
   assert.ok(text.includes('X'), '唯一一条被丢空了')
   assert.ok(len(text) < 50_000, '但它应当被剪过')
 })
 
 test('★ 压不到目标线时如实报 overRetain，不假装压过了', () => {
-  // 只剩一条且它自己就超过目标线 —— 压不下去，必须说出来
-  const { report, text } = fitEvidence(['Y'.repeat(50_000)], policy(100, 10))
+  // 单条 7000 字符：**在裁剪阈值（8192）之下**，所以不会被剪；
+  // 但**在目标线（6000）之上**，而最后一条又不会被丢 —— 于是压不下去。
+  //
+  // 这不是 bug，是如实报告。它同时也是「裁剪阈值 > 目标线」的必然结果，
+  // 所以这个字段不是摆设，它会在真实数据上出现。
+  const { report, text } = fitEvidence(['Y'.repeat(7000)], policy(6_000, 5_200))
+  assert.equal(report.prunedCount, 0, '7000 < 8192，不该被剪')
+  assert.equal(report.droppedCount, 0, '只有一条，不该被丢')
   assert.equal(report.overRetain, true, '压不下去就必须说')
   assert.match(text, /超过目标/, '账目里要写明')
 })
 
 test('丢了东西就必须写进账目（§8.10）', () => {
   const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
-  const { text, report } = fitEvidence(['A'.repeat(500), 'B'.repeat(500)], policy(400, 100), pruneBud)
+  const { text, report } = fitEvidence(['A'.repeat(500), 'B'.repeat(500)], policy(400, 250), pruneBud)
   assert.equal(report.acted, true)
   assert.match(text, /context budget/, '丢了东西却不写账目')
 })

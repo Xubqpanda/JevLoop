@@ -26,6 +26,7 @@
  *   · 模块头部有 `@module JevLoop/<文件名>`
  *   · `src/` 内的 import 方向符合分层（见 DESIGN-layers-2026-09-21.md）
  *   · `src/index.ts` 公开导出的**值**有 JSDoc（类型/接口不查，见下）
+ *   · 公开值的签名引用到的本仓库类型也在导出面上（契约不能只导出一半）
  *
  * **不检查什么**（规则本身不精确，硬查会误伤）：
  *   · 缩进是不是恰好 2 空格 —— 续行、模板字符串、对齐注释都会让逐行判定失真
@@ -349,13 +350,110 @@ function publicSurfaceViolations(dir: string): Violation[] {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════
+// 公开面的**类型**：契约不能只导出一半
+//
+// 第十六轮 V1：`loadEnv` 导出了，它的返回类型 `LoadEnvResult` 没有 ——
+// 使用者调用得了、解构得了，却**命名不了这个类型**（写一个接收它的辅助函数、
+// 或在消费 `.d.ts` 的项目里声明一个变量，都没有名字可用）。
+//
+// 为什么上面那条 `public-jsdoc` 拦不住：它**明确只查值**（类型/接口不查）。
+// 所以「公开函数的返回类型必须也在公开面上」这条约束，
+// 既不在规范里、也不在检查里 —— 它靠人记得，而人这次没记得。
+//
+// 判据是**文本级**的：把签名里出现的标识符与本仓库声明的类型名取交集。
+// 宽松（不认识泛型约束、映射类型之类），但足以挡住"导出函数忘了导出它的类型"。
+// ═══════════════════════════════════════════════════════════
+
+/** 从一段类型文本里取出所有标识符。必须显式传 `sf` —— 节点没有 parent，`getText()` 找不到源码 */
+const identifiersIn = (t: ts.TypeNode, sf: ts.SourceFile): string[] =>
+  [...t.getText(sf).matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]!)
+
+/**
+ * `index.ts` 导出的**值**，其签名里引用到的本仓库类型，也必须在导出面上。
+ *
+ * @param dir `src` 目录
+ */
+function publicTypeSurfaceViolations(dir: string): Violation[] {
+  const typeNames = new Set<string>()
+  const referenced = new Map<string, Set<string>>()
+
+  for (const f of globSync(`${dir}/*.ts`)) {
+    const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, false)
+
+    for (const st of sf.statements) {
+      if (ts.isInterfaceDeclaration(st) || ts.isTypeAliasDeclaration(st)) {
+        if (st.name?.text) typeNames.add(st.name.text)
+        continue
+      }
+
+      // 值：`function f(...): T` 与 `const f = (...): T => …`
+      const sigs: (ts.TypeNode | undefined)[] = []
+      let name: string | undefined
+      if (ts.isFunctionDeclaration(st) && st.name) {
+        name = st.name.text
+        sigs.push(st.type, ...st.parameters.map((p) => p.type))
+      } else if (ts.isVariableStatement(st)) {
+        const d = st.declarationList.declarations[0]
+        if (d && ts.isIdentifier(d.name)) {
+          name = d.name.text
+          sigs.push(d.type)
+          const init = d.initializer
+          if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+            sigs.push(init.type, ...init.parameters.map((p) => p.type))
+          }
+        }
+      }
+      if (!name) continue
+
+      const set = referenced.get(name) ?? new Set<string>()
+      for (const t of sigs) if (t) for (const id of identifiersIn(t, sf)) set.add(id)
+      if (set.size) referenced.set(name, set)
+    }
+  }
+
+  const facade = `${dir}/${FACADE}.ts`
+  const sf = ts.createSourceFile(facade, readFileSync(facade, 'utf8'), ts.ScriptTarget.Latest, false)
+  const exportedValues = new Set<string>()
+  const exportedTypes = new Set<string>()
+
+  for (const st of sf.statements) {
+    if (!ts.isExportDeclaration(st) || !st.exportClause || !ts.isNamedExports(st.exportClause)) continue
+    for (const el of st.exportClause.elements) {
+      const name = (el.propertyName ?? el.name).text
+      if (st.isTypeOnly || el.isTypeOnly) exportedTypes.add(name)
+      else exportedValues.add(name)
+    }
+  }
+
+  const out: Violation[] = []
+  for (const [value, types] of referenced) {
+    if (!exportedValues.has(value)) continue
+    for (const t of [...types].sort()) {
+      if (!typeNames.has(t) || exportedTypes.has(t)) continue
+      out.push({
+        file: facade,
+        line: 0,
+        rule: 'public-types',
+        detail: `公开导出的值 '${value}' 的签名引用了 '${t}'，但 '${t}' 不在导出面上 —— 使用者命名不了这个类型`,
+      })
+    }
+  }
+  return out
+}
+
 const files = ROOTS.flatMap((pattern) => [...globSync(pattern)]).sort()
 if (files.length === 0) {
   console.error('没有匹配到任何文件 —— glob 模式写错了？')
   process.exit(1)
 }
 
-const violations = [...files.flatMap(checkFile), ...layerViolations('src'), ...publicSurfaceViolations('src')]
+const violations = [
+  ...files.flatMap(checkFile),
+  ...layerViolations('src'),
+  ...publicSurfaceViolations('src'),
+  ...publicTypeSurfaceViolations('src'),
+]
 
 if (violations.length === 0) {
   console.log(`check: ${files.length} 个文件，全部通过`)

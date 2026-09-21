@@ -225,7 +225,7 @@ export function pruneToolResult(text: string, budget: PruneBudget = PRUNE_DEFAUL
  * 不设总量上限时最坏约 48000 字符进一次生成调用，而那是唯一贵的一步。
  */
 export const EVIDENCE_TRIGGER_CHARS = 24_000
-export const EVIDENCE_RETAIN_CHARS = 4_800
+export const EVIDENCE_RETAIN_CHARS = 6_000
 
 export interface EvidencePolicy {
   /** 超过这个总量才动手 */
@@ -262,6 +262,36 @@ export function resolveEvidencePolicy(policy: Partial<EvidencePolicy> = {}): Evi
   }
   return resolved
 }
+
+/**
+ * 目标线必须**容得下单条结果裁剪后的最大体积**。
+ *
+ * 这条是**实测发现的**：默认值原本是 retain 4800、单条裁剪后最大
+ * 4096 + 标记 58 + 1024 = 5178 —— 于是「压到只剩一条」时仍然报
+ * `overRetain`，而那是**永远不可能满足**的：最后一条不会被丢，
+ * 而它自己就比目标大。
+ *
+ * 这是 `head + 标记 + tail ≤ 阈值`（`resolvePruneBudget`）的上一层：
+ * 那条保证**单条裁剪会变小**，这条保证**单条裁剪能落进目标**。
+ * 两条都要，否则目标线是个摆设 —— 每一轮都会报「压不到」，
+ * 而看的人会以为只是这一轮数据太胖。
+ */
+export function assertCompatible(policy: EvidencePolicy, budget: PruneBudget): void {
+  const biggestSingle = budget.headChars + PRUNE_MARKER_MAX_CHARS + budget.tailChars
+  if (biggestSingle > policy.retainChars) {
+    throw new Error(
+      `EvidencePolicy: retainChars (${policy.retainChars}) 小于单条结果裁剪后的最大体积 ` +
+        `(${biggestSingle} = head ${budget.headChars} + 标记 ${PRUNE_MARKER_MAX_CHARS} + tail ${budget.tailChars})。` +
+        `最后一条永远不会被丢，所以这个目标**永远达不到** —— 每一轮都会报 overRetain。` +
+        `要么抬高 retainChars，要么调小单条的 head/tail。`,
+    )
+  }
+}
+
+// 默认值在**模块加载时**自检一次：一组自相矛盾的默认值不该等到
+// 第一次真跑起来才被发现，那时它已经在一次生成调用里了。
+resolveEvidencePolicy()
+assertCompatible(EVIDENCE_POLICY, PRUNE_DEFAULTS)
 
 export interface ContextReport {
   /** 动手前 */
@@ -308,6 +338,10 @@ export function fitEvidence(
   policy: EvidencePolicy = EVIDENCE_POLICY,
   budget: PruneBudget = PRUNE_DEFAULTS,
 ): { text: string; report: ContextReport } {
+  // 两样都在手上时才校验得动：目标线要容得下单条裁剪后的最大体积，
+  // 否则「压到只剩一条」时永远报 overRetain，而那是**不可能满足**的
+  assertCompatible(policy, budget)
+
   const size = (xs: readonly string[]) => xs.reduce((n, x) => n + Array.from(x).length, 0)
   const rawChars = size(parts)
 
