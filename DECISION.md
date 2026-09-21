@@ -169,14 +169,27 @@ when: 每次工具成功之后
 
 ### done
 
-ask: The agent has done everything the task requires; any further tool call would not add information or change the outcome
+ask: The agent has done everything the task requires — no further tool call is needed to answer it
 
-- true — the goal stated in the task has been reached
-- false — something the task asks for is still missing
+- true — the goal stated in the task has been reached, and the answer can be written from what has already been gathered
+- false — something the task still asks for is missing
 
 policy:
   - prob:done >= 0.6 → finish
   - else → keep_going
+
+★ **判据是「任务要求的都做了」，不是「再多调一次会不会增加信息」。**
+
+旧措辞里有半句「any further tool call would not add information」。它看着更严格，
+实际是个陷阱：**读任何一个还没读过的文件都会「增加信息」**，哪怕那个文件
+和任务毫无关系。
+
+实测（2026-09-21）：任务「这两个 TypeScript 文件里各导出了一个函数，分别叫
+什么名字？」—— 两个文件都读完了，而这个节点判 `keep_going`（0.22），于是
+loop 又去读了**任务不需要的** `notes.md`，然后还不肯停。
+
+和 `needs_tool` 那条**是同一个陷阱**：把「还有没有可拿的信息」当成了
+「任务做完没有」。前者几乎永远为真，后者才是要问的。
 
 语义早停，不是 `max_iter` 硬切。简单任务能立刻结束，而不是傻等到迭代上限。
 
