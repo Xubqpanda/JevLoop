@@ -6,6 +6,8 @@
 
 JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
+It is a **runnable harness**, not a demo: the loop, the backend seams, the accounting and a web UI — all of it in one command, with no dependency, no build step and no API key.
+
 JevLoop is an independent project. It is not affiliated with, or endorsed by, TypeSafe AI — the name is a reference to the model it routes to, nothing more.
 
 **English** · [中文](README.zh-CN.md)
@@ -66,17 +68,36 @@ You were paying generation prices for decisions.
 
 ## Quick start
 
-Needs **Node ≥ 22.6** (it runs TypeScript directly, no build).
+Needs **Node ≥ 22.6** — it runs TypeScript directly, with no build step.
+
+**See what the decisions compile to** — no key, nothing to clone:
 
 ```bash
-git clone https://github.com/zjunlp/JevLoop
-cd JevLoop
+npx jevloop spec
+```
+
+**Run the whole loop offline** — clone it, because the offline judge lives with the examples:
+
+```bash
+git clone https://github.com/zjunlp/JevLoop && cd JevLoop
 npm run demo
 ```
 
-That's it — no `npm install`, no API key, no network. The demo falls back to a deterministic rule judge so the whole loop runs offline.
+**Open the UI:**
 
-**Use a real decision model:**
+```bash
+npx jevloop serve          # http://127.0.0.1:7799
+```
+
+**Put it to work** — this one needs a decision backend:
+
+```bash
+npx jevloop run "list the files and explain what they do" --cwd ./some-project
+```
+
+It resolves its own backend: the hosted Jev API if `TYPESAFE_API_KEY` is set, otherwise a local Laya on `:7789`. With neither, it says which one it wanted and every step escalates — it does not guess.
+
+**Drive the demo with a real decision model:**
 
 ```bash
 npm run demo -- --laya     # local Laya sidecar on :7789 (open weights, free)
@@ -277,8 +298,26 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 Swapping either one touches exactly one file. The loop and the decision specs don't move.
 
-> Not on npm yet. Install from git — the `prepare` script builds `dist/` for you:
-> `npm install github:zjunlp/JevLoop`
+To depend on it rather than run it: `npm install jevloop`.
+
+## The UI
+
+`npx jevloop serve` opens a three-pane app on **http://127.0.0.1:7799**. The picture at the top of this page is one run of it.
+
+| Pane | Shows |
+|---|---|
+| Left | workspaces and past sessions, read from `~/.jevloop/sessions/` |
+| Middle | the conversation, the full decision trace, and the compiled `DECISION.md` spec |
+| Right | the accounting — decisions against model calls, what each cost, and the two context budgets with the line they fold at |
+
+The trace is the part worth watching: every decision the loop made, what code did with the answer, and how long it took.
+
+```bash
+npx jevloop serve --cwd ./some-project     # default: a temporary demo directory
+npx jevloop serve --port 7800 --host 127.0.0.1
+```
+
+It has no authentication and binds to loopback only. `--host 0.0.0.0` means *anyone on this network can make it run tasks on this machine*.
 
 ## What this is not
 

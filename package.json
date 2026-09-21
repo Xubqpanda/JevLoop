@@ -1,7 +1,7 @@
 {
   "name": "jevloop",
   "version": "0.1.0",
-  "description": "The agent loop where decisions don't cost a model call.",
+  "description": "A runnable harness for agent loops: the judgements go to a decision model, the LLM only writes. No dependencies, runs offline, no API key.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {

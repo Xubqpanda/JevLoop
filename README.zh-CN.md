@@ -6,6 +6,8 @@
 
 JevLoop 把它们交给判定模型（[Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)），把大模型留给它唯一不可替代的那件事：**写**。
 
+它是一个**跑得起来的 harness**，不是 demo：loop、两条后端缝、记账、一个 Web 界面 —— 全部在一条命令里，零依赖、零构建、不用 key。
+
 JevLoop 是一个独立项目，与 TypeSafe AI 没有隶属关系，也未获其背书 —— 名字只是指向它所路由的那个模型，仅此而已。
 
 [English](README.md) · **中文**
@@ -67,17 +69,36 @@ JevLoop · demo
 
 ## 快速开始
 
-需要 **Node ≥ 22.6**（它直接跑 TypeScript，没有构建步骤）。
+需要 **Node ≥ 22.6** —— 它直接跑 TypeScript，没有构建步骤。
+
+**先看这些判定被编译成了什么** —— 不用 key、不用 clone：
 
 ```bash
-git clone https://github.com/zjunlp/JevLoop
-cd JevLoop
+npx jevloop spec
+```
+
+**离线跑完整条 loop** —— 要 clone，因为离线判定器随 examples 一起走：
+
+```bash
+git clone https://github.com/zjunlp/JevLoop && cd JevLoop
 npm run demo
 ```
 
-就这样 —— 不用 `npm install`、不用 key、不用网络。demo 会退回到一个确定性的规则判定器，让整条 loop 离线跑通。
+**打开界面：**
 
-**换成真实的判定模型：**
+```bash
+npx jevloop serve          # http://127.0.0.1:7799
+```
+
+**拿它干活** —— 这一条需要判定后端：
+
+```bash
+npx jevloop run "列出目录里的文件并说明它们是做什么的" --cwd ./你的项目
+```
+
+它会自己解析后端：设了 `TYPESAFE_API_KEY` 就用托管 Jev，否则用本地 `:7789` 上的 Laya。两个都没有时，它会**说清楚它想要哪个**，然后每一步都 escalate —— 它不猜。
+
+**让 demo 走真实的判定模型：**
 
 ```bash
 npm run demo -- --laya     # 本地 Laya sidecar（:7789，开放权重，免费）
@@ -279,8 +300,26 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 换掉任何一个都只动一个文件。loop 和判定规格一步都不用挪。
 
-> 还没发到 npm。从 git 装 —— `prepare` 脚本会自动帮你构建 `dist/`：
-> `npm install github:zjunlp/JevLoop`
+要把它当库依赖：`npm install jevloop`。
+
+## 界面
+
+`npx jevloop serve` 会在 **http://127.0.0.1:7799** 打开一个三栏界面 —— 本页顶部那张图就是它跑一次的样子。
+
+| 栏 | 显示什么 |
+|---|---|
+| 左 | 工作区与历史会话，从 `~/.jevloop/sessions/` 读 |
+| 中 | 对话、完整的判定轨迹、以及编译后的 `DECISION.md` 规格 |
+| 右 | 记账 —— 判定与模型调用的对比、各自的耗时，以及两块上下文预算和它们的折叠线 |
+
+**轨迹那栏最值得看**：这条 loop 做过的每一次判定、代码拿答案做了什么、花了多久。
+
+```bash
+npx jevloop serve --cwd ./你的项目        # 默认是一个临时演示目录
+npx jevloop serve --port 7800 --host 127.0.0.1
+```
+
+它**没有鉴权**，默认只监听本机。`--host 0.0.0.0` 的意思是「这个网络上的任何人都能让它在这台机器上跑任务」。
 
 ## 它不是什么
 
