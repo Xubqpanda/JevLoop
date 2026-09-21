@@ -1,4 +1,4 @@
-# nanojev 的代码规范
+# JevLoop 的代码规范
 
 这份文件是给**改这个仓库的人（和 agent）**看的。它管的是代码怎么写，不是这个项目是什么 ——
 那在 [README.md](README.md) 里。
@@ -31,7 +31,7 @@
 
 ## 3. 每个模块开头一段 JSDoc
 
-第一段讲**问题**，第二段讲**设计决定**，结尾 `@module nanojev/<文件名>`。
+第一段讲**问题**，第二段讲**设计决定**，结尾 `@module JevLoop/<文件名>`。
 
 ```ts
 /**
@@ -41,7 +41,7 @@
  * 因为超时和重试属于调用方，baseUrl 和鉴权属于部署。把两者混在一个类型里，
  * 换部署方式就得改调用方。
  *
- * @module nanojev/provider
+ * @module JevLoop/provider
  */
 ```
 
@@ -110,7 +110,7 @@ Service Provider     实现（可以有多个）
 Consumer             使用者
 ```
 
-nanojev 现有的两条缝：`Provider`（判定后端）和 `Generator`（生成后端）。
+JevLoop 现有的两条缝：`Provider`（判定后端）和 `Generator`（生成后端）。
 新增能力请照这个形状切。
 
 ---

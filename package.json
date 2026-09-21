@@ -1,5 +1,5 @@
 {
-  "name": "nanojev",
+  "name": "jevloop",
   "version": "0.1.0",
   "description": "The agent loop where decisions don't cost a model call.",
   "type": "module",
@@ -41,10 +41,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Xubqpanda/nanojev.git"
+    "url": "git+https://github.com/Xubqpanda/JevLoop.git"
   },
-  "homepage": "https://github.com/Xubqpanda/nanojev",
+  "homepage": "https://github.com/Xubqpanda/JevLoop",
   "bugs": {
-    "url": "https://github.com/Xubqpanda/nanojev/issues"
+    "url": "https://github.com/Xubqpanda/JevLoop/issues"
   }
 }

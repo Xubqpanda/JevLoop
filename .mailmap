@@ -7,7 +7,7 @@
 # 左边 = 显示用的身份，右边 = 被映射掉的。
 
 # agent 提交（提交时误传了 -c user.email 覆盖掉仓库配置）
-Xubqpanda <1227972384@qq.com> nanojev <dev@jev.local>
+Xubqpanda <1227972384@qq.com> JevLoop <dev@jev.local>
 Xubqpanda <1227972384@qq.com> jevos <dev@jevos.local>
 Xubqpanda <1227972384@qq.com> <dev@jev.local>
 Xubqpanda <1227972384@qq.com> <dev@jevos.local>

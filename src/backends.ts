@@ -11,7 +11,7 @@
  * 两者都遵守同一条规则：**永远有兜底，永远不静默**。降级会发生，
  * 但每一层降级都会往回调里报一次。
  *
- * @module nanojev/backends
+ * @module JevLoop/backends
  */
 
 import { HttpProvider, MockProvider, FallbackProvider } from './provider.ts'

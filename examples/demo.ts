@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * nanojev · demo
+ * JevLoop · demo
  *
  *   node --experimental-strip-types examples/demo.ts
  *   node --experimental-strip-types examples/demo.ts --laya     # 用本地 Laya
@@ -36,7 +36,7 @@ const C = {
 
 // ── 造一个工作目录 ───────────────────────────────────────────
 
-const cwd = await mkdtemp(join(tmpdir(), 'nanojev-'))
+const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-'))
 await mkdir(cwd, { recursive: true })
 await writeFile(
   join(cwd, 'invoice.ts'),
@@ -87,7 +87,7 @@ const generator = resolveGenerator({ scripted: prefer === 'scripted' })
 
 const TASK = '列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数。'
 
-console.log(C.bold('\nnanojev · demo'))
+console.log(C.bold('\nJevLoop · demo'))
 console.log(C.dim(`  task      : ${TASK}`))
 console.log(C.dim(`  cwd       : ${cwd}`))
 console.log(C.dim(`  判定后端  : ${provider.name}`))

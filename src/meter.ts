@@ -1,16 +1,16 @@
 /**
- * nanojev · Meter
+ * JevLoop · Meter
  *
- * 这个文件是 nanojev 存在的理由。
+ * 这个文件是 JevLoop 存在的理由。
  *
  * 常规 agent 的 loop 里，每一次分叉都是一次大模型调用 —— 贵、慢。
- * nanojev 把那些分叉交给判定模型，只有「生成」才叫大模型。
+ * JevLoop 把那些分叉交给判定模型，只有「生成」才叫大模型。
  *
  * 所以最重要的指标不是"跑了多少 token"，而是：
  *
  *     **判定 : 模型 = ? : 1**
  *
- * 这个比值就是 nanojev 的全部主张，它应该被打印在每一次运行的结尾。
+ * 这个比值就是 JevLoop 的全部主张，它应该被打印在每一次运行的结尾。
  */
 
 import type { DecisionResult } from './types.ts'

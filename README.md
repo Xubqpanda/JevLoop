@@ -1,10 +1,10 @@
-# nanojev
+# JevLoop
 
 **The agent loop where decisions don't cost a model call.**
 
 Every fork in a normal agent loop — *should I act? which tool? is this safe? did it work? am I done? can I ship this?* — is answered by a full LLM call. None of those are generation. They're picks, scores and yes/no answers.
 
-nanojev routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
+JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
 ```
 $ npm run demo          # 判定后端 = 离线规则表
@@ -29,7 +29,7 @@ Zero dependencies. Zero build step. Runs offline with no API key.
 
 Take a task that needs two tool calls. A conventional agent burns a model call on each of these:
 
-| Question the loop asks | Conventional agent | nanojev |
+| Question the loop asks | Conventional agent | JevLoop |
 |---|---|---|
 | Do I need to act yet? | LLM call | decision |
 | Which tool? | LLM call | decision |
@@ -45,8 +45,8 @@ You were paying generation prices for decisions. A decision is one forward pass 
 Needs **Node ≥ 22.6** (it runs TypeScript directly, no build).
 
 ```bash
-git clone https://github.com/Xubqpanda/nanojev
-cd nanojev
+git clone https://github.com/Xubqpanda/JevLoop
+cd JevLoop
 npm run demo
 ```
 
@@ -144,14 +144,14 @@ The `Meter` is not a nice-to-have — it's the point. Every run ends with the nu
 判定 : 模型 = 11.0 : 1      判定耗时只占 7.2%
 ```
 
-Decisions and model calls are counted separately, with separate latency. If that ratio isn't high for your workload, nanojev is the wrong tool — and you should find out immediately rather than after a bill.
+Decisions and model calls are counted separately, with separate latency. If that ratio isn't high for your workload, JevLoop is the wrong tool — and you should find out immediately rather than after a bill.
 
 ## Bring your own backends
 
 **Decision backend** — anything that answers `{state, questions} → {answers}`:
 
 ```ts
-import { Decider, HttpProvider, FallbackProvider, MockProvider } from "nanojev";
+import { Decider, HttpProvider, FallbackProvider, MockProvider } from 'jevloop';
 
 const decider = new Decider({
   provider: new FallbackProvider([
@@ -165,7 +165,7 @@ const decider = new Decider({
 **Generation backend** — anything that turns a prompt into text:
 
 ```ts
-import { HttpGenerator } from "nanojev";
+import { HttpGenerator } from 'jevloop';
 // any OpenAI-compatible /chat/completions endpoint
 new HttpGenerator({ baseUrl: "https://api.openai.com/v1", apiKey, model: "gpt-5" });
 new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  // ollama

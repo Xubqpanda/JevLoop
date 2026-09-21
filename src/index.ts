@@ -1,7 +1,7 @@
 /**
- * nanojev · 公开 API
+ * JevLoop · 公开 API
  *
- *   import { Decider, runAgent, defineDecision, noul, choice, score } from "nanojev";
+ *   import { Decider, runAgent, defineDecision, noul, choice, score } from 'jevloop';
  *
  * 概念只有三个：Question / Decision / Provider。
  */

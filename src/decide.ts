@@ -1,5 +1,5 @@
 /**
- * nanojev · decide()
+ * JevLoop · decide()
  *
  * 一个判定走六步：
  *

@@ -1,5 +1,5 @@
 /**
- * nanojev · Provider
+ * JevLoop · Provider
  *
  * 内核只认一件事：`{state, questions} → {answers}`。
  * 谁能提供这个，谁就能当判定后端。

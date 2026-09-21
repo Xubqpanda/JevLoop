@@ -1,5 +1,5 @@
 /**
- * nanojev · Policy Engine
+ * JevLoop · Policy Engine
  *
  * 概率 → 动作。
  *

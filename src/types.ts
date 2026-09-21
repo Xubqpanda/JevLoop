@@ -1,5 +1,5 @@
 /**
- * nanojev · 类型契约
+ * JevLoop · 类型契约
  *
  * 整个框架的概念只有三个：
  *
@@ -180,7 +180,7 @@ export interface DecisionSpec<Ctx, Q extends QuestionSet = QuestionSet> {
   model?: string
 }
 
-const DECISION = Symbol.for('nanojev.decision')
+const DECISION = Symbol.for('JevLoop.decision')
 
 export function defineDecision<Ctx, Q extends QuestionSet>(
   spec: DecisionSpec<Ctx, Q>,
