@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JevLoop · 决策可视化</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>⬢</text></svg>" />
+    <!-- tokens 必须先于 app：app.css 只用 tokens.css 里的语义别名 -->
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="frame">
+      <header class="topbar">
+        <div class="brand">
+          JevLoop
+          <small>判定不花钱的 agent loop</small>
+        </div>
+
+        <!-- 三个计数就是全部主张：判定很多次，模型很少次 -->
+        <div class="tally">
+          <span class="tally-item decide">判定 <b id="t-decide">0</b></span>
+          <span class="tally-item tool">工具 <b id="t-tool">0</b></span>
+          <span class="tally-item model">模型 <b id="t-model">0</b></span>
+          <button class="badge action" id="theme" style="cursor:pointer;border-width:1px">深色</button>
+        </div>
+      </header>
+
+      <div class="cols">
+        <aside class="pane side">
+          <h2 class="section-title">任务</h2>
+          <textarea class="field" id="task" rows="4" spellcheck="false">列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数</textarea>
+          <button class="btn" id="run">运行</button>
+
+          <div class="legend">
+            <h2 class="section-title">图例</h2>
+            <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向，几十毫秒</div>
+            <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
+            <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步</b></div>
+            <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定</div>
+            <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
+          </div>
+        </aside>
+
+        <main class="pane">
+          <div class="timeline" id="timeline">
+            <div class="empty">点「运行」，看每一次判定</div>
+          </div>
+        </main>
+
+        <aside class="pane aside">
+          <h2 class="section-title">记账</h2>
+          <div id="side-stats">
+            <div class="empty">运行结束后显示</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

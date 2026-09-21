@@ -1,0 +1,526 @@
+/**
+ * JevLoop · 布局与组件
+ *
+ * 只用 tokens.css 的第二层语义别名 —— 这个文件里不出现任何字面颜色值。
+ * 换主题只改 tokens.css 第一层的映射。
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--jl-bg-base);
+  color: var(--jl-label-primary);
+  font-family: var(--jl-font-sans);
+  font-size: var(--jl-font-size);
+  line-height: 1.55;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   框架
+   ═══════════════════════════════════════════════════════════ */
+
+.frame {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--jl-gap);
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--jl-border-l2);
+  background: var(--jl-bg-layer-1);
+}
+
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+.brand small {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--jl-label-caption);
+  letter-spacing: 0;
+}
+
+/* 顶部计数：一眼看出判定多少次、模型多少次 */
+.tally {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+  align-items: center;
+}
+.tally-item {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-label-tertiary);
+}
+.tally-item b {
+  font-family: var(--jl-font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--jl-label-primary);
+}
+.tally-item.decide b {
+  color: var(--jl-decide-fg);
+}
+.tally-item.model b {
+  color: var(--jl-model-fg);
+}
+.tally-item.tool b {
+  color: var(--jl-tool-fg);
+}
+
+.cols {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr) 240px;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .cols {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+}
+
+.pane {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--jl-pad);
+}
+.pane.side {
+  border-right: 1px solid var(--jl-border-l2);
+  background: var(--jl-bg-layer-1);
+}
+.pane.aside {
+  border-left: 1px solid var(--jl-border-l2);
+  background: var(--jl-bg-layer-1);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   控件
+   ═══════════════════════════════════════════════════════════ */
+
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--jl-label-caption);
+  margin: 0 0 10px;
+}
+
+.field {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--jl-border-l2);
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-bg-base);
+  color: var(--jl-label-primary);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--jl-decide-border);
+}
+
+.btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-decide-fg);
+  color: var(--jl-label-inverted);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: filter var(--jl-duration) var(--jl-ease);
+}
+.btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 图例：把颜色和语义绑在一起，不需要额外解释 */
+.legend {
+  margin-top: 22px;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 0;
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-label-secondary);
+}
+.swatch {
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  flex: none;
+}
+.swatch.decide {
+  background: var(--jl-decide-fg);
+}
+.swatch.tool {
+  background: var(--jl-tool-fg);
+}
+.swatch.model {
+  background: var(--jl-model-fg);
+}
+.swatch.rule {
+  background: var(--jl-rule-fg);
+}
+.swatch.authorize {
+  background: var(--jl-authorize-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   时间线
+   ═══════════════════════════════════════════════════════════ */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 6px;
+  font-family: var(--jl-font-mono);
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-label-caption);
+}
+.step-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--jl-border-l1);
+}
+
+/* 事件卡片。左边一道 3px 的色条承载整张卡的语义 ——
+   比给整张卡上背景色更克制，也不会让长文本难读。 */
+.card {
+  border: 1px solid var(--jl-border-l1);
+  border-left: 3px solid var(--jl-rule-fg);
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-bg-layer-1);
+  padding: 10px 13px;
+  animation: card-in var(--jl-duration) var(--jl-ease);
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: none;
+  }
+}
+
+.card.decide {
+  border-left-color: var(--jl-decide-fg);
+}
+.card.tool {
+  border-left-color: var(--jl-tool-fg);
+}
+.card.model {
+  border-left-color: var(--jl-model-fg);
+  background: var(--jl-model-bg);
+  border-color: var(--jl-model-border);
+}
+.card.authorize {
+  border-left-color: var(--jl-authorize-fg);
+  background: var(--jl-authorize-bg);
+  border-color: var(--jl-authorize-border);
+}
+.card.audit {
+  border-left-color: var(--jl-audit-fg);
+}
+.card.end {
+  border-left-color: var(--jl-label-caption);
+}
+.card.error {
+  border-left-color: var(--jl-danger-fg);
+  background: var(--jl-danger-bg);
+  border-color: var(--jl-danger-border);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.card-id {
+  font-family: var(--jl-font-mono);
+  font-size: var(--jl-font-size-mono);
+  font-weight: 550;
+}
+.card-lat {
+  margin-left: auto;
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-label-caption);
+}
+.card-reason {
+  margin-top: 5px;
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-label-secondary);
+}
+
+/* 徽标 —— 颜色同样来自语义别名 */
+.badge {
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.badge.kind-decide {
+  background: var(--jl-decide-bg);
+  color: var(--jl-decide-fg);
+  border-color: var(--jl-decide-border);
+}
+.badge.kind-tool {
+  background: var(--jl-tool-bg);
+  color: var(--jl-tool-fg);
+  border-color: var(--jl-tool-border);
+}
+.badge.kind-model {
+  background: var(--jl-model-bg);
+  color: var(--jl-model-fg);
+  border-color: var(--jl-model-border);
+}
+.badge.action {
+  background: var(--jl-bg-layer-3);
+  color: var(--jl-label-secondary);
+  border-color: var(--jl-border-l2);
+}
+.badge.action.danger {
+  background: var(--jl-danger-bg);
+  color: var(--jl-danger-fg);
+  border-color: var(--jl-danger-border);
+}
+.badge.action.warn {
+  background: var(--jl-authorize-bg);
+  color: var(--jl-authorize-fg);
+  border-color: var(--jl-authorize-border);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   问题与选项
+   ═══════════════════════════════════════════════════════════ */
+
+.qa {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--jl-border-l1);
+}
+.q-instruction {
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-label-secondary);
+  margin-bottom: 6px;
+}
+.q-id {
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-label-caption);
+  margin-right: 6px;
+}
+
+/* 概率条。选中的那条加粗并染成判定色 ——
+   「模型有多确定」是这一页最重要的信息，必须一眼可读。 */
+.opt {
+  display: grid;
+  grid-template-columns: minmax(58px, 120px) 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--jl-font-size-caption);
+  padding: 1.5px 0;
+}
+.opt-name {
+  font-family: var(--jl-font-mono);
+  color: var(--jl-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opt-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--jl-bg-layer-3);
+  overflow: hidden;
+}
+.opt-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--jl-label-caption);
+}
+.opt-pct {
+  font-family: var(--jl-font-mono);
+  color: var(--jl-label-caption);
+  text-align: right;
+}
+.opt.picked .opt-name {
+  color: var(--jl-decide-fg);
+  font-weight: 600;
+}
+.opt.picked .opt-fill {
+  background: var(--jl-decide-fg);
+}
+.opt.picked .opt-pct {
+  color: var(--jl-decide-fg);
+}
+
+/* noul 的两端 */
+.noul-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+.noul-true {
+  background: var(--jl-decide-fg);
+}
+.noul-false {
+  background: var(--jl-bg-layer-3);
+}
+.noul-legend {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--jl-font-mono);
+  font-size: 10.5px;
+  color: var(--jl-label-caption);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   折叠的原始数据
+   ═══════════════════════════════════════════════════════════ */
+
+details.raw {
+  margin-top: 8px;
+}
+details.raw > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--jl-label-caption);
+  user-select: none;
+}
+details.raw > summary:hover {
+  color: var(--jl-label-secondary);
+}
+details.raw pre {
+  margin: 7px 0 0;
+  padding: 9px 11px;
+  background: var(--jl-bg-base);
+  border: 1px solid var(--jl-border-l1);
+  border-radius: var(--jl-radius-sm);
+  font-family: var(--jl-font-mono);
+  font-size: 11.5px;
+  color: var(--jl-label-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.io {
+  font-family: var(--jl-font-mono);
+  font-size: 11.5px;
+  color: var(--jl-label-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   右栏记账
+   ═══════════════════════════════════════════════════════════ */
+
+.metric {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--jl-border-l1);
+}
+.metric:last-child {
+  border-bottom: none;
+}
+.metric-k {
+  font-size: 11px;
+  color: var(--jl-label-caption);
+}
+.metric-v {
+  font-family: var(--jl-font-mono);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.metric-v.decide {
+  color: var(--jl-decide-fg);
+}
+.metric-v.model {
+  color: var(--jl-model-fg);
+}
+
+.ratio {
+  margin-top: 14px;
+  padding: 13px;
+  border-radius: var(--jl-radius);
+  background: var(--jl-bg-layer-2);
+  text-align: center;
+}
+.ratio-v {
+  font-family: var(--jl-font-mono);
+  font-size: 26px;
+  font-weight: 650;
+  color: var(--jl-decide-fg);
+  line-height: 1.2;
+}
+.ratio-k {
+  font-size: 11px;
+  color: var(--jl-label-caption);
+  margin-top: 3px;
+}
+
+.empty {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--jl-label-caption);
+  font-size: var(--jl-font-size-caption);
+}
+
+.answer {
+  margin-top: 18px;
+  padding: 13px 15px;
+  border: 1px solid var(--jl-border-l2);
+  border-radius: var(--jl-radius);
+  background: var(--jl-bg-layer-1);
+  white-space: pre-wrap;
+  font-size: 13px;
+}

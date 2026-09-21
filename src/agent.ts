@@ -28,6 +28,9 @@ import { Decider } from './decide.ts'
 import { Meter } from './meter.ts'
 import { needsTool, pickTool, gradeRisk, stepOk, isDone, canDeliver, type AgentCtx, type StepRecord } from './decisions.ts'
 import { callTool } from './tools.ts'
+import { decisionEvent, type AgentObserver } from './events.ts'
+export type { AgentEvent, AgentObserver } from './events.ts'
+import type { DecisionResult } from './types.ts'
 import type { Generator } from './llm.ts'
 
 export interface AgentOptions {
@@ -39,6 +42,13 @@ export interface AgentOptions {
   /** 判定节点要求显式授权时调用。**默认拒绝** —— 宁可不动，也不擅自做不可逆操作 */
   onAskHuman?: (reason: string, tool: string) => Promise<boolean>
   onTrace?: (line: string) => void
+  /**
+   * 观察者。每次判定、每次工具调用、每次生成都会发一个事件。
+   *
+   * 和 `onTrace` 的分工：`onTrace` 是给人读的一行字，`onEvent` 是**结构化的**，
+   * 给界面、测试、日志消费。两者可以同时用。
+   */
+  onEvent?: AgentObserver
 }
 
 export interface AgentResult {
@@ -60,9 +70,24 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
 
+  const emit: AgentObserver = opts.onEvent ?? (() => {})
+
   const ctx: AgentCtx = { task: opts.task, cwd: opts.cwd, files: [], history: [] }
   let step = 0
   let halt = 'max_steps'
+
+  emit({ type: 'run:start', task: opts.task, cwd: opts.cwd, at: Date.now() })
+
+  /**
+   * 记一笔判定并发事件。
+   *
+   * loop 里每个 `decider.decide` 的返回值都过这个函数 —— 漏一处，
+   * 界面上就少一个决策点，而那种缺失不会报错，只会静默地少一块。
+   */
+  const record = <A,>(d: DecisionResult<A>): DecisionResult<A> => {
+    emit(decisionEvent(step, d as DecisionResult<unknown>))
+    return d
+  }
 
   // ── 工具循环 ──────────────────────────────────────────────
   while (step < maxSteps) {
@@ -70,7 +95,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     decider.setStep(step)
 
     // ↗ 需要动手吗
-    const need = await decider.decide(needsTool, ctx)
+    const need = record(await decider.decide(needsTool, ctx))
     if (need.action === 'answer') {
       halt = 'answered_directly'
       trace(`  直接回答（不需要工具）`)
@@ -78,7 +103,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 用哪个工具（候选每步重建）
-    const pick = await decider.decide(pickTool, ctx)
+    const pick = record(await decider.decide(pickTool, ctx))
     if (pick.escalate || pick.action !== 'call') {
       halt = 'tool_unclear'
       trace(`  工具选择不确定 → 停下（${pick.reason}）`)
@@ -99,9 +124,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // ↗ 这个操作多危险
-    const risk = await decider.decide(gradeRisk, ctx)
+    const risk = record(await decider.decide(gradeRisk, ctx))
     if (risk.escalate || risk.action === 'ask_human') {
       const approved = opts.onAskHuman ? await opts.onAskHuman(risk.reason, tool) : false
+      emit({ type: 'authorize', step, tool, reason: risk.reason, approved })
       trace(`  ⚠ 需要授权：${tool}（${risk.reason}）→ ${approved ? '已批准' : '已拒绝'}`)
       if (!approved) {
         halt = 'denied'
@@ -119,12 +145,16 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
           reason: risk.reason,
           risk: risk.answers.risk.score,
         })
+        emit({ type: 'audit', step, record: meter.audit[meter.audit.length - 1]! })
         trace(`  审计留痕 #${meter.audit.length}：${tool} risk=${risk.answers.risk.score}`)
       }
     }
 
     // ── 唯一有真实副作用的地方 ──
+    emit({ type: 'tool:call', step, tool, input })
+    const toolT0 = Date.now()
     const result = await callTool(tool, input, ctx.cwd)
+    emit({ type: 'tool:result', step, tool, output: result, ms: Date.now() - toolT0 })
     pending.result = result
     ctx.lastResult = result
 
@@ -134,7 +164,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 成功了吗
-    const ok = await decider.decide(stepOk, ctx)
+    const ok = record(await decider.decide(stepOk, ctx))
     if (ok.action !== 'continue') {
       halt = 'step_failed'
       trace(`  这一步没有成功 → 停下（${ok.reason}）`)
@@ -142,7 +172,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 做完了吗
-    const done = await decider.decide(isDone, ctx)
+    const done = record(await decider.decide(isDone, ctx))
     if (done.action === 'finish') {
       halt = 'task_done'
       break
@@ -161,10 +191,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     inputTokens: gen.inputTokens,
     outputTokens: gen.outputTokens,
   })
+  emit({
+    type: 'generate',
+    step: genStep,
+    kind: `generate (${generator.name})`,
+    latencyMs: gen.latencyMs,
+    tokens: gen.inputTokens + gen.outputTokens,
+  })
   ctx.draft = gen.text
 
   // ↗ 能交付吗
-  let deliver = await decider.decide(canDeliver, ctx)
+  let deliver = record(await decider.decide(canDeliver, ctx))
 
   // `revise` 承诺了「修订」，那修订就必须真的发生 ——
   // 以前它只是被拼进 halt 字符串，草稿原样返回。
@@ -184,6 +221,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       inputTokens: retry.inputTokens,
       outputTokens: retry.outputTokens,
     })
+    emit({
+      type: 'generate',
+      step: genStep,
+      kind: `generate/revise (${generator.name})`,
+      latencyMs: retry.latencyMs,
+      tokens: retry.inputTokens + retry.outputTokens,
+    })
     ctx.draft = retry.text
     deliver = await decider.decide(canDeliver, ctx)
   }
@@ -192,6 +236,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     halt = `${halt}+${deliver.action}`
   }
 
+  emit({ type: 'run:end', halt, steps: step, answer: ctx.draft, stats: meter.stats })
   return { answer: ctx.draft, halt, steps: step, ctx, meter }
 }
 

@@ -1,0 +1,210 @@
+/**
+ * JevLoop · 设计 token
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  两层结构（学自 DeepSeek Harness 的 design-platform.css）：
+ *
+ *    第一层  静态调色板   --jl-static-<色系>-<档位>
+ *    第二层  语义别名     --jl-<用途>-<角色>
+ *
+ *  组件**只用第二层**。这样换主题是换第一层的映射，不用碰任何组件；
+ *  而第二层的名字说明的是用途（decide / tool / model），不是颜色 ——
+ *  写 `color: var(--jl-model-fg)` 的人不需要知道模型是橙色。
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 本项目的语义分四类，对应三分法 + 两种特殊路径：
+ *
+ *   decide     判定       蓝    每次前向，便宜，界面上的主体
+ *   tool       工具执行   绿    唯一有真实副作用的地方
+ *   model      模型生成   橙    **整个 loop 里唯一贵的**，视觉上必须跳出来
+ *   rule       精确规则   灰    代码做的决定，不花判定也不花模型
+ *   authorize  授权       黄    停下来等人
+ *   audit      审计       紫    承诺了留痕就必须看得见
+ */
+
+/* ═══════════════════════════════════════════════════════════
+   第一层 · 静态调色板
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  --jl-static-neutral-00: #ffffff;
+  --jl-static-neutral-50: #fafafa;
+  --jl-static-neutral-75: #f1f3f5;
+  --jl-static-neutral-100: #ebeef2;
+  --jl-static-neutral-200: #e1e5ee;
+  --jl-static-neutral-300: #cfd3d6;
+  --jl-static-neutral-400: #adb2b8;
+  --jl-static-neutral-500: #979da6;
+  --jl-static-neutral-600: #81858c;
+  --jl-static-neutral-700: #61666b;
+  --jl-static-neutral-800: #353638;
+  --jl-static-neutral-850: #2c2c2e;
+  --jl-static-neutral-875: #232324;
+  --jl-static-neutral-900: #1b1b1c;
+  --jl-static-neutral-950: #151517;
+  --jl-static-neutral-1000: #0f1115;
+
+  --jl-static-blue-50: #eff6ff;
+  --jl-static-blue-100: #dbeafe;
+  --jl-static-blue-400: #60a5fa;
+  --jl-static-blue-450: #4d93f8;
+  --jl-static-blue-500: #3b82f6;
+  --jl-static-blue-600: #2563eb;
+  --jl-static-blue-800: #1e40af;
+  --jl-static-blue-900: #0e3074;
+
+  --jl-static-green-100: #e6faed;
+  --jl-static-green-400: #4ed17e;
+  --jl-static-green-500: #22c55e;
+  --jl-static-green-900: #233c2c;
+
+  --jl-static-amber-100: #fef5e7;
+  --jl-static-amber-400: #f7ad31;
+  --jl-static-amber-500: #f59e0b;
+  --jl-static-amber-600: #dd8629;
+  --jl-static-amber-900: #27241f;
+
+  --jl-static-red-100: #fee2e2;
+  --jl-static-red-400: #f25a5a;
+  --jl-static-red-500: #ef4444;
+  --jl-static-red-900: #570c0c;
+
+  --jl-static-violet-100: #ede9fe;
+  --jl-static-violet-400: #a78bfa;
+  --jl-static-violet-500: #8b5cf6;
+  --jl-static-violet-900: #2e1065;
+}
+
+body[data-jl-dark] {
+  --jl-static-neutral-00: #0f1115;
+  --jl-static-neutral-50: #151517;
+  --jl-static-neutral-75: #1b1b1c;
+  --jl-static-neutral-100: #232324;
+  --jl-static-neutral-200: #2c2c2e;
+  --jl-static-neutral-300: #353638;
+  --jl-static-neutral-400: #61666b;
+  --jl-static-neutral-500: #81858c;
+  --jl-static-neutral-600: #979da6;
+  --jl-static-neutral-700: #adb2b8;
+  --jl-static-neutral-800: #cfd3d6;
+  --jl-static-neutral-850: #cfd3d6;
+  --jl-static-neutral-875: #e1e5ee;
+  --jl-static-neutral-900: #ebeef2;
+  --jl-static-neutral-950: #f1f3f5;
+  --jl-static-neutral-1000: #ffffff;
+
+  --jl-static-blue-50: #12203a;
+  --jl-static-blue-100: #16294a;
+  --jl-static-blue-400: #60a5fa;
+  --jl-static-blue-450: #4d93f8;
+  --jl-static-blue-500: #4d93f8;
+  --jl-static-blue-600: #2563eb;
+  --jl-static-blue-800: #93c5fd;
+  --jl-static-blue-900: #dbeafe;
+
+  --jl-static-green-100: #122c1f;
+  --jl-static-green-400: #4ed17e;
+  --jl-static-green-500: #22c55e;
+  --jl-static-green-900: #e6faed;
+
+  --jl-static-amber-100: #33240d;
+  --jl-static-amber-400: #f7ad31;
+  --jl-static-amber-500: #f59e0b;
+  --jl-static-amber-600: #f7ad31;
+  --jl-static-amber-900: #fef5e7;
+
+  --jl-static-red-100: #351a18;
+  --jl-static-red-400: #f25a5a;
+  --jl-static-red-500: #ef4444;
+  --jl-static-red-900: #fee2e2;
+
+  --jl-static-violet-100: #241a45;
+  --jl-static-violet-400: #a78bfa;
+  --jl-static-violet-500: #8b5cf6;
+  --jl-static-violet-900: #ede9fe;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   第二层 · 语义别名
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  /* 表面 */
+  --jl-bg-base: var(--jl-static-neutral-00);
+  --jl-bg-layer-1: var(--jl-static-neutral-50);
+  --jl-bg-layer-2: var(--jl-static-neutral-75);
+  --jl-bg-layer-3: var(--jl-static-neutral-100);
+  --jl-bg-skeleton: rgba(0, 0, 0, 0.04);
+
+  /* 描边 —— l1 最淡，l4 最重 */
+  --jl-border-l1: rgba(0, 0, 0, 0.06);
+  --jl-border-l2: rgba(0, 0, 0, 0.1);
+  --jl-border-l3: rgba(0, 0, 0, 0.16);
+  --jl-border-l4: rgba(0, 0, 0, 0.24);
+
+  /* 文字 */
+  --jl-label-primary: var(--jl-static-neutral-1000);
+  --jl-label-secondary: var(--jl-static-neutral-700);
+  --jl-label-tertiary: var(--jl-static-neutral-600);
+  --jl-label-caption: var(--jl-static-neutral-400);
+  --jl-label-inverted: var(--jl-static-neutral-00);
+
+  /* 交互 */
+  --jl-interactive-hover: rgba(38, 49, 72, 0.06);
+  --jl-interactive-active: rgba(38, 49, 72, 0.1);
+
+  /* ── 领域语义：每个语义三条线（fg / bg / border） ──
+     组件只写 `--jl-decide-fg`，不写 `blue`。 */
+  --jl-decide-fg: var(--jl-static-blue-600);
+  --jl-decide-bg: var(--jl-static-blue-50);
+  --jl-decide-border: var(--jl-static-blue-100);
+
+  --jl-tool-fg: var(--jl-static-green-900);
+  --jl-tool-bg: var(--jl-static-green-100);
+  --jl-tool-border: var(--jl-static-green-400);
+
+  --jl-model-fg: var(--jl-static-amber-900);
+  --jl-model-bg: var(--jl-static-amber-100);
+  --jl-model-border: var(--jl-static-amber-400);
+
+  --jl-rule-fg: var(--jl-static-neutral-700);
+  --jl-rule-bg: var(--jl-static-neutral-75);
+  --jl-rule-border: var(--jl-static-neutral-300);
+
+  --jl-authorize-fg: var(--jl-static-amber-900);
+  --jl-authorize-bg: var(--jl-static-amber-100);
+  --jl-authorize-border: var(--jl-static-amber-500);
+
+  --jl-audit-fg: var(--jl-static-violet-900);
+  --jl-audit-bg: var(--jl-static-violet-100);
+  --jl-audit-border: var(--jl-static-violet-400);
+
+  --jl-danger-fg: var(--jl-static-red-900);
+  --jl-danger-bg: var(--jl-static-red-100);
+  --jl-danger-border: var(--jl-static-red-400);
+
+  /* 字体 */
+  --jl-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --jl-font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --jl-font-size: 14px;
+  --jl-font-size-caption: 12px;
+  --jl-font-size-mono: 12.5px;
+
+  /* 尺度 */
+  --jl-radius-sm: 6px;
+  --jl-radius: 10px;
+  --jl-gap: 12px;
+  --jl-pad: 16px;
+
+  /* 动效。DSH 的做法：只给「状态切换」用动效，
+     拖拽/高频更新的属性一律不做过渡，否则会跟手不上。 */
+  --jl-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --jl-duration: 160ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --jl-duration: 0ms;
+  }
+}

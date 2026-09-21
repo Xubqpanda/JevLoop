@@ -48,6 +48,11 @@ export type { MeterStats, DecisionRecord, ModelCallRecord } from './meter.ts'
 // ── agent ────────────────────────────────────────────────────
 export { runAgent } from './agent.ts'
 export type { AgentOptions, AgentResult } from './agent.ts'
+
+// ── 事件缝 ───────────────────────────────────────────────────
+// loop 把「发生了什么」发成事件，界面 / 测试 / 日志都接在这里。
+export { decisionEvent, fanOut } from './events.ts'
+export type { AgentEvent, AgentObserver } from './events.ts'
 export { TOOLS, callTool, toolNames } from './tools.ts'
 export type { Tool } from './tools.ts'
 export { ScriptedGenerator, HttpGenerator } from './llm.ts'
