@@ -19,7 +19,25 @@ export interface DecisionRecord {
   id: string
   action: string
   reason: string
+  /**
+   * 这次判定的耗时。
+   *
+   * ⚠️ **合并的判定共用同一次请求，所以它们记的是同一个数。**
+   *   两个节点合起来问一次，两边都写 730ms —— 而墙钟只过去了 730ms，
+   *   不是 1460ms。所以**求和会高估**，聚合要看 {@link DecisionRecord.batch}。
+   *   单看一条记录（轨迹里那句「385.9ms each」）它是对的。
+   */
   latencyMs: number
+  /**
+   * 同一次请求里一起判定的那些节点共用一个编号。
+   *
+   * ★ 为什么需要它：`askMany` 把独立的判定合并成**一次前向**（那正是这个
+   *   项目省时间的地方），而记账曾经把它们各自的 `latencyMs` **加起来** ——
+   *   于是「判定占墙钟的百分之多少」被高估了，合并几路就多算几倍。
+   *   实测（2026-09-21）：一条 `list` 任务里 `decisionMs` 合计 3.31s，
+   *   而整轮墙钟只有 3.29s —— 账比总量还大，这就是它露出来的样子。
+   */
+  batch: number
   provider: string
   degraded: boolean
   escalate: boolean

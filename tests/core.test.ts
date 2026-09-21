@@ -83,6 +83,34 @@ test('谓词帮手都对', () => {
 const fakeDecision = (latencyMs: number, escalate = false) =>
   ({ id: 'x', step: 1, state: {}, questions: {}, answers: {}, action: 'a', reason: '', latencyMs, provider: 'p', degraded: false, escalate }) as never
 
+test('★ 合并的判定只按**一次请求**计时 —— 账不能比墙钟还大', () => {
+  // `askMany` 把独立的判定合并成一次前向：两个节点共用 400ms。
+  // 两条记录各写 400ms，**按记录求和会算成 800ms** —— 而墙钟只过去了 400ms。
+  //
+  // 实测露出来的样子（2026-09-21）：一条 `list` 任务合计出
+  // `decisionMs` 3.31s，而整轮墙钟只有 3.29s。**账比总量还大**，
+  // 而它一路影响的是「判定占墙钟多少」这个招牌数字。
+  const m = new Meter()
+  const batch = m.nextBatch()
+  m.recordDecision(1, fakeDecision(400), batch)
+  m.recordDecision(1, fakeDecision(400), batch)
+
+  const s = m.stats
+  assert.equal(s.decisions, 2, '两个节点都要记下来')
+  assert.equal(s.decisionMs, 400, '耗时只算那一次请求')
+  // 两个口径分开：前者是「一次判定请求多久」（§8.11 引的就是它），
+  // 后者是「合并之后每个节点分摊多少」。混成一个会让文档里的引用失准。
+  assert.equal(s.avgDecisionMs, 400, '单条记录的平均 —— 一次请求的延迟')
+  assert.equal(s.decisionShare, 1, '这一次运行里全是判定')
+})
+
+test('不传 batch = 每次判定独占一次请求（默认行为不变）', () => {
+  const m = new Meter()
+  m.recordDecision(1, fakeDecision(10))
+  m.recordDecision(1, fakeDecision(20))
+  assert.equal(m.stats.decisionMs, 30)
+})
+
 test('meter 分开统计判定与模型调用', () => {
   const m = new Meter()
   m.recordDecision(1, fakeDecision(10))

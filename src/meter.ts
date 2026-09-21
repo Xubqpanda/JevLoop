@@ -35,13 +35,18 @@ export class Meter {
   /** 审计留痕。`auto_audit` 动作的落点 —— 见 AuditRecord 的说明 */
   readonly audit: AuditRecord[] = []
 
-  recordDecision(step: number, d: DecisionResult<unknown>): DecisionRecord {
+  /**
+   * @param batch 同一次请求里一起判定的节点共用一个编号（见 `DecisionRecord.batch`）。
+   *   不传 = 这次判定独占一次请求，自己一个编号。
+   */
+  recordDecision(step: number, d: DecisionResult<unknown>, batch?: number): DecisionRecord {
     const rec: DecisionRecord = {
       step,
       id: d.id,
       action: d.action,
       reason: d.reason,
       latencyMs: d.latencyMs,
+      batch: batch ?? ++this.#batchSeq,
       provider: d.provider,
       degraded: d.degraded,
       escalate: d.escalate,
@@ -64,16 +69,56 @@ export class Meter {
     return rec
   }
 
+  /** 判定批次的计数器。同一批共用一个号，见 `recordDecision` 的 `batch` */
+  #batchSeq = 0
+
+  /**
+   * 领一个新批次号。
+   *
+   * ★ **由 `Decider` 在一次请求开始前领，然后发给那一批的每个节点** ——
+   *   而不是让 `recordDecision` 自己数。因为「哪几条属于同一次请求」只有
+   *   发请求的那个地方知道；让记账去猜必然猜错，而猜错的表现是账目被放大。
+   */
+  nextBatch(): number {
+    return ++this.#batchSeq
+  }
+
   get stats(): MeterStats {
-    const decisionMs = this.decisions.reduce((a, d) => a + d.latencyMs, 0)
+    /*
+      ★ **按批次求和，不是按记录求和。**
+
+      `askMany` 把独立的判定合并成一次前向 —— 两个节点共用 730ms，而两条
+      记录各写 730ms。按记录求和等于把那 730ms 算两遍，于是
+      `decisionMs`（以及由它算的 `decisionShare`）**随合并的路数被放大**。
+      实测：一条 `list` 任务合计出 3.31s，而整轮墙钟只有 3.29s。
+
+      `avgDecisionMs` 仍然除以**记录数** —— 那是「平均每个节点花掉多少」，
+      合并之后每个节点分摊到的就是那次请求的时间，这个口径是对的。
+    */
+    const byBatch = new Map<number, number>()
+    for (const d of this.decisions) if (!byBatch.has(d.batch)) byBatch.set(d.batch, d.latencyMs)
+    const decisionMs = [...byBatch.values()].reduce((a, x) => a + x, 0)
+    /*
+      ⚠️ `avgDecisionMs` 走**单条记录**，不走 `decisionMs`。
+
+        两个口径回答两个问题：
+          `decisionMs / n`        → 合并之后每个节点**分摊**到多少
+          单条记录的 `latencyMs`  → **一次判定请求**要多久（§8.11 引的
+                                    「托管 Jev 约 390ms」就是这个）
+
+        改成前者的话，§8.11 那句话就没有出处了 —— 一个数换口径会让
+        文档里引它的地方全部失准，而失准是看不见的。
+    */
+    const avgDecisionMs = this.decisions.length
+      ? this.decisions.reduce((a, d) => a + d.latencyMs, 0) / this.decisions.length
+      : 0
     const modelMs = this.modelCalls.reduce((a, m) => a + m.latencyMs, 0)
-    const n = this.decisions.length || 1
     const total = decisionMs + modelMs
 
     return {
       decisions: this.decisions.length,
       decisionMs: round(decisionMs),
-      avgDecisionMs: round(decisionMs / n),
+      avgDecisionMs: round(avgDecisionMs),
       modelCalls: this.modelCalls.length,
       modelMs: round(modelMs),
       // ★ `null`，不是 `Infinity`。这个值要跨 JSON 出去，而

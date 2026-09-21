@@ -196,7 +196,9 @@ export class Decider {
       }
     }
 
-    // ⑤ 一次前向
+    // ⑤ 一次前向。`batch` 在这里分配：**从这里往下都是同一次请求**，
+    // 投影出来的每个节点都归这一批（记 accounts 按批求和，见 `Meter.stats`）
+    const batch = this.meter.nextBatch()
     let answers: AnswerSet = {}
     let latencyMs = 0
     let provider = this.provider.name
@@ -226,6 +228,8 @@ export class Decider {
       // 防线：后端整个不可用也不能让 loop 崩。
       // 记 degraded，然后交回上层 —— 不猜。
       const failedMs = performance.now() - t0
+      // 失败也是**同一批**：一次请求挂了，投影出来的每个节点都记这一份耗时
+      const batch = this.meter.nextBatch()
       return projected.map((p) => {
         const result: DecisionResult<AnswerSet> = {
           id: p.spec.id,
@@ -243,7 +247,7 @@ export class Decider {
           // 后者是**可枚举**的那一份。降级链上的每一跳都在里面。
           warnings: [`${provider} 不可用：${(err as Error).message}`],
         }
-        this.meter.recordDecision(step, result)
+        this.meter.recordDecision(step, result, batch)
         return result
       })
     }
@@ -285,8 +289,8 @@ export class Decider {
           : {}),
       }
 
-      // ⑦ 记账
-      this.meter.recordDecision(step, result)
+      // ⑦ 记账 —— 同一个 `batch`：这一批共用同一次请求，聚合时只算一次
+      this.meter.recordDecision(step, result, batch)
       return result
     })
   }
