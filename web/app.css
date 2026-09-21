@@ -422,26 +422,6 @@ body {
   padding: 16px calc(var(--jl-composer-side-clearance) + 16px);
 }
 
-/*
-  恢复出来的一轮：**只有正文，没有过程行**。
-  和实时那一轮长得不一样是刻意的 —— 当时的判定和工具调用没有落盘，
-  画一个「看起来完整」的壳会让少掉的那半截无从察觉。
-*/
-.msg-assistant.restored {
-  padding-left: 12px;
-  border-left: 2px solid var(--jl-alias-border-l3);
-}
-
-.restored-note {
-  margin-top: 4px;
-  padding: 6px 10px;
-  border-radius: var(--jl-radius-sm);
-  background: var(--jl-alias-bg-module-platform);
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--jl-alias-label-caption);
-}
-
 /* ── 选目录对话框 ─────────────────────────────────────────── */
 
 .picker-mask {

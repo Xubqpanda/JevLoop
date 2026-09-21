@@ -1124,6 +1124,18 @@ let lastStep = 0
 /** 本轮是否收到过 run:end。服务端正常收尾时关连接也会触发 onerror */
 let sawEnd = false
 
+/**
+ * 正在**重放**历史事件，不是实时。
+ *
+ * 重放走的是**同一个 `onEvent`**（见 `restoreConversation`）—— 另写一份
+ * 渲染必然会和实时那份分叉，而分叉的表现是「刷新前后的轨迹长得不一样」，
+ * 不会有任何东西报错。所以只把两处**实时专有**的东西关掉：
+ *
+ *   · 「正在… · 已等待 Ns」那一行 —— 历史没有「正在」
+ *   · `state.running` / 按钮禁用 —— 重放不是一次运行
+ */
+let replaying = false
+
 function onEvent(e) {
   if (current) current.events.push(e)
 
@@ -1143,9 +1155,11 @@ function onEvent(e) {
     //   其余事件（`decision` / `generate` / `tool:result`）都是**做完之后**
     //   才发的，拿它们猜就会在最长的那一步上错得最久 —— 实测生成那 2 秒
     //   显示的是「正在判定」，因为最后一条事件是 `isDone`。
-    if (e.type === 'phase') setPhase(phaseText(e), e.kind)
-    else if (e.type === 'tool:call') setPhase(`正在执行 ${e.tool}`, 'tool')
-    else touch()
+    if (!replaying) {
+      if (e.type === 'phase') setPhase(phaseText(e), e.kind)
+      else if (e.type === 'tool:call') setPhase(`正在执行 ${e.tool}`, 'tool')
+      else touch()
+    }
   }
 
   // 轨迹侧：账本加一行，时间轴加一条
@@ -1173,9 +1187,44 @@ function onEvent(e) {
   if (e.type === 'run:end') {
     renderEndStats(e)
     finishAssistant(e.answer, e.stats, e.halt)
-    state.running = false
-    $('run').disabled = false
+    if (!replaying) {
+      state.running = false
+      $('run').disabled = false
+    }
   }
+}
+
+/**
+ * 把轨迹侧清空，准备画一轮。
+ *
+ * 时间轴按**这一轮**的真实耗时排布，混进上一轮的条会让「橙色的那个最宽」
+ * 这个结论失真。实时和重放共用这一个函数 —— 两处各写一遍就会分叉，
+ * 而「刷新之后轨迹比例不一样」是没人会报错的那种错。
+ */
+function resetTrace() {
+  trajBody.replaceChildren()
+  spans.length = 0
+  clock = 0
+  rowsAdded = 0
+  selected = null
+  detailEvent = null
+  renderPlot()
+  // 计数也是「这一轮」的口径 —— 和上面那条理由一样
+  state.decisions = state.models = state.tools = state.rules = 0
+  lastStep = 0
+  updateTally()
+}
+
+/** 一轮**没有跑完**（没有 `run:end`）。说清楚，不要留一个「正在…」在那里转 */
+function abortedTurn() {
+  if (!current) return
+  current.finished = true
+  stopTicker()
+  current.el.removeChild(current.running)
+  current.answer.textContent = '（这一轮没有跑完）'
+  current.foot.className = 'msg-foot failed'
+  current.foot.replaceChildren(h('span', {}, '没有 run:end —— 这一轮中途断了，上面是它走到的位置'))
+  followTail()
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1185,24 +1234,13 @@ function onEvent(e) {
 function run(task) {
   if (state.running || !task) return
   state.running = true
-  state.decisions = state.models = state.tools = state.rules = 0
-  lastStep = 0
   sawEnd = false
-  updateTally()
 
   if (turns.length === 0) chat.replaceChildren()
   userTurn(task)
   current = { task, events: [], lastEventAt: Date.now(), waitingOn: '正在判定', ...assistantTurn() }
 
-  // 轨迹侧清空。时间轴按**这一轮**的真实耗时排布，混进上一轮的条
-  // 会让「橙色的那个最宽」这个结论失真
-  trajBody.replaceChildren()
-  spans.length = 0
-  clock = 0
-  rowsAdded = 0
-  selected = null
-  detailEvent = null
-  renderPlot()
+  resetTrace()
   turns.push(current)
 
   $('run').disabled = true
@@ -1792,12 +1830,17 @@ async function removeSession(id) {
 }
 
 /**
- * 把那一段对话读回来铺到屏幕上。
+ * 把那一段对话读回来铺到屏幕上 —— **连过程一起**。
  *
- * ★ **只有问答，没有过程。** 过程（判定、工具调用、生成）是**这次运行**
- *   的事件，从来没有落盘 —— `SessionStore` 存的就是问答。所以恢复出来
- *   的每一轮只有正文，而轨迹是空的。这一点要说出来，不能让一个「看起来
- *   完整、其实少了半截」的界面冒充完整（§8.10）。
+ * ★ 走的是**和实时同一个 `onEvent`**（`replaying` 那个开关就是为它加的）。
+ *   另写一份渲染的话，刷新前后的轨迹迟早长得不一样，而没有任何东西会报错。
+ *
+ * ★ 轨迹只画**最后一轮**：实时那边每开一轮都会 `resetTrace()`，因为时间轴
+ *   是按这一轮的真实耗时排的，混进上一轮会让「哪个最宽」这个结论失真。
+ *   聊天侧**每一轮的过程都在**（每轮有自己的过程列表）。
+ *
+ * 没有 `run:end` 的那一轮**照样显示**，并写明它没跑完 —— 崩掉的那次恰恰
+ * 最需要看它走到哪一步。
  */
 async function restoreConversation() {
   turns.length = 0
@@ -1807,30 +1850,34 @@ async function restoreConversation() {
   railEls = []
   syncTurnRail()
 
-  let restored = []
+  let runs = []
   try {
     const r = await api(`/api/session?id=${encodeURIComponent(sessionId)}`)
-    restored = r.turns ?? []
+    runs = r.runs ?? []
   } catch (err) {
     console.error('读会话失败', err)
   }
 
-  if (!restored.length) {
+  if (!runs.length) {
     chat.replaceChildren(h('div', { class: 'empty' }, '说点什么，它会边判定边做。'))
     return
   }
-  for (const t of restored) restoredTurn(t.task, t.answer)
-  chat.append(
-    h('div', { class: 'restored-note' }, `以上 ${restored.length} 轮是恢复出来的：只有问答，当时的过程没有落盘。`),
-  )
-  followTail()
-}
 
-/** 恢复出来的一轮。没有过程行，所以和实时那一轮长得不一样 —— 这是诚实的 */
-function restoredTurn(task, answer) {
-  chat.append(h('div', { class: 'msg-user' }, h('div', { class: 'bubble' }, task)))
-  chat.append(h('div', { class: 'msg-assistant restored' }, h('div', { class: 'answer' }, answer)))
-  turns.push({ task, answer })
+  replaying = true
+  try {
+    for (const [i, r] of runs.entries()) {
+      if (i === runs.length - 1) resetTrace()
+      userTurn(r.task)
+      current = { task: r.task, events: [], lastEventAt: Date.now(), ...assistantTurn() }
+      turns.push(current)
+      for (const e of r.events) onEvent(e)
+      if (r.answer === undefined) abortedTurn()
+    }
+  } finally {
+    replaying = false
+  }
+  current = null
+  followTail()
 }
 
 $('sess-new').addEventListener('click', () => void startFreshSession())

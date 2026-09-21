@@ -39,6 +39,7 @@ import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc
 import { compilePredicate } from './src/decision-compile.ts'
 import type { AgentEvent } from './src/events.ts'
 import { SessionStore, assertSessionId } from './src/session-store.ts'
+import { migrateLegacyLayout } from './src/session-migrate.ts'
 import { createDir, listDirs } from './src/dir-browse.ts'
 import { WorkspaceStore } from './src/workspace.ts'
 import { WorkspaceError, type WorkspaceErrorCode } from './src/vocab-workspace.ts'
@@ -107,7 +108,8 @@ const MAX_TURNS = 12
  * 所以改成看得见、删得掉（界面上有列表，`DELETE /api/sessions?id=`）。
  */
 const JEVLOOP_HOME = process.env.JEVLOOP_HOME ?? join(homedir(), '.jevloop')
-const store = new SessionStore(join(JEVLOOP_HOME, 'sessions'))
+const SESSIONS_DIR = join(JEVLOOP_HOME, 'sessions')
+const store = new SessionStore(SESSIONS_DIR)
 const workspaces = new WorkspaceStore(join(JEVLOOP_HOME, 'workspaces.json'))
 
 /**
@@ -362,25 +364,33 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   // 建在 try 外面：异常路径要报出**真实的**部分统计
   const meter = new Meter()
   /**
-   * `run:end` 到了才会有 `answer` —— 它是「这一轮算数」的唯一信号。
-   *
-   * ★ 装在一个对象里而不是 `let finished: X | null`：TS 的控制流分析
-   *   看不见回调里的赋值，把 `finished` 一路收窄成 `null`，于是
-   *   `if (finished)` 之后的类型是 `never`。属性访问不受这个收窄影响。
+   * 事件写盘的串行链。**顺序是这条链存在的全部理由** —— 并发 append
+   * 会让事件互相插队，而轨迹是按时序读的。
    */
-  const done: { answer?: string } = {}
+  let writes: Promise<void> = Promise.resolve()
 
   try {
     const provider = resolveProvider()
     const generator = resolveGenerator()
 
-    // 会话就是上文。**在 runAgent 之前读** —— 这一轮自己的问答
-    // 要等跑完才写进去（见下面那段），不该混进它自己的上文。
+    // 会话就是上文。**在 runAgent 之前读** —— 这一轮自己的事件要边跑边写，
+    // 不该混进它自己的上文。
     //
     // ★ 只取最近 `MAX_TURNS` 轮，但**盘上一条都不少**：截断发生在读的这一侧，
     //   不在写入那一侧。以前是 `turns.splice(0, ...)`，也就是把旧对话**销毁**，
     //   而且没有任何地方记着丢过东西 —— 翻不回三天前那个会话里它答了什么。
-    const history = await store.load(session, MAX_TURNS)
+    //
+    // ★ 这一轮自己的序号 = 盘上已有几轮。**读一次就够**（下面 `load` 不再调），
+    //   而且必须在写任何事件**之前**定下来 —— 边写边数会把自己数进去。
+    const existing = await store.load(session)
+    const runIndex = existing.length
+    // 上文只要问答。**没跑完的那些轮不进上文** —— 它们没有回答，
+    // 喂一句「问过但没答」给生成器只会让它困惑；但它们**留在盘上**，
+    // 轨迹里照样看得见（见 `StoredRun.answer` 的注释）
+    const history = existing
+      .slice(-MAX_TURNS)
+      .filter((r) => r.answer !== undefined)
+      .map((r) => ({ task: r.task, answer: r.answer! }))
     await runAgent({
       task,
       cwd,
@@ -407,17 +417,32 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       onAskHuman: async () => true,
       onEvent: (e) => {
         if (!clientGone) send(e)
-        // **不在这里写盘** —— `onEvent` 是同步的，而落盘是异步的。
-        // 先记下完成信号，等 `runAgent` 返回之后再写（见下面）。
-        if (e.type === 'run:end') done.answer = e.answer
+        /*
+          ★ **边跑边写盘**，不是等跑完再写。
+
+          两个理由：
+
+          1. **崩掉的那次最需要看它走到哪一步。** 生成后端抛异常时永远不会有
+             `run:end`；等它才写的话，那次运行的轨迹（判定到哪、选了哪个工具）
+             全部消失 —— 而排查问题恰恰只看得到那一刻。
+          2. 日志**只追加**，所以半轮也是一条合法的记录。读的人从「没有
+             `run:end`」就知道它没跑完。
+
+          `onEvent` 是同步的而落盘是异步的，所以用一条链串起来 ——
+          **不串的话并发 append 会互相插队**，而事件顺序是这个文件的全部意义。
+          链上出错只记日志：写盘失败不该把正在跑的 agent 带停。
+        */
+        writes = writes
+          .then(() => store.append(session, runIndex, e, { cwd }))
+          .catch((err: unknown) => {
+            console.error(`  ⚠ 会话事件写盘失败（这一轮仍会跑完）：${(err as Error).message}`)
+          })
       },
     })
 
-    // 只记真正跑完的那一轮。`run:end` 是唯一的完成信号 —— 中途断开、
-    // 或者生成后端抛异常时都没有它，那样这一轮不算数，免得存进一个空回答。
-    if (done.answer !== undefined) {
-      await store.append(session, { task, answer: done.answer, at: Date.now() }, { cwd })
-    }
+    // 把这一轮的事件写完再回响应 —— 不 await 的话，客户端收到 `run:end`
+    // 立刻刷新会读到一条还没写完的日志
+    await writes
   } catch (err) {
     if (!clientGone) {
       send({
@@ -534,10 +559,13 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, url: URL
   const id = resolveSessionId(url.searchParams.get('id'))
   if (req.method === 'POST') {
     await store.remove(id)
-    sendJson(res, 200, { turns: [], memory: MEMORY_WIRED })
+    sendJson(res, 200, { runs: [], memory: MEMORY_WIRED })
     return
   }
-  sendJson(res, 200, { turns: await store.load(id), memory: MEMORY_WIRED })
+  // ★ 返回的是**轮次**（含事件），不是问答 —— 界面据此把轨迹重建出来。
+  //   一次运行约 22KB，所以这个响应比原来大得多，但它换回来的正是这个
+  //   项目要展示的东西
+  sendJson(res, 200, { runs: await store.load(id), memory: MEMORY_WIRED })
 }
 
 /**
@@ -774,6 +802,13 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   throw err
 })
 
+/*
+  把 v1 布局的会话搬进 v2（按 cwd 分项目）。**启动时做一次**，不放在 store
+  里 —— 那是部署的事，不是每次读写的事（见 `session-migrate.ts` 的文件头）。
+  幂等，搬不动的留在原地。
+*/
+await migrateLegacyLayout(SESSIONS_DIR)
+
 server.listen(PORT, HOST, async () => {
   const dir = await workspaceRoot()
 
@@ -800,13 +835,15 @@ server.listen(PORT, HOST, async () => {
 
   const count = (await workspaces.list().catch(() => [])).length
   console.log(`\n  JevLoop · http://${HOST}:${PORT}`)
-  console.log(`  判定后端 : ${resolveProvider().name}`)
-  console.log(`  生成后端 : ${resolveGenerator().name}`)
-  console.log(`  工作目录 : ${dir}${CWD_ROOT ? '' : '  （演示目录，已登记为工作区）'}`)
-  console.log(`  工作区   : ${count} 个   会话 ${JEVLOOP_HOME}/sessions/`)
+  console.log(`  decision   : ${resolveProvider().name}`)
+  console.log(`  generator  : ${resolveGenerator().name}`)
+  console.log(`  cwd        : ${dir}${CWD_ROOT ? '' : '  (temporary demo directory, registered as a workspace)'}`)
+  console.log(`  workspaces : ${count}   sessions ${JEVLOOP_HOME}/sessions/`)
   console.log(
-    `  监听地址 : ${HOST}` +
-      (HOST === '127.0.0.1' ? '  （仅本机）' : '  ⚠ 已暴露到网络 —— 本服务没有鉴权，任何人都能让它跑任务'),
+    `  host       : ${HOST}` +
+      (HOST === '127.0.0.1'
+        ? '  (loopback only)'
+        : '  ⚠ exposed to the network — this server has no auth, anyone can make it run tasks'),
   )
   console.log('')
 })

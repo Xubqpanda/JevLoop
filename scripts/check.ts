@@ -268,6 +268,12 @@ const LAYER: Record<string, number> = {
   // 它只认「一轮问答」这个形状，不认识 agent、不认识判定 —— 所以放在
   // 接缝那一层，和 `llm` / `tools` 同级。
   'session-store': 2,
+  // `session-path` 是纯字符串函数（编码、布局），`session-log` 是纯编解码
+  // （一行 JSON ↔ 轮次）。都零 IO —— 同 context-prune 的先例
+  'session-path': 0,
+  'session-log': 0,
+  // 一次性迁移，有 IO
+  'session-migrate': 2,
   // 工作区那两块：选目录（浏览）和登记表。都有 IO，都不认识 agent。
   // 「选一个目录」和「记住选过哪些」是两件事，各约 100 行代码，所以拆开；
   // 共用的失败词表下沉到 L0（`vocab-workspace.ts`），因为 §11 不许同层互相依赖。
