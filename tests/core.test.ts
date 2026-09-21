@@ -785,3 +785,92 @@ test('★ stepOk 的问题与判据都在说「这次调用」，不是「这个
   assert.match(q.instructions, /this tool call/i, '要明说判的是这次调用')
   assert.match(q.instructions, /decided elsewhere/i, '要明说任务完成度在别处判')
 })
+
+// ═══════════════════════════════════════════════════════════
+// phase 事件：界面显示「现在在干什么」的唯一依据
+//
+// ★ 起因是一个真 bug（2026-09-21，用户报的）：生成那 2 秒里界面显示的是
+//   「正在判定」。因为所有事件都是**做完之后**才发的（`decision` 带
+//   latencyMs、`generate` 带 token 数），界面只能拿「上一次干完的是什么」
+//   去猜，而这个猜法在最长的那一步上错得最久。
+// ═══════════════════════════════════════════════════════════
+
+test('★ 每个 decision / generate **之前**都有一条 phase —— 界面靠它显示当前阶段', async () => {
+  const { runAgent } = await import('../src/agent.ts')
+  const { Decider } = await import('../src/decide.ts')
+  const { Meter } = await import('../src/meter.ts')
+
+  const seq: string[] = []
+  const decider = new Decider({
+    meter: new Meter(),
+    provider: {
+      name: 'spy',
+      decide: async () => ({ answers: { needs_tool: { type: 'noul', noul: 0.1 } }, provider: 'spy', latencyMs: 0 }),
+    } as never,
+  })
+
+  await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider,
+    generator: {
+      name: 'capture',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }),
+    },
+    maxSteps: 1,
+    onEvent: (e) => {
+      seq.push(e.type === 'phase' ? `phase:${e.kind}` : e.type)
+    },
+  })
+
+  // 走一遍序列：每个 decision / generate 前面**紧邻**的必须是对应的 phase
+  const missing: string[] = []
+  for (const [i, x] of seq.entries()) {
+    if (x === 'decision' && seq[i - 1] !== 'phase:decide') missing.push(`第 ${i} 条 decision 前面是 ${seq[i - 1]}`)
+    if (x === 'generate' && seq[i - 1] !== 'phase:generate') missing.push(`第 ${i} 条 generate 前面是 ${seq[i - 1]}`)
+  }
+  assert.deepEqual(missing, [], '有操作没有先播报 phase —— 界面会在那一段显示上一个阶段的标签')
+
+  // 防呆：别因为一次判定都没发生而静默通过
+  assert.ok(seq.filter((x) => x === 'phase:decide').length >= 1, `一次判定都没发生：${seq.join(' → ')}`)
+  assert.ok(seq.includes('phase:generate'), `没有生成阶段：${seq.join(' → ')}`)
+})
+
+test('phase 事件带得上判定节点 id —— 排查「哪个判定慢」要看它', async () => {
+  const { runAgent } = await import('../src/agent.ts')
+  const { Decider } = await import('../src/decide.ts')
+  const { Meter } = await import('../src/meter.ts')
+
+  const ids: string[] = []
+  const decider = new Decider({
+    meter: new Meter(),
+    provider: {
+      name: 'spy',
+      decide: async () => ({ answers: { needs_tool: { type: 'noul', noul: 0.1 } }, provider: 'spy', latencyMs: 0 }),
+    } as never,
+  })
+  await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider,
+    generator: {
+      name: 'capture',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }),
+    },
+    maxSteps: 1,
+    onEvent: (e) => {
+      if (e.type === 'phase' && e.kind === 'decide') ids.push(e.id ?? '(没有 id)')
+    },
+  })
+  // ⚠️ 不要写成 `['loop.needsTool']` —— spy provider 对**每个**判定都返回
+  //    同一份答案，所以 `canDeliver` 也拿到 `needs_tool:0.1`，它的策略在缺
+  //    `deliverable` / `unsupported` 时走到 `revise`，于是**又一次生成 +
+  //    又一次 canDeliver**。实测序列是 needsTool → canDeliver → canDeliver。
+  //    （同一个坑今天绊了两次：修订那条路径让「一次运行有几次生成」比
+  //     直觉多一次。）
+  assert.equal(ids[0], 'loop.needsTool', '第一个判定是 needsTool')
+  assert.ok(
+    ids.every((id) => /^loop\.[a-zA-Z]+$/.test(id)),
+    `每个 phase 都要带真实的节点 id，实际拿到：${JSON.stringify(ids)}`,
+  )
+})

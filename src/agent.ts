@@ -34,7 +34,8 @@
  */
 
 import { Decider } from './decide.ts'
-import type { DecisionResult } from './vocab-decision.ts'
+import type { DecisionSpec, DecisionResult } from './vocab-decision.ts'
+import type { AnswerMap, QuestionSet } from './vocab.ts'
 import { Meter } from './meter.ts'
 import { clip } from './budget.ts'
 import {
@@ -102,6 +103,19 @@ export interface AgentOptions {
    */
   onEvent?: AgentObserver
 }
+
+/**
+ * 「问一次判定」的形状。
+ *
+ * 抽出来是为了让 `resolveInput` 也拿到**同一个**入口 —— 它原本收的是
+ * `decider` 和 `record` 两个参数，于是「播报 phase」这件事在那个函数里
+ * 根本做不到（它够不到 `runAgent` 的闭包）。只传一个 `ask` 之后，
+ * 「问判定」只有一种写法，漏掉播报是不可能的。
+ */
+type Ask = <C, Q extends QuestionSet>(
+  spec: DecisionSpec<C, Q>,
+  ctx: C,
+) => Promise<DecisionResult<AnswerMap<Q>>>
 
 export interface AgentResult {
   answer: string
@@ -247,13 +261,34 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     return d
   }
 
+  /**
+   * 问一次判定 —— **先播报「要问了」，再问**。
+   *
+   * ★ 两件事的顺序是重点，不是风格。`decision` 事件是**做完之后**才发的
+   *   （它带着 `latencyMs` 和答案），所以只靠它，观察者只能拿「上一次干完
+   *   的是什么」去猜「现在在干什么」—— 而它在**最长的那一步上错得最久**。
+   *
+   *   实测（2026-09-21，用户报的）：生成那 2 秒里界面显示「正在判定」，
+   *   因为最后一条事件是 `isDone`。`tool:call` 本来就在跑之前发，所以
+   *   工具段一直是对的；判定段和生成段缺「开始」，这里补上。
+   *
+   * 顺带把 `record` 收进来：每个判定点都必须过这一道，**漏一处界面就少
+   * 一个决策点**，而那种缺失不会报错（`record` 的注释也是这么写的）。
+   * 合成一个函数之后，「忘了发 phase」和「忘了记 decision」变成同一个
+   * 错误 —— 只有一种写法。
+   */
+  const ask: Ask = async (spec, c) => {
+    emit({ type: 'phase', step, kind: 'decide', id: spec.id })
+    return record(await decider.decide(spec, c))
+  }
+
   // ── 工具循环 ──────────────────────────────────────────────
   while (step < maxSteps) {
     step++
     decider.setStep(step)
 
     // ↗ 需要动手吗
-    const need = record(await decider.decide(needsTool, ctx))
+    const need = await ask(needsTool, ctx)
     if (need.action === 'answer') {
       halt = 'answered_directly'
       trace(`  answering directly (no tool needed)`)
@@ -261,7 +296,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 用哪个工具（候选每步重建）
-    const pick = record(await decider.decide(pickTool, ctx))
+    const pick = await ask(pickTool, ctx)
     if (pick.escalate || pick.action !== 'call') {
       halt = 'tool_unclear'
       trace(`  tool choice unclear → stopping (${pick.reason})`)
@@ -289,7 +324,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // 工具参数是一次**判定**，不是写死的代码（审计 N3）
-    const input = await resolveInput(tool, ctx, decider, record, opts.provideWriteContent)
+    const input = await resolveInput(tool, ctx, ask, opts.provideWriteContent)
     if (input === undefined) {
       halt = 'input_unclear'
       trace(`  could not choose an input for ${tool} → stopping`)
@@ -300,7 +335,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.history = [...(ctx.history ?? []), pending]
 
     // ↗ 这个操作多危险
-    const risk = record(await decider.decide(gradeRisk, ctx))
+    const risk = await ask(gradeRisk, ctx)
     if (risk.escalate || risk.action === 'ask_human') {
       const approved = opts.onAskHuman ? await opts.onAskHuman(risk.reason, tool) : false
       emit({ type: 'authorize', step, tool, reason: risk.reason, approved })
@@ -351,7 +386,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 成功了吗
-    const ok = record(await decider.decide(stepOk, ctx))
+    const ok = await ask(stepOk, ctx)
     if (ok.action !== 'continue') {
       halt = 'step_failed'
       trace(`  this step did not succeed → stopping (${ok.reason})`)
@@ -359,7 +394,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 做完了吗
-    const done = record(await decider.decide(isDone, ctx))
+    const done = await ask(isDone, ctx)
     if (done.action === 'finish') {
       halt = 'task_done'
       break
@@ -454,6 +489,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
   let genStep = step + 1
   decider.setStep(genStep)
+  emit({ type: 'phase', step: genStep, kind: 'generate' })
   const gen = await generator.generate({
     task: ctx.task,
     evidence: evidenceText,
@@ -484,7 +520,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   ctx.draft = gen.text
 
   // ↗ 能交付吗
-  let deliver = record(await decider.decide(canDeliver, ctx))
+  let deliver = await ask(canDeliver, ctx)
 
   // `revise` 承诺了「修订」，那修订就必须真的发生 ——
   // 以前它只是被拼进 halt 字符串，草稿原样返回。
@@ -493,6 +529,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     trace(`  the delivery gate asked for a revision (${deliver.reason}) → regenerating once with that feedback`)
     genStep += 1
     decider.setStep(genStep)
+    emit({ type: 'phase', step: genStep, kind: 'generate' })
     const retry = await generator.generate({
       task: ctx.task,
       // 同一份证据和同一份上文 —— 循环早就结束了，两者都没变过
@@ -517,7 +554,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       estimatedInputTokens: evidenceEstimate.controlTokens,
     })
     ctx.draft = retry.text
-    deliver = record(await decider.decide(canDeliver, ctx))
+    deliver = await ask(canDeliver, ctx)
   }
 
   if (deliver.action !== 'deliver') {
@@ -647,15 +684,14 @@ function noteForConversation(r: ConversationReport): string {
  *
  * @param tool 已经过 `isToolName` 校验的工具名
  * @param ctx 当前上下文，`pickInput` 的候选从这里构造
- * @param decider 判定器
+ * @param ask 问一次判定的唯一入口（见 `Ask`）—— 它负责播报 phase 和记 decision
  * @param writeContent `write_file` 的内容来源，见 `AgentOptions.provideWriteContent`
  * @returns 工具的输入字符串；无法确定时返回 `undefined`（调用方应停机，不要猜）
  */
 async function resolveInput(
   tool: ToolName,
   ctx: AgentCtx,
-  decider: Decider,
-  record: <A>(d: DecisionResult<A>) => DecisionResult<A>,
+  ask: Ask,
   writeContent?: AgentOptions['provideWriteContent'],
 ): Promise<string | undefined> {
   switch (tool) {
@@ -668,7 +704,7 @@ async function resolveInput(
     case 'write_file': {
       // 没有候选就**不要问** —— criteria 为空的 choice 是无效问题
       if (!hasFileOptions(ctx)) return undefined
-      const d = record(await decider.decide(pickInput, ctx))
+      const d = await ask(pickInput, ctx)
       if (d.escalate || d.action !== 'use') return undefined
       const file = d.answers.file.choice
       if (tool === 'read_file') return file

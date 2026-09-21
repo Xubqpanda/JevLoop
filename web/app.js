@@ -419,7 +419,18 @@ function processRow(e, dur) {
  * 没有这个，一次 37 秒的运行看起来和挂掉没有区别 —— 而它其实一直在跑，
  * 只是每次判定之间隔着几百毫秒的静默。
  */
-const STALL_AFTER_MS = 6000
+/**
+ * 「比平时久」的界线，**按阶段分开**。
+ *
+ * ★ 一个数管三段是错的：托管 Jev 一次判定约 **390ms**（§8.11），而一次
+ *   生成 **2 秒起、几十秒都正常**（生成器自己的超时是 60 秒）。用同一个
+ *   6 秒，既会把正常的生成报成「比平时久」，又对真卡住的判定太宽容。
+ *
+ * 数字的来源：判定 6 秒 ≈ 托管 Jev 的 15 倍；生成 30 秒 ≈ 实测常见的
+ * 10 倍，同时留在 60 秒超时之内 —— 超过它多半是真出问题了，但**还可能
+ * 正常返回**，所以文案是「比平时久」而不是「失败」。
+ */
+const STALL_AFTER_MS = { decide: 6000, tool: 6000, generate: 30000 }
 let ticker = null
 
 function startTicker() {
@@ -428,7 +439,7 @@ function startTicker() {
     if (!current || current.finished || current.stopped) return
     const waited = Date.now() - (current.lastEventAt ?? Date.now())
     const secs = (waited / 1000).toFixed(0)
-    const stalled = waited >= STALL_AFTER_MS
+    const stalled = waited >= (STALL_AFTER_MS[current.phaseKind] ?? 6000)
     current.running.className = `running-row${stalled ? ' stalled' : ''}`
     current.running.replaceChildren(
       h('span', { class: 'pulse' }),
@@ -444,14 +455,36 @@ function stopTicker() {
   }
 }
 
-function setWaiting(text) {
+/**
+ * 换「现在在干什么」，并把秒数从头数起。
+ *
+ * **只有「开始」信号该调它** —— `phase` 事件和 `tool:call`。其余事件都是
+ * 做完之后才发的，拿它们改标签就是原来那个 bug（生成期间显示「正在判定」）。
+ */
+function setPhase(text, kind) {
   if (!current) return
   current.waitingOn = text
+  current.phaseKind = kind
   current.lastEventAt = Date.now()
   if (!current.stopped) {
     current.running.className = 'running-row'
     current.running.replaceChildren(h('span', { class: 'pulse' }), `${text}  ·  已等待 0s`)
   }
+}
+
+/**
+ * 又来了一条事件 —— **只把秒数从头数起，不动标签**。
+ *
+ * 两件事分开是因为它们回答不同的问题：标签是「在做什么」（由开始信号决定），
+ * 秒数是「上一次有动静是多久以前」（任何事件都算）。
+ */
+function touch() {
+  if (current) current.lastEventAt = Date.now()
+}
+
+/** `phase` 事件 → 那句话。判定节点 id 不进去 —— 轨迹里有，这里加只会变吵 */
+function phaseText(e) {
+  return e.kind === 'generate' ? '正在生成回答' : '正在判定'
 }
 
 /**
@@ -1100,9 +1133,13 @@ function onEvent(e) {
       followTail()
       syncTurnRail()
     }
-    if (e.type === 'tool:call') setWaiting(`正在执行 ${e.tool}`)
-    else if (e.type === 'generate') setWaiting('正在生成回答')
-    else setWaiting('正在判定')
+    // ★ 「现在在干什么」**只由开始信号决定**：`phase` 和 `tool:call`。
+    //   其余事件（`decision` / `generate` / `tool:result`）都是**做完之后**
+    //   才发的，拿它们猜就会在最长的那一步上错得最久 —— 实测生成那 2 秒
+    //   显示的是「正在判定」，因为最后一条事件是 `isDone`。
+    if (e.type === 'phase') setPhase(phaseText(e), e.kind)
+    else if (e.type === 'tool:call') setPhase(`正在执行 ${e.tool}`, 'tool')
+    else touch()
   }
 
   // 轨迹侧：账本加一行，时间轴加一条
