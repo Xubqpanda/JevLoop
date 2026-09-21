@@ -385,6 +385,20 @@ export function fitEvidence(
 
   return {
     text,
-    report: { ...base, keptChars: Array.from(text).length, prunedCount, droppedCount, acted: prunedCount > 0, overRetain },
+    report: {
+      ...base,
+      keptChars: Array.from(text).length,
+      prunedCount,
+      droppedCount,
+      // ★ 两种动作都算「动过」。以前只写了 `prunedCount > 0` ——
+      //   于是「一条都没剪中间、但整条丢了 39 条」时 `acted` 是 `false`：
+      //   丢了条目却说没动过。
+      //
+      //   `text` 那一面是对的（末尾有「…条最早的结果被整条丢弃…」），
+      //   错的是 `report` —— 而 `ContextReport` 存在的意义正是让**程序化消费方**
+      //   不必去解析那句散文。谁读 `acted` 谁就得到相反的答案。
+      acted: prunedCount > 0 || droppedCount > 0,
+      overRetain,
+    },
   }
 }

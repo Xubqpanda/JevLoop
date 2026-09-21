@@ -234,3 +234,18 @@ test('账目里的数对得上', () => {
   assert.equal(report.triggerChars, 900)
   assert.equal(report.retainChars, 500)
 })
+
+test('N1: 只丢不剪的时候，acted 也必须是真的', () => {
+  // 每条都**短于剪枝阈值**（不会被剪中间），但总和远超触发线 → 只会走「整条丢」。
+  // 上面那些测试全都构造了会被剪中间的长条目，所以它们**碰不到**这条路径。
+  const parts = Array.from({ length: 40 }, () => 'x'.repeat(PRUNE_DEFAULTS.thresholdChars - 100))
+  const { report } = fitEvidence(parts)
+
+  assert.equal(report.prunedCount, 0, '每条都短于阈值，不该有任何一条被剪中间')
+  assert.ok(report.droppedCount > 0, '总和远超触发线，必须丢掉整条')
+
+  // 修之前：`acted: prunedCount > 0` —— 丢了 39 条却报 `false`（没动过）。
+  // `text` 那一面是对的（末尾说明了丢了几条），错的是 `report`，
+  // 而 `ContextReport` 存在的意义正是让程序化消费方不必解析那句散文。
+  assert.equal(report.acted, true, '丢了条目就是动过内容')
+})
