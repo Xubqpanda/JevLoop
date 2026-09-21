@@ -945,10 +945,136 @@ body {
 
 /* 助手正文：没有气泡，直接落在背景上 */
 .answer {
-  white-space: pre-wrap;
+  /*
+    ⚠️ **不再是 `white-space: pre-wrap`。**
+
+    那是回答还是纯文本时留下的：靠它保住换行。现在回答走
+    `renderMarkdown`（`markdown.js`）渲染成块级元素 —— 换行由 `<p>` /
+    `<li>` / `<pre>` 表达，再叠一层 `pre-wrap` 会在每个块内部
+    多留一份空白。
+
+    没有 markdown 的纯字符串（比如「（没有回答）」）照样正常显示。
+  */
   overflow-wrap: anywhere;
   font-size: var(--jl-font-size);
   line-height: var(--jl-line);
+}
+
+/* ── 回答里的 markdown ────────────────────────────────────── */
+
+.answer > :first-child {
+  margin-top: 0;
+}
+.answer > :last-child {
+  margin-bottom: 0;
+}
+
+.md-p {
+  margin: 0 0 8px;
+}
+
+.md-h {
+  margin: 14px 0 6px;
+  line-height: 1.35;
+  font-weight: 650;
+  color: var(--jl-alias-label-primary);
+}
+
+/* 缩小一级：回答里的 `#` 不该和界面的标题一样大 */
+.answer h1.md-h { font-size: 17px; }
+.answer h2.md-h { font-size: 15px; }
+.answer h3.md-h { font-size: 14px; }
+.answer h4.md-h,
+.answer h5.md-h,
+.answer h6.md-h { font-size: 13px; }
+
+.md-ul,
+.md-ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.md-ul li,
+.md-ol li {
+  margin: 2px 0;
+}
+
+/* 行内代码和代码块用同一个底色，读的人一眼认得出是「原文」 */
+.md-code,
+.md-block {
+  font-family: var(--jl-font-mono);
+  font-size: 12px;
+}
+
+.md-code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--jl-alias-bg-module-platform);
+  color: var(--jl-alias-state-business-primary);
+  overflow-wrap: anywhere;
+}
+
+.md-pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-alias-bg-module-platform);
+  /* 代码不折行，横向滚 —— 折了反而看不出缩进 */
+  overflow-x: auto;
+}
+
+.md-block {
+  display: block;
+  color: var(--jl-alias-label-secondary);
+  white-space: pre;
+}
+
+/* 有语言标注时在右上角露一个小小的提示 */
+.md-block[data-lang]::before {
+  content: attr(data-lang);
+  float: right;
+  padding-left: 8px;
+  color: var(--jl-alias-label-caption);
+  font-size: 10px;
+  user-select: none;
+}
+
+.md-quote {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--jl-alias-border-l3);
+  color: var(--jl-alias-label-secondary);
+}
+
+.md-hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 0.5px solid var(--jl-alias-border-l2);
+}
+
+.md-table {
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.md-table th,
+.md-table td {
+  padding: 3px 8px;
+  border: 0.5px solid var(--jl-alias-border-l2);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  background: var(--jl-alias-bg-module-platform);
+  font-weight: 600;
+}
+
+.md-a {
+  color: var(--jl-alias-state-business-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* ── 过程：一行一个事件，往下滚 ──────────────────────────────

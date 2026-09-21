@@ -31,6 +31,8 @@
  * 要摘的话先摘它。
  */
 
+import { renderMarkdown } from './markdown.js'
+
 // ═══════════════════════════════════════════════════════════
 // DOM 小工具（不引框架：这个界面只有两种交互，画卡片和切视图）
 // ═══════════════════════════════════════════════════════════
@@ -518,7 +520,17 @@ function finishAssistant(text, stats, halt) {
   current.finished = true
   stopTicker()
   current.el.removeChild(current.running)
-  current.answer.textContent = text || '（没有回答）'
+  /*
+    ★ **回答按 markdown 渲染，不再当纯文本。**
+
+    以前这里是 `textContent = text` —— 于是模型输出的 `##`、`**`、代码围栏
+    全都以**字面**出现，一段正常的总结是一屏带井号和星号的原文
+    （实测 2026-09-21，用户报的）。
+
+    渲染器在 `markdown.js`：手写（不引依赖）、**全程构造 DOM 不用
+    `innerHTML`**（渲染的是模型生成的文本，即不可信输入）。
+  */
+  current.answer.replaceChildren(text ? renderMarkdown(text) : '（没有回答）')
 
   const s = stats ?? {}
   const ratio = ratioText(s)

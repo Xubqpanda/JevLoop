@@ -12,6 +12,14 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
+    /* web/ 是浏览器直接加载的纯 JS（无构建步骤，见 web/markdown.js 文件头）。
+       让 TS 把它读进程序，是为了**测试能 import 它** —— 不读的话是 TS7016
+       「找不到声明文件」，于是 `web/` 一直没有测试，而它恰恰是唯一
+       用户直接看到的代码（2026-09-21 的死循环就是这么漏出去的）。
+       `checkJs` 不打开：那些文件用 `document`，而这里没有 DOM lib，
+       打开会淹在「找不到 document」里，真正的问题反而看不见。 */
+    "allowJs": true,
+
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -19,5 +27,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "examples/**/*.ts", "bin/**/*.ts", "tests/**/*.ts", "bench/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "examples/**/*.ts",
+    "bin/**/*.ts",
+    "tests/**/*.ts",
+    "bench/**/*.ts",
+    "scripts/**/*.ts",
+    "web/**/*.js"
+  ]
 }

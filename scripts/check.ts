@@ -36,8 +36,8 @@
  * @module JevLoop/check
  */
 
-import { readFileSync, globSync } from 'node:fs'
-import { basename } from 'node:path'
+import { readFileSync, globSync, existsSync } from 'node:fs'
+import { basename, dirname, resolve } from 'node:path'
 import ts from 'typescript'
 
 interface Violation {
@@ -122,15 +122,31 @@ function checkFile(file: string): Violation[] {
     if (line.includes('\t')) add(i + 1, 'tab', '含制表符（规范要求 2 空格缩进）')
   })
 
-  // 相对导入必须带 .ts —— 这条词法层面查不出（说明符本身合法），要看 AST
+  // 相对导入必须带上**磁盘上真实的扩展名** —— 这条词法层面查不出
+  // （说明符本身合法），要看 AST。
+  //
+  // ★ 判据是「扩展名和磁盘上的一致」，不是「必须是 .ts」。
+  //
+  //   原来的实现写死了 `.ts`。那在当时是对的（仓库里只有 `.ts`），
+  //   但它是「真实扩展名」这条规则的一个**代理**，而代理只在它覆盖的
+  //   样本上成立：`web/` 是浏览器直接加载的纯 `.js`（无构建步骤），
+  //   于是测试**永远没法 import 它** —— 实测 2026-09-21，`web/markdown.js`
+  //   里的死循环就是这样漏出去的：报错说「相对导入缺少 .ts 扩展名」，
+  //   而那个文件本来就该是 `.js`。
+  //
+  //   现在顺带查「解析得到真实文件」：这条比原来**强** ——
+  //   原来写 `./typo.ts` 也能过（文件根本不存在）。
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt) && !ts.isExportDeclaration(stmt)) continue
     const spec = stmt.moduleSpecifier
     if (!spec || !ts.isStringLiteral(spec)) continue
     const path = spec.text
     if (!path.startsWith('./') && !path.startsWith('../')) continue
-    if (!path.endsWith('.ts')) {
-      add(sf.getLineAndCharacterOfPosition(spec.getStart(sf)).line + 1, 'import-ext', `相对导入缺少 .ts 扩展名：${path}`)
+    const line = sf.getLineAndCharacterOfPosition(spec.getStart(sf)).line + 1
+    if (!/\.(ts|js)$/.test(path)) {
+      add(line, 'import-ext', `相对导入缺少扩展名：${path}`)
+    } else if (!existsSync(resolve(dirname(file), path))) {
+      add(line, 'import-ext', `相对导入解析不到文件：${path}`)
     }
   }
 
