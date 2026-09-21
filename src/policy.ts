@@ -143,11 +143,15 @@ export const probGte =
   }
 
 /**
- * 布尔概率的「小于」门限 —— `probGte` 的反面。
+ * 布尔概率的「小于」门限。
  *
  * 用在「只有当它**不**成立时才怎样」的规则上，比写 `!probGte(...)` 可读：
  * `when: probLt("ok", 0.5)` 直接读成「不太可能成功」。
- * 答案缺失或不是 `noul` 时返回 `false`（和 `probGte` 一样偏保守）。
+ *
+ * ⚠️ **它不是 `probGte` 的补集，只在 `noul` 上成立。** 两者对非 `noul` 答案
+ * 都返回 `false`（偏保守），所以对 `choice` / `score` 问题，`prob:x < v` 是一条
+ * **永远不触发**的规则。这正是 `top < v` 不能用它的原因 —— 见 `topLt`。
+ * （`decisiondoc` 侧还应该拒绝把 `prob:` 用在非 noul 问题上，见 REVIEWS-round5。）
  */
 export const probLt =
   (id: string, threshold: number) =>
@@ -155,6 +159,22 @@ export const probLt =
     const ans = a[id]
     return ans?.type === 'noul' ? ans.noul < threshold : false
   }
+
+/**
+ * `topGte` 的**真补集**，对每种答案类型都成立。
+ *
+ * 为什么需要它：`top < v` 曾经被编译成 `probLt`，而后者只认 `noul`，且对 `noul`
+ * 判的是 `p` 而不是 `max(p, 1-p)` —— 于是 `top >= v` 与 `top < v` 在 `p` 偏离 0.5 时
+ * **同时为真**（实测 `p=0.05` 两条都真），在 `choice` / `score` 上 `top < v` **恒假**
+ * （作者以为写了一道闸门，它一次都不会响）。
+ *
+ * 定义成 `!topGte(...)` 而不是另写一遍阈值比较：**补集必须从构造上成立**，
+ * 靠两处代码各自正确是迟早会分叉的。
+ */
+export const topLt =
+  (id: string, threshold: number) =>
+  (a: AnswerSet): boolean =>
+    !topGte(id, threshold)(a)
 
 /** 分数门限：`when: scoreGte("risk", 2)` */
 export const scoreGte =

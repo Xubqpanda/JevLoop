@@ -27,7 +27,8 @@ import {
   isGate,
   type DocBlock,
 } from '../src/decisiondoc.ts'
-import type { DecisionSpec } from '../src/vocab-decision.ts'
+import { ACTIONS, type DecisionSpec } from '../src/vocab-decision.ts'
+import { resolvePolicy } from '../src/policy.ts'
 import type { QuestionSet, AnswerSet } from '../src/vocab.ts'
 import {
   needsTool,
@@ -346,4 +347,109 @@ test('没有策略时 compilePolicy 返回 undefined，而不是空数组', () =
   assert.equal(compilePolicy(block('needs_tool')) === undefined, false)
   const doc2 = parseDecisionDoc('## foo\nkind: rule\n')
   assert.equal(compilePolicy(doc2.blocks[0]!), undefined)
+})
+
+// ═══════════════════════════════════════════════════════════
+// 第 11 轮（S1 / S2 / S4）的回归测试
+//
+// 三条都是「编译器接受了，但含义和作者想的不一样」——
+// 比解析失败隐蔽得多，因为它们不进 problems。
+// ═══════════════════════════════════════════════════════════
+
+/** 造一个单问题的块。谓词编译只关心 id 和 type */
+const singleQ = (type: 'noul' | 'choice' | 'score', id: string): DocBlock => ({
+  id: 'g',
+  kind: type,
+  when: '',
+  dynamic: '',
+  rationale: '',
+  line: 1,
+  questions: [{ id, type, ask: 'x', options: [], line: 2 }],
+  policy: [],
+})
+
+test('S1: 编译不了的谓词不能变成「无条件兜底」', () => {
+  // 两条闸门，最后一条把 `>=` 写成 `>`（`>` 刻意不在词汇表里）
+  const doc2 = parseDecisionDoc(
+    '## g\nkind: noul\n### risk_auth\nask: 问\n- true — 是\n- false — 否\npolicy:\n' +
+      '  - prob:risk_auth >= 0.5 → ask_human\n  - top > 0.6 → ask_human\n',
+  )
+  const pol = compilePolicy(doc2.blocks[0]!)!
+  assert.equal(pol.ok, false)
+  assert.equal(pol.problems.length, 1, 'problems 要写明是哪条谓词')
+
+  // ★ 核心：编译失败的规则**不能省略 when**。`when` 省略的含义是「无条件兜底」，
+  //   于是「这个谓词我没看懂」会被编码成「这条永远命中」—— 两种意图共用同一个表示。
+  assert.ok(pol.rules[1]!.when, '编译失败的规则必须有 when，否则它就成了兜底')
+  assert.equal(pol.rules[1]!.when!(ans({})), false, '而且必须永不命中')
+
+  // 两条都不命中 → escalate（安全默认），而不是被假兜底顶成 ask_human
+  const out = resolvePolicy(pol.rules, ans({ risk_auth: { type: 'noul', noul: 0 } }))
+  assert.equal(out.action, 'escalate', '假兜底会把「一条都没命中」变成「命中了最后一条」')
+  // 假兜底还会把这两道静态检查压掉；现在这个信号必须回来
+  assert.ok(
+    out.warnings.some((w) => w.code === 'policy_no_catch_all'),
+    '缺兜底的信号必须报出来 —— 以前假兜底让 policy_no_catch_all 以为有兜底',
+  )
+})
+
+test('S2: top >= x 与 top < x 对每种答案类型都恰好一真一假', () => {
+  const noulB = singleQ('noul', 'p')
+  const choiceB = singleQ('choice', 'tool')
+  const scoreB = singleQ('score', 'risk')
+
+  const pairs: [string, DocBlock, AnswerSet][] = [
+    ...([0.05, 0.3, 0.5, 0.7, 0.95] as const).map(
+      (v): [string, DocBlock, AnswerSet] => [`noul p=${v}`, noulB, ans({ p: { type: 'noul', noul: v } })],
+    ),
+    ...([0.1, 0.95] as const).map(
+      (v): [string, DocBlock, AnswerSet] => [
+        `choice 选中项=${v}`,
+        choiceB,
+        ans({ tool: { type: 'choice', choice: 'a', probabilities: { a: v, b: 1 - v }, confidence: Math.max(v, 1 - v) } }),
+      ],
+    ),
+    ...([0.2, 0.8] as const).map(
+      (v): [string, DocBlock, AnswerSet] => [
+        `score confidence=${v}`,
+        scoreB,
+        ans({ risk: { type: 'score', score: v * 3, legend: {}, probabilities: {}, confidence: v } }),
+      ],
+    ),
+  ]
+
+  for (const [label, b, a] of pairs) {
+    const ge = compilePredicate('top >= 0.6', b)!
+    const lt = compilePredicate('top < 0.6', b)!
+    // 以前 `top < x` 编译成 `probLt`，而 `probLt` 只认 noul、判的还是 p 而不是
+    // max(p,1-p)：noul 上 p 偏离 0.5 时两条**同时为真**，
+    // choice / score 上 `top < x` **恒假**（写了一道永不触发的闸门）。
+    assert.notEqual(ge(a), lt(a), `${label}：top>=0.6 与 top<0.6 应当恰好一真一假`)
+  }
+})
+
+test('S4: 不认识的 action 在解析时就报出来，带行号', () => {
+  const doc2 = parseDecisionDoc(
+    '## g\nkind: noul\n### risk_auth\nask: 问\n- true — 是\n- false — 否\npolicy:\n' +
+      '  - top >= 2 → ask_humam\n  - else → auto\n',
+  )
+  const bad = doc2.problems.filter((p) => p.message.includes('action'))
+  assert.equal(bad.length, 1, '`ask_humam` 是笔误，必须报出来')
+  assert.equal(bad[0]!.line, 8, '报的应当是策略那一行')
+  // 不校验的后果：编译成功、isGate 返回 false、界面显示正常，
+  // 而 resolvePolicy 会返回一个没有任何消费方能处理的动作。
+  assert.equal(isGate(doc2.blocks[0]!), false, '笔误让闸门计数直接失真')
+})
+
+test('S4: ACTIONS 覆盖 decisions.ts 里实际用到的每个动作名', () => {
+  const src = readFileSync(new URL('../src/decisions.ts', import.meta.url), 'utf8')
+  const used = new Set([...src.matchAll(/action:\s*'([a-z_]+)'/g)].map((m) => m[1]!))
+  // 防呆：正则失效时不要静默通过
+  assert.ok(used.size >= 10, `没扫到动作名（只扫到 ${used.size} 个）—— 正则或源码结构变了`)
+  for (const a of used) {
+    assert.ok(
+      (ACTIONS as readonly string[]).includes(a),
+      `decisions.ts 用了 '${a}'，但 ACTIONS 里没有 —— 写进 DECISION.md 会被当成笔误`,
+    )
+  }
 })

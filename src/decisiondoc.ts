@@ -74,9 +74,18 @@
  */
 
 import { choice, noul, score, type AnswerSet, type Question, type QuestionSet } from './vocab.ts'
-import type { PolicyRule } from './vocab-decision.ts'
-import { picked, probGte, probLt, scoreGte, topGte } from './policy.ts'
+import { ACTIONS, type PolicyRule } from './vocab-decision.ts'
+import { picked, probGte, probLt, scoreGte, topGte, topLt } from './policy.ts'
 import { assertNever } from './util.ts'
+
+/**
+ * `ACTIONS` 的查表版本。
+ *
+ * 单独放一个 `Set` 是因为它要判**任意字符串**（手写文件里的原文），
+ * 而 `ACTIONS.includes()` 的类型签名只接受联合成员 —— 那正是「边界上要放宽、
+ * 内部要收紧」的分界：类型系统管内部，这个 Set 管边界。
+ */
+const KNOWN_ACTIONS: ReadonlySet<string> = new Set(ACTIONS)
 
 // ═══════════════════════════════════════════════════════════
 // 形状
@@ -312,7 +321,19 @@ function interpretBlock(section: RawSection, problems: DocProblem[]): DocBlock {
           const w = body.slice(0, arrow).trim()
           const a = body.slice(arrow + 1).trim()
           if (!w || !a) problems.push({ line, message: `策略 '${body}' 的谓词或动作为空` })
-          else policy.push({ when: w, action: a })
+          else {
+            policy.push({ when: w, action: a })
+            // ★ action 是封闭词汇表，在这里校验（§6 说的真实边界：用户手写的文件）。
+            //   不校验会怎样：`→ ask_humam` 编译成功、`isGate` 返回 false、界面把这个
+            //   判定块显示成正常，而 `resolvePolicy` 会返回一个**没有任何消费方能处理**
+            //   的动作 —— 而且它是 fail open 的（本该拦住的那一步直接放行）。
+            if (!KNOWN_ACTIONS.has(a)) {
+              problems.push({
+                line,
+                message: `不认识的 action '${a}' —— loop 只认 ${ACTIONS.join(' / ')}`,
+              })
+            }
+          }
         }
         continue
       }
@@ -612,7 +633,12 @@ export function compilePredicate(
   if (top) {
     if (block.questions.length !== 1) return null
     const qid = block.questions[0]!.id
-    return top[1] === '>=' ? topGte(qid, Number(top[2])) : probLt(qid, Number(top[2]))
+    // ★ `top < x` 必须走 `topLt`，**不能**走 `probLt`。
+    //   `topGte` 对三种答案类型各有各的判据（choice 看选中项概率、noul 看 max(p,1-p)、
+    //   score 看 confidence），而 `probLt` 只认 noul、判的还是 p —— 两者不是补集：
+    //   实测 p=0.05 时 `top >= 0.5` 和 `top < 0.5` **同时为真**，
+    //   在 choice / score 上 `top < x` **恒假**（写了一道永不触发的闸门）。
+    return top[1] === '>=' ? topGte(qid, Number(top[2])) : topLt(qid, Number(top[2]))
   }
 
   const prob = RE_PROB.exec(src)
@@ -633,20 +659,37 @@ export function compilePredicate(
  * 编译不了的谓词**留在结果里**并标出来，不静默丢 ——
  * 丢一条策略 = agent 少一道闸门，而它不会报错。
  *
- * @returns 没有策略时返回 `undefined`；有编译不了的谓词时 `ok` 为 false
+ * @returns 没有策略时返回 `undefined`；有编译不了的谓词时 `ok` 为 false，
+ *   且 `problems` 里逐条写明是哪条谓词
  */
-export function compilePolicy(block: DocBlock): { rules: PolicyRule<AnswerSet>[]; ok: boolean } | undefined {
+export function compilePolicy(
+  block: DocBlock,
+): { rules: PolicyRule<AnswerSet>[]; ok: boolean; problems: string[] } | undefined {
   if (block.policy.length === 0) return undefined
-  let ok = true
+  const problems: string[] = []
   const rules = block.policy.map((r) => {
     const fn = compilePredicate(r.when, block)
     if (!fn) {
-      ok = false
-      return { action: r.action, reason: `未编译的谓词 '${r.when}'` }
+      problems.push(`未编译的谓词 '${r.when}'（动作 ${r.action}）`)
+      // ★ 这里**绝不能**返回一个省略 `when` 的规则。
+      //
+      //   `PolicyRule.when` 是可选的，而省略的含义是**无条件兜底**
+      //   （`resolvePolicy` 见到它就立即返回）。以前这里返回 `{ action, reason }`，
+      //   于是「这个谓词我没看懂」被编码成了「这条规则永远命中」——
+      //   两种完全不同的意图共用了同一个表示。
+      //
+      //   后果是 `policy.ts` 的两道静态检查**同时失效**：假兜底恰好在最后一条时
+      //   `catch_all_not_last` 不响（那正是合法兜底该在的位置），
+      //   `policy_no_catch_all` 也被它骗过。实测：一份两条闸门都不命中的策略
+      //   返回了 `ask_human` 而不是 `escalate`，且**一个警告都没有**。
+      //
+      //   现在产出 `when: () => false`：规则仍在列表里（界面看得见「这条没编译」），
+      //   但永不命中，兜底语义保持原样。
+      return { when: () => false, action: r.action, reason: `未编译的谓词 '${r.when}'` }
     }
     return { when: fn, action: r.action, reason: `${r.when} → ${r.action}` }
   })
-  return { rules, ok }
+  return { rules, ok: problems.length === 0, problems }
 }
 
 // ═══════════════════════════════════════════════════════════

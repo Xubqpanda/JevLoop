@@ -70,7 +70,10 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   })
 
   if (choice.prefer === 'laya') {
-    return notice ? new FallbackProvider([laya, last], notice) : new FallbackProvider([laya, last])
+    // `onFallback?:` 已经表达了「可以没有」这个语义，不需要在调用点再表达一遍。
+    // 这里曾经写的是一个恒等三元（两个分支构造同一个对象）—— 它看起来在处理
+    // 「notice 可能缺席」，实际什么都没处理，而读代码的人会以为有一层分支保护。
+    return new FallbackProvider([laya, last], notice)
   }
 
   const apiKey = choice.apiKey ?? process.env.TYPESAFE_API_KEY
@@ -82,11 +85,11 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   })
 
   if (choice.prefer === 'jev') {
-    return notice ? new FallbackProvider([jev, last], notice) : new FallbackProvider([jev, last])
+    return new FallbackProvider([jev, last], notice)
   }
 
   const chain = apiKey ? [jev, laya, last] : [laya, last]
-  return notice ? new FallbackProvider(chain, notice) : new FallbackProvider(chain)
+  return new FallbackProvider(chain, notice)
 }
 
 /** 生成后端的选择。 */

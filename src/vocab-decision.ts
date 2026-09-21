@@ -34,6 +34,43 @@ export interface PolicyRule<A> {
   reason?: string
 }
 
+/**
+ * loop 认得的 action 名 —— **封闭集合**。
+ *
+ * 为什么要有这张表：`resolvePolicy` 返回的 action 是拿给 loop 分派用的，
+ * 而一个笔误（`ask_humam`）在运行时**没有任何东西会报错** —— 策略照样命中，
+ * 只是得到一个没有消费方能处理的动作。界面那句「N 道授权闸门」也是靠
+ * `action === 'ask_human'` 数出来的，写成别名那道闸门就不算数了。
+ *
+ * 这就是 `tools.ts` 对工具名做过的事（`ToolName` 从 `TOOLS` 推出），在 action 上重做一遍。
+ *
+ * ⚠️ **`PolicyRule.action` 仍然是 `string`，这是有意的。** policy 引擎是通用的
+ * ——测试拿 `'a'` / `'ok'` 这种名字就能驱动它。封闭只该在**真实边界**上强制，
+ * 也就是解析手写文件的地方（`decisiondoc.interpretBlock`）。
+ *
+ * `escalate` 是 `resolvePolicy` 在「一条都没命中且没有兜底」时自己产出的，
+ * 不写在 `decisions.ts` 里 —— 所以下面的一致性测试只查一个方向
+ * （`decisions.ts` 用到的名字必须都在这张表里）。
+ */
+export const ACTIONS = [
+  'answer',
+  'ask_human',
+  'auto',
+  'auto_audit',
+  'call',
+  'continue',
+  'deliver',
+  'escalate',
+  'finish',
+  'keep_going',
+  'revise',
+  'stop',
+  'use',
+  'use_tool',
+] as const
+
+export type Action = (typeof ACTIONS)[number]
+
 export interface DecisionSpec<Ctx, Q extends QuestionSet = QuestionSet> {
   /** 唯一标识。用「域.动作」的写法 */
   id: string
