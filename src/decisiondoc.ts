@@ -65,7 +65,7 @@
  *
  * ── 解析失败怎么办 ────────────────────────────────────────────
  *
- * 这是**真实的边界**（用户手写的文件），所以按 AGENTS.md §6 在这里
+ * 这是**真实的边界**（用户手写的文件），所以按 docs/CODE-STYLE.md §6 在这里
  * 校验，且**绝不静默丢块**：认不出来的东西进 `problems`，带行号。
  * 一个被悄悄忽略的判定块，比一个报错的块危险得多 —— 前者会让 agent
  * 安静地少问一个问题。
@@ -76,8 +76,8 @@
  * 剩下两件事：**词法 + 解析**（Markdown → `DocBlock`），与一小段**汇总**
  * （`summarize` / `headline`，只是派生视图，可以随解析留着也可以再切）。
  * 解析本身是自洽的一件事（两趟：切段、逐段解释），**再切需要先重新理解它**，
- * 排在 `AGENTS.md` §12 的待拆队列里。
- * **行数不在这里写** —— 它会漂（这里曾写 533 与 604，实际见 §12 队列）。
+ * **接缝已经定了，还没切。**
+ * **行数不在这里写** —— 它会漂（这里曾写 533 与 604），见 docs/CODE-STYLE.md §12。
  *
  * @module JevLoop/decisiondoc
  */
@@ -437,7 +437,7 @@ function validateBlock(
  * `choice` 至少要两个选项 —— 一个选项的选择不是选择，是个常量。
  *
  * 但候选每步重建的判定（写了 `dynamic:`）在文件里可能只列一个占位，
- * 这时不要求数量：真正的候选由代码在运行时给（AGENTS.md §8.4）。
+ * 这时不要求数量：真正的候选由代码在运行时给（docs/CODE-STYLE.md §8.4）。
  */
 function minOptions(questions: DocQuestion[], dynamic: string, problems: DocProblem[]): void {
   if (dynamic) return

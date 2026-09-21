@@ -2,7 +2,7 @@
  * JevLoop · Mock —— 保守占位，故意「不知道」
  *
  * **从 `provider.ts` 切出来** —— 那个文件住着**四件事**
- * （HTTP 判定后端 / 响应归一化 / Mock / 降级链），按 AGENTS.md §12
+ * （HTTP 判定后端 / 响应归一化 / Mock / 降级链），按 docs/CODE-STYLE.md §12
  * 「一句话说不完就是住着两件以上」该拆。接缝是**各自的契约形状不同**：
  *  * Mock 只保证「离线可跑」，返回的 degraded 永远是 true —— 它不是判定质量的证据
  *

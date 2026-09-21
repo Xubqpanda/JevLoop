@@ -2,7 +2,7 @@
  * JevLoop · Fallback —— 主 Provider 挂了怎么办
  *
  * **从 `provider.ts` 切出来** —— 那个文件住着**四件事**
- * （HTTP 判定后端 / 响应归一化 / Mock / 降级链），按 AGENTS.md §12
+ * （HTTP 判定后端 / 响应归一化 / Mock / 降级链），按 docs/CODE-STYLE.md §12
  * 「一句话说不完就是住着两件以上」该拆。接缝是**各自的契约形状不同**：
  *  * Fallback 只做链式重试，不认识任何具体后端
  *

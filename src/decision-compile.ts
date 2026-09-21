@@ -2,7 +2,7 @@
  * JevLoop · DECISION.md 的编译
  *
  * `DocBlock` → 问题与策略。**从 `decisiondoc.ts` 切出来** —— 那个文件曾同时做
- * 「解析」与「编译」两件事（AGENTS.md §12 的判据：一句话说不完）。
+ * 「解析」与「编译」两件事（docs/CODE-STYLE.md §12 的判据：一句话说不完）。
  *
  * 两半的依赖面**可测量地不同**：解析段只依赖 `vocab.ts`（L0），
  * 编译段还要 `policy.ts`（L1）—— 于是「只依赖词汇的解析器」被一起钉在 L3，

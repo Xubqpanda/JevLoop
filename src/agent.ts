@@ -27,8 +27,8 @@
  *
  * 两件事：**loop 本身**（`runAgent`）与**给工具定输入**（`resolveInput`）。
  * 接缝清楚 —— `resolveInput` 只依赖 `frame.ts` 的候选与 `pickInput` 判定，
- * 不认识 loop 的状态机。排在 `AGENTS.md` §12 的待拆队列里。
- * **行数不在这里写** —— 它会漂，而且这行注释本身就在改变它（见 §12）。
+ * 不认识 loop 的状态机。**接缝已经定了，还没切。**
+ * **行数不在这里写** —— 它会漂，而且这行注释本身就在改变它（见 docs/CODE-STYLE.md §12）。
  *
  * @module JevLoop/agent
  */
@@ -75,7 +75,7 @@ export interface AgentOptions {
    * `write_file` 的内容来源。**不提供时 `write_file` 根本不会进候选**，
    * 于是判定模型没有机会去选一个 loop 兑现不了的动作。
    *
-   * 「写什么内容」是**生成**，按三分法不属于判定模型（AGENTS.md §8.1）——
+   * 「写什么内容」是**生成**，按三分法不属于判定模型（docs/CODE-STYLE.md §8.1）——
    * 判定只负责挑「写哪个文件」。以前这里没有这个钩子，`resolveInput`
    * 只能返回一句占位符 `（内容由调用方提供）`，而它是**真的会被写到盘上的**：
    * 实测一次运行把目标文件的全部内容替换成了这句话，然后因为
@@ -304,7 +304,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
     const picked = pick.answers.tool.choice
 
-    // 模型返回的工具名是**不可信输入**，调用前必须过这一道（AGENTS.md §6 允许的真实边界）。
+    // 模型返回的工具名是**不可信输入**，调用前必须过这一道（docs/CODE-STYLE.md §6 允许的真实边界）。
     // 不过会怎样：`callTool` 返回「错误：没有这个工具」，而这个字符串会被当成
     // 普通工具输出喂给 `stepOk` —— 判定模型分不清「工具跑出来的结果」和「工具不存在」。
     if (!isToolName(picked)) {
@@ -416,7 +416,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
    * ── 规则在 `context.ts`，不在这里 ──────────────────────────
    *
    * 这里原来有一份内联实现（单阈值 6000 / 每条 800 / 只留头）。它和
-   * `context.ts` 是同一件事的两份实现（AGENTS.md §3.1），已按所有者指示合并：
+   * `context.ts` 是同一件事的两份实现（docs/CODE-STYLE.md §3.1），已按所有者指示合并：
    * **位置取这里**（每条工具结果进 history 的那一层，粒度对，而且判定帧
    * 以后能共用同一份账），**规则取 `context.ts`**。
    *

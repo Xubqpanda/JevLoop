@@ -43,7 +43,7 @@ export interface ProviderChoice {
    * 为什么要有这个口子：Mock 给的是保守答案（概率 0.5），
    * 于是 `pickTool` 的置信度门限会走到 `escalate` —— loop 在第一步就停下。
    * 对「无 key 也能跑完」的场景（`npm run demo`）那是错的兜底。
-   * 但**内核不该知道什么才是对的兜底**（AGENTS.md §8.6：规则属于场景），
+   * 但**内核不该知道什么才是对的兜底**（docs/CODE-STYLE.md §8.6：规则属于场景），
    * 所以由调用方注入，比如 `examples/rule-judge.ts`。
    */
   lastResort?: Provider

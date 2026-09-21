@@ -25,7 +25,7 @@
  *
  * 放在 L0 是因为它**零依赖**且是纯函数 —— 谁都能用它，它不依赖谁。
  * 它以前住在 `budget.ts`（L1），而 `context.ts` 也是 L1，同层不许互相依赖
- * （AGENTS.md §11），所以抽出来。
+ * （docs/CODE-STYLE.md §11），所以抽出来。
  *
  * @module JevLoop/estimate
  */
