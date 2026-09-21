@@ -16,10 +16,18 @@
 import type { Provider, DecisionSpec, DecisionResult, QuestionSet, AnswerMap, AnswerSet } from './types.ts'
 import { resolvePolicy, type PolicyWarning } from './policy.ts'
 import { validate, type BudgetWarning, type Checkpoint } from './budget.ts'
-import type { Meter } from './meter.ts'
+import { Meter } from './meter.ts'
 
 export interface DeciderOptions {
   provider: Provider
+  /**
+   * 不传就自建一个 —— **永远不会是 undefined**。
+   *
+   * 早先这里是可选的，于是 `runAgent` 里写成 `decider.meter ?? new Meter()`：
+   * 判定记进了 `undefined`，而返回给调用方的是那个新建的、没人写过的 Meter。
+   * 结果是最自然的用法（`new Decider({ provider })`）拿到的比值是 `0 : 1` ——
+   * 这个项目赖以成立的数字什么都报不出来。改成必填后，那个状态在类型上不存在。
+   */
   meter?: Meter
   checkpoint?: Checkpoint
   /** 预算超限时直接抛，而不是只告警 */
@@ -36,7 +44,7 @@ export interface DecideOptions {
 
 export class Decider {
   readonly provider: Provider
-  readonly meter: Meter | undefined
+  readonly meter: Meter
   readonly checkpoint: Checkpoint
   readonly strict: boolean
   #timeoutMs: number
@@ -46,7 +54,7 @@ export class Decider {
 
   constructor(opts: DeciderOptions) {
     this.provider = opts.provider
-    this.meter = opts.meter
+    this.meter = opts.meter ?? new Meter()
     this.checkpoint = opts.checkpoint ?? 'typed-decisions'
     this.strict = opts.strict ?? false
     this.#timeoutMs = opts.timeoutMs ?? 30_000
@@ -119,7 +127,7 @@ export class Decider {
         degraded: true,
         escalate: true,
       }
-      this.meter?.recordDecision(step, result as DecisionResult<unknown>)
+      this.meter.recordDecision(step, result as DecisionResult<unknown>)
       return result
     }
 
@@ -144,7 +152,7 @@ export class Decider {
     }
 
     // ⑥ 记账
-    this.meter?.recordDecision(step, result as DecisionResult<unknown>)
+    this.meter.recordDecision(step, result as DecisionResult<unknown>)
     return result
   }
 }

@@ -172,3 +172,116 @@ test('defineDecision 打标记；普通对象不会被误认', () => {
   assert.equal(isDecision(d), true)
   assert.equal(isDecision({ id: 'a', state: () => ({}), questions: {}, policy: [] }), false)
 })
+
+// ═══════════════════════════════════════════════════════════
+// agent loop —— 审计 N1 / N2 的回归测试
+//
+// 这两条的共性是：**项目自己的 demo 测不出来**。
+// demo 显式传了 meter，也恰好走不到 revise/auto_audit 分支，
+// 所以只有外部使用者会撞到。回归测试必须按外部用法写。
+// ═══════════════════════════════════════════════════════════
+
+test('N1: 不传 meter 构造 Decider，runAgent 返回的 meter 必须是同一个且非空', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { ScriptedGenerator } = await import('../src/llm.ts')
+
+  // 最自然的用法：只给 provider
+  const decider = new Decider({ provider: new MockProvider({ latencyMs: 0 }) })
+  const r = await runAgent({
+    task: 't',
+    cwd: '/tmp',
+    decider,
+    generator: new ScriptedGenerator({ latencyMs: 0 }),
+    maxSteps: 1,
+  })
+
+  // 修之前这里是 0 —— 判定记进了 undefined，返回的是另一个没人写过的 Meter
+  assert.ok(r.meter.stats.decisions > 0, `判定数必须 > 0，实际 ${r.meter.stats.decisions}`)
+  assert.equal(r.meter, decider.meter, 'runAgent 必须返回 decider 自己的那个 meter')
+})
+
+test('N2: auto_audit 必须真的留痕，而不是只多打一行 trace', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { Meter } = await import('../src/meter.ts')
+  const { RuleJudge } = await import('../examples/rule-judge.ts')
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'jevloop-audit-'))
+  try {
+    await writeFile(join(cwd, 'a.txt'), 'hello', 'utf8')
+    const meter = new Meter()
+    const decider = new Decider({ provider: new RuleJudge(), meter })
+    const calls: string[] = []
+    await runAgent({
+      task: '列出工作目录里的文件',
+      cwd,
+      decider,
+      generator: { name: 'noop', generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'noop' }) },
+      maxSteps: 2,
+      onTrace: (l) => calls.push(l),
+    })
+    // gradeRisk 对 write_file 给 risk=1 → auto_audit 分支
+    // list_dir 是 risk=0 → auto，不留痕。所以断言的是「留痕机制存在且内容可查」
+    assert.ok(meter.audit.every((a) => a.tool && typeof a.reason === 'string'), '审计条目必须有工具和理由')
+    assert.equal(meter.stats.audits, meter.audit.length, 'stats.audits 要和 audit 数组长度一致')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('N2: revise 必须真的重新生成一次，且只重试一次', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { Meter } = await import('../src/meter.ts')
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  // 判定器：canDeliver 永远说 revise，逼出重试路径
+  const alwaysRevise = {
+    name: 'always-revise',
+    decide: async (req: { questions: Record<string, unknown> }) => {
+      const answers: Record<string, unknown> = {}
+      for (const [id, q] of Object.entries(req.questions)) {
+        const t = (q as { type: string }).type
+        if (t === 'noul') answers[id] = { type: 'noul', noul: 0.5 }
+        else if (t === 'score') answers[id] = { type: 'score', score: 0, legend: {}, probabilities: {}, confidence: 0 }
+        else answers[id] = { type: 'choice', choice: '', probabilities: {}, confidence: 0 }
+      }
+      // canDeliver 的两个问题：让 deliverable 低、unsupported 高 → 走 revise
+      if ('deliverable' in req.questions) answers.deliverable = { type: 'noul', noul: 0.1 }
+      if ('unsupported' in req.questions) answers.unsupported = { type: 'noul', noul: 0.9 }
+      return { answers, provider: 'fake', latencyMs: 0 }
+    },
+  }
+
+  const cwd = await mkdtemp(join(tmpdir(), 'jevloop-revise-'))
+  try {
+    let genCalls = 0
+    const meter = new Meter()
+    const decider = new Decider({ provider: alwaysRevise as never, meter })
+    const r = await runAgent({
+      task: 't',
+      cwd,
+      decider,
+      generator: {
+        name: 'counter',
+        generate: async () => {
+          genCalls++
+          return { text: `draft${genCalls}`, latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'counter' }
+        },
+      },
+      maxSteps: 1,
+    })
+
+    assert.equal(genCalls, 2, 'revise 必须触发第二次生成（且只有第二次 —— 上限 1 次）')
+    assert.equal(r.answer, 'draft2', '返回的必须是修订后的草稿，不是原始的')
+    assert.ok(r.halt.includes('revise'), `halt 要如实说明没通过闸门，实际 ${r.halt}`)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})

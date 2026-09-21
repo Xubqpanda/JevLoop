@@ -52,7 +52,11 @@ export interface AgentResult {
 
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const { decider, generator } = opts
-  const meter = decider.meter ?? new Meter()
+  // Decider 的 meter 是必填的（见 decide.ts 的说明）—— 这里不再自建。
+  // 自建会导致：判定记进 decider 的那个，返回给调用方的是另一个空的。
+  // Decider 的 meter 是必填的（见 decide.ts 的说明）—— 这里不再自建。
+  // 自建会导致：判定记进 decider 的那个，返回给调用方的是另一个空的。
+  const meter = decider.meter
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
 
@@ -106,6 +110,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       }
     } else {
       trace(`  判定放行：${tool}（${risk.action}）`)
+      // `auto_audit` 承诺了留痕，那留痕就必须真的发生 ——
+      // 以前这条分支和 `auto` 完全一样，只多打一行 trace。
+      if (risk.action === 'auto_audit') {
+        meter.recordAudit(step, {
+          tool,
+          target: input.length > 200 ? `${input.slice(0, 200)}…` : input,
+          reason: risk.reason,
+          risk: risk.answers.risk.score,
+        })
+        trace(`  审计留痕 #${meter.audit.length}：${tool} risk=${risk.answers.risk.score}`)
+      }
     }
 
     // ── 唯一有真实副作用的地方 ──
@@ -135,12 +150,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   }
 
   // ── 生成（整个 loop 里唯一贵的一步）────────────────────────
-  decider.setStep(step + 1)
-  const gen = await generator.generate({
-    task: ctx.task,
-    evidence: (ctx.history ?? []).map((h) => `${h.tool}(${h.input}) → ${h.result}`).join('\n'),
-  })
-  meter.recordModelCall(step + 1, {
+  const evidence = () => (ctx.history ?? []).map((h) => `${h.tool}(${h.input}) → ${h.result}`).join('\n')
+
+  let genStep = step + 1
+  decider.setStep(genStep)
+  const gen = await generator.generate({ task: ctx.task, evidence: evidence() })
+  meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,
     latencyMs: gen.latencyMs,
     inputTokens: gen.inputTokens,
@@ -149,7 +164,30 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   ctx.draft = gen.text
 
   // ↗ 能交付吗
-  const deliver = await decider.decide(canDeliver, ctx)
+  let deliver = await decider.decide(canDeliver, ctx)
+
+  // `revise` 承诺了「修订」，那修订就必须真的发生 ——
+  // 以前它只是被拼进 halt 字符串，草稿原样返回。
+  // **上限 1 次**：第二次还不合格就如实返回并说明，不无限重试（那会变成一个收费循环）。
+  if (deliver.action === 'revise') {
+    trace(`  交付闸门要求修订（${deliver.reason}）→ 带着反馈重新生成一次`)
+    genStep += 1
+    decider.setStep(genStep)
+    const retry = await generator.generate({
+      task: ctx.task,
+      evidence: evidence(),
+      instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
+    })
+    meter.recordModelCall(genStep, {
+      kind: `generate/revise (${generator.name})`,
+      latencyMs: retry.latencyMs,
+      inputTokens: retry.inputTokens,
+      outputTokens: retry.outputTokens,
+    })
+    ctx.draft = retry.text
+    deliver = await decider.decide(canDeliver, ctx)
+  }
+
   if (deliver.action !== 'deliver') {
     halt = `${halt}+${deliver.action}`
   }

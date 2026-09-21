@@ -247,7 +247,10 @@ export const stepOk = defineDecision({
 
   policy: [
     { when: probGte('ok', T.stepOk), action: 'continue', reason: `ok ≥ ${T.stepOk}` },
-    { action: 'retry_or_stop', reason: '结果不可用 → 换条路或停下' },
+    // 名字只承诺实际发生的事：loop 收到这个动作就停机，没有重试分支。
+    // 以前叫 `retry_or_stop`，但重试需要一个错误分类策略 —— 那个策略不存在，
+    // 所以「retry」不能写进 action 名里。约束见 JevLoop/AGENTS.md。
+    { action: 'stop', reason: '工具结果不可用 → 停下（没有错误分类策略，盲目重试不是改进）' },
   ],
 })
 
