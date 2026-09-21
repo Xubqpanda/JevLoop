@@ -57,6 +57,10 @@ export type { Generator, GenerateRequest, GenerateResult } from "./llm.ts";
 export { needsTool, pickTool, gradeRisk, stepOk, isDone, canDeliver } from "./decisions.ts";
 export type { AgentCtx, StepRecord } from "./decisions.ts";
 
+// ── 环境 ─────────────────────────────────────────────────────
+export { loadEnv } from "./env.ts";
+export type { LoadEnvOptions } from "./env.ts";
+
 // ── 一行创建默认后端 ─────────────────────────────────────────
 
 import { HttpProvider, MockProvider, FallbackProvider } from "./provider.ts";

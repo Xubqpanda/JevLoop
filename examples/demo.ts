@@ -15,9 +15,11 @@ import { mkdir, writeFile, rm, mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { Decider, Meter, runAgent, ScriptedGenerator, HttpProvider, FallbackProvider } from "../src/index.ts";
+import { Decider, Meter, runAgent, ScriptedGenerator, HttpProvider, FallbackProvider, loadEnv } from "../src/index.ts";
 import { RuleJudge } from "./rule-judge.ts";
 
+// 先加载 .env（有 TYPESAFE_API_KEY 就会自动用官方 Jev）
+const loaded = loadEnv();
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(`--${f}`);
 const prefer: "jev" | "laya" | "mock" | "rule" | undefined = has("jev") ? "jev" : has("laya") ? "laya" : has("mock") ? "mock" : has("rule") ? "rule" : undefined;
@@ -81,6 +83,8 @@ function buildProvider() {
   //   （实测：正确和错误的选项概率都挤在 0.55–0.66，没有区分度）。
   //   自动连上去只会让 `npm run demo` 输出一堆看不懂的升级。
   //   想看真实判定：显式加 --laya 或 --jev。
+  // 有 key → 先用官方 Jev（实测它在这种任务上远比开源 checkpoint 果断）
+  if (key) return new FallbackProvider([jev, rule], warn);
   return rule;
 }
 // 降级只提示一次 —— 每次判定都打一遍会把 trace 淹掉
@@ -103,6 +107,7 @@ console.log(C.dim(`  task      : ${TASK}`));
 console.log(C.dim(`  cwd       : ${cwd}`));
 console.log(C.dim(`  判定后端  : ${provider.name}`));
 console.log(C.dim(`  生成后端  : ${generator.name}（脚本化，让 demo 离线可跑）`));
+if (loaded.length) console.log(C.dim(`  .env      : 已加载 ${loaded.join(", ")}`));
 console.log("");
 console.log(C.bold("  ── loop trace ──────────────────────────────────────────"));
 

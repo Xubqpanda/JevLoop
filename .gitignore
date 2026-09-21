@@ -3,3 +3,7 @@ package-lock.json
 *.log
 .run/
 .DS_Store
+
+# 密钥：绝不提交
+.env
+.env.local
