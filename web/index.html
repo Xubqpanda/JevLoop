@@ -16,13 +16,19 @@
         <h2 class="section-title">DECISION.md</h2>
         <div id="spec"><div class="empty">读取中…</div></div>
 
+        <!--
+          图例的行不写死在这里 —— 由 app.js 的 renderLegend() 按 EVENT_META 生成。
+
+          上一版写死了五根 3px 色块，而屏幕上的轨迹早就是 19px 的文字徽章了。
+          三样东西同时错：尺寸（3px vs 19px）、文案（「规则」在轨迹里叫「审计」
+          和「预算」）、类名（`.swatch.rule` 在轨迹侧根本不存在）。
+
+          三样全错却没有一处会报错 —— 因为图和被它描述的东西之间**没有任何
+          机械联系**。现在有了：图例、时间轴、账本读同一张 EVENT_META。
+        -->
         <div class="legend">
           <h2 class="section-title">图例</h2>
-          <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向就出答案，不生成文本</div>
-          <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定，不过模型</div>
-          <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
-          <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步，整条轨迹上最宽的那一条</b></div>
-          <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
+          <div id="legend-rows"></div>
         </div>
       </aside>
 
@@ -49,9 +55,25 @@
 
         <!-- 对话 -->
         <section class="view" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
-          <div class="stream">
-            <div class="stream-inner" id="chat">
-              <div class="empty">说点什么，它会边判定边做。</div>
+          <!--
+            holder 是滚动内容和两个悬浮件共同的定位上下文。
+            按钮和轨道挂在滚动区**外面** —— 挂里面的话它们会跟着内容滚走。
+          -->
+          <div class="stream-holder">
+            <div class="stream" id="stream">
+              <div class="stream-inner" id="chat">
+                <div class="empty">说点什么，它会边判定边做。</div>
+              </div>
+            </div>
+
+            <!-- 一次用户输入一个刻度，点它跳过去（DSH 的 TurnNavigator） -->
+            <nav class="turn-rail" id="turn-rail" aria-label="跳转到某次输入" hidden>
+              <div class="turn-rail-scroller" id="turn-rail-scroller"></div>
+            </nav>
+
+            <!-- 只在离开底部时出现（DSH 的 toBottom） -->
+            <div class="to-bottom-slot">
+              <button class="to-bottom" id="to-bottom" type="button" title="回到最新" aria-label="回到最新" hidden>↓</button>
             </div>
           </div>
 

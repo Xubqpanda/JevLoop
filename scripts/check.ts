@@ -514,6 +514,103 @@ function cssTierViolations(): Violation[] {
 }
 
 // ═══════════════════════════════════════════════════════════
+// CSS 自定义属性的**作用域**
+//
+// 自定义属性在**声明它的那个元素上**完成 `var()` 替换。引用一个只在
+// 别的元素上存在的令牌，整条属性当场变成 guaranteed-invalid，再原样
+// 继承下去 —— 读出来是空串，用它的地方退化成 `unset`：继承属性拿到
+// 父值，非继承属性拿到初始值。
+//
+// 实测（2026-09-21）：十个 `--jl-kind-*` 声明写在 `:root` 上，而它们
+// 引用的 `--jl-alias-*` 定义在 **body**（DSH 的主题挂在 body）。后果是
+// 五类事件的颜色**从来没有生效过**：`color` 回退成正文色、`background`
+// 回退成透明，五个徽章全是没上色的裸文字。界面上只表现为「颜色淡了
+// 一点」，没有任何报错，跑多久都不会有人发现。
+//
+// 这是「`var()` 链必须在同一个作用域里闭合」的本地化代理：
+// **`:root` 上声明的令牌，只能引用 `:root` 自己声明过的令牌。**
+// ═══════════════════════════════════════════════════════════
+
+/** 一个 CSS 块的**选择器链**（嵌套时从外到内）与它的声明体 */
+type CssBlock = { chain: string[]; start: number; body: string }
+
+/**
+ * 把 CSS 切成块，**嵌套的也算** —— 只认顶层块的话，`@media { :root { … } }`
+ * 就是个没人知道的盲区，而「规则宣称的范围和它实际扫的范围必须是同一个」
+ * 正是这个文件存在的理由。
+ *
+ * 注释换成**等长**空白，这样块内偏移和原文件偏移一致，行号才不会漂。
+ */
+function cssBlocks(css: string): CssBlock[] {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  const out: CssBlock[] = []
+  const stack: { selector: string; head: number }[] = []
+  let head = 0
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === '{') {
+      stack.push({ selector: src.slice(head, i).trim(), head: i + 1 })
+      head = i + 1
+    } else if (src[i] === '}') {
+      const top = stack.pop()
+      if (top) {
+        out.push({
+          chain: [...stack.map((s) => s.selector), top.selector],
+          start: top.head,
+          body: src.slice(top.head, i),
+        })
+      }
+      head = i + 1
+    }
+  }
+  return out
+}
+
+/** `--name: value` —— value 里可能有换行（color-mix 就是），所以不含 `;{}` 即可 */
+const CSS_DECL = /(--[\w-]+)\s*:([^;{}]*)/g
+
+function cssScopeViolations(): Violation[] {
+  const file = 'web/tokens.css'
+  const css = readFileSync(file, 'utf8')
+  const blocks = cssBlocks(css)
+  const lineAt = (idx: number) => css.slice(0, idx).split('\n').length
+  const subject = (b: CssBlock) => b.chain[b.chain.length - 1]
+
+  /** 每个**元素**（选择器链的末段）上都有哪些令牌 */
+  const declaredOn = new Map<string, Set<string>>()
+  for (const b of blocks) {
+    const set = declaredOn.get(subject(b)) ?? new Set<string>()
+    for (const m of b.body.matchAll(CSS_DECL)) set.add(m[1])
+    declaredOn.set(subject(b), set)
+  }
+
+  const out: Violation[] = []
+  for (const b of blocks) {
+    if (subject(b) !== ':root') continue
+    const here = declaredOn.get(':root') ?? new Set<string>()
+    // 声明在别处（body / body[data-jl-dark] / …）的令牌，:root 引用不到
+    const elsewhere = new Set<string>()
+    for (const [sel, set] of declaredOn) {
+      if (sel === ':root') continue
+      for (const t of set) elsewhere.add(t)
+    }
+    for (const m of b.body.matchAll(CSS_DECL)) {
+      for (const ref of m[2].matchAll(/var\(\s*(--[\w-]+)/g)) {
+        const target = ref[1]
+        // 自己也有 → 闭合；谁都没声明 → 是另一回事，不归这条规则管
+        if (here.has(target) || !elsewhere.has(target)) continue
+        out.push({
+          file,
+          line: lineAt(b.start + (m.index ?? 0)),
+          rule: 'css-scope',
+          detail: `:root 上的 \`${m[1]}\` 引用了只在别处声明的 \`${target}\` —— 换不出值，整条属性会静默失效`,
+        })
+      }
+    }
+  }
+  return out
+}
+
+// ═══════════════════════════════════════════════════════════
 // 文件体量：超线就必须**把判断写下来**
 //
 // `AGENTS.md §12` 的判据是「这个文件能不能用一句话说完它负责什么」——
@@ -588,6 +685,7 @@ const violations = [
   ...publicSurfaceViolations('src'),
   ...publicTypeSurfaceViolations('src'),
   ...cssTierViolations(),
+  ...cssScopeViolations(),
   ...fileFocusViolations(),
 ]
 

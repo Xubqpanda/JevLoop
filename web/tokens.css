@@ -827,9 +827,10 @@ body {
    * 而不是靠每一处 `var()` 的兜底参数各自为政。
    */
   --jl-content-font-size: var(--jl-font-size);
+}
 
-  /* ═══════════════════════════════════════════════════════════
-     五类事件的颜色 —— **只在这里定义一次**
+/* ═══════════════════════════════════════════════════════════════
+   五类事件的颜色 —— **只在这里定义一次**
 
      图例、顶栏计数、过程行、时间轴、轨迹徽章、判定规格，六处都从
      这里取。以前它们各写各的，于是改一个颜色要改六个地方，而漏掉
@@ -846,8 +847,34 @@ body {
 
      棕色是混出来的：DSH 的调色板里没有棕，用琥珀压向中性灰得到一个
      低饱和的暖色，亮暗两套都成立（混的是随主题变的 label-tertiary）。
+
+     ── 为什么声明在 body 上，而不是 :root ─────────────────────
+
+     这十个值全部 `var()` 链到 `--jl-alias-*`，而 alias 定义在 **body**
+     上（DSH 的主题挂在 body，见上面 `body` / `body[data-jl-dark]` 两处）。
+
+     自定义属性在**声明它的那个元素上**完成替换。`:root` 替换时找不到
+     body 上的 alias，于是整条属性在 :root 就变成 guaranteed-invalid，
+     再原样继承下去 —— 一路都是空的。
+
+     后果不是「颜色偏了」，是「颜色彻底没有」：
+     `color: var(--jl-kind-*)` 失效后回退成 inherit（拿到正文色），
+     `background` 回退成 transparent。十个 token 全空，五个徽章全是
+     没上色的裸文字 —— 而**没有任何东西会报错**。
+
+     实测（2026-09-21）：这十个声明还在 `:root` 上时，
+     `getComputedStyle(document.documentElement).getPropertyValue(
+     '--jl-kind-decide-fg')` 返回空串；而同一条链上的 alias
+     `--jl-alias-state-business-primary` 在 body 上读得到 rgb(65,118,230)。
+     挪到 body 之后两者都有值。
+
+     放在 body 上还有第二个好处：暗色主题在 `body[data-jl-dark]` 上重绑
+     alias，替换发生在同一个元素上，所以换主题时这五类颜色**自己跟着变**。
+     挂在 :root 的话，即使替换成功，暗色主题也拿不到 —— :root 上的值在
+     主题切换之前就定死了。
      ═══════════════════════════════════════════════════════════ */
 
+body {
   /* 判定 —— 蓝。这是这一层最该被看见的东西，也是数量最多的 */
   --jl-kind-decide-fg: var(--jl-alias-state-business-primary);
   --jl-kind-decide-bg: var(--jl-alias-state-business-tertiary);

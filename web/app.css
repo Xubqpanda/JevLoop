@@ -239,6 +239,121 @@ body {
   gap: 16px;
 }
 
+/*
+  滚动区的定位壳。存在的唯一理由是给两个悬浮件一个**不滚动**的参照：
+  它们要是放进 `.stream` 里，就会和内容一起被滚走。
+*/
+.stream-holder {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ── 回到最新 ─────────────────────────────────────────────── */
+
+.to-bottom-slot {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  z-index: 8;
+  /* 槽位不接指针，只有按钮接 —— 否则它会在正文右下角挡出一块死区 */
+  pointer-events: none;
+}
+
+.to-bottom {
+  pointer-events: auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--jl-alias-bg-base);
+  box-shadow: var(--jl-elevation-panel);
+  color: var(--jl-alias-label-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.to-bottom:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+  color: var(--jl-alias-label-primary);
+}
+
+/* hidden 是属性选择器最低优先级，所以要显式让位给上面的 display:flex */
+.to-bottom[hidden] {
+  display: none;
+}
+
+/* ── 跳转轨 ───────────────────────────────────────────────── */
+
+/*
+  轨道本身不接指针（正文的右侧留白要能正常选中文字），
+  只有刻度接 —— 这和 DSH 的做法一致。
+*/
+.turn-rail {
+  position: absolute;
+  /*
+    让开滚动条，再留 6px。宽度**读 token 不写死** —— 这正是
+    --jl-scrollbar-width 注释里说的那个用途（「贴着占位滚动条的表面读它，
+    而不是硬编码这个数」）。轨道比滚动条宽 28px，压上去的话点滚动条左沿
+    会打到刻度上。
+  */
+  right: calc(var(--jl-scrollbar-width) + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 7;
+  width: 28px;
+  height: min(70%, 420px);
+  pointer-events: none;
+}
+
+.turn-rail[hidden] {
+  display: none;
+}
+
+.turn-rail-scroller {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* 一个刻度 = 一次用户输入。绝对定位，top 按它在内容里的比例算 */
+.turn-mark {
+  position: absolute;
+  left: 0;
+  width: 28px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  pointer-events: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.turn-mark::before {
+  content: '';
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--jl-alias-border-l4);
+  transition: width 120ms ease, background-color 120ms ease;
+}
+
+.turn-mark:hover::before,
+.turn-mark.active::before {
+  width: 18px;
+  background: var(--jl-alias-label-tertiary);
+}
+
 /* 用户消息：右对齐的胶囊。**只有用户消息有气泡** ——
    助手消息是背景上的正文，这是 DSH 界面的主要视觉特征。 */
 .msg-user {
@@ -1059,37 +1174,36 @@ body {
   margin-top: 18px;
 }
 
+/*
+  图例行由 renderLegend() 生成，里面的徽章就是轨迹里那个 `.kind-tag` ——
+  同一个类，不是照着它另画一个近似物。
+
+  `.swatch`（3px 色块）随之删掉。它是轨迹还靠「3px 左边框」表达语义那个
+  时代的记号；轨迹改成文字徽章之后它没跟着改，于是图例画的是一样屏幕上
+  已经不存在的东西。仿制品迟早会和被仿的东西分叉，这次分叉了两个版本
+  都没人发现 —— 所以别再放一个仿制品进来。
+*/
 .legend-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  padding: 2px 0;
+  padding: 3px 0;
   font-size: var(--jl-font-size-caption);
   line-height: var(--jl-line-caption);
   color: var(--jl-alias-label-tertiary);
 }
 
-.swatch {
+/* 一类可能对应好几个徽章（灰色那一档就是「审计」+「预算」），横排 */
+.legend-badges {
+  display: flex;
   flex: none;
-  width: 3px;
-  height: 14px;
-  border-radius: 2px;
+  gap: 3px;
+  /* 徽章 19px 高、文字行更矮，抬 1px 让两者的首行对齐 */
+  padding-top: 1px;
 }
 
-.swatch.decide {
-  background: var(--jl-kind-decide-fg);
-}
-.swatch.rule {
-  background: var(--jl-kind-rule-fg);
-}
-.swatch.tool {
-  background: var(--jl-kind-tool-fg);
-}
-.swatch.model {
-  background: var(--jl-kind-model-fg);
-}
-.swatch.authorize {
-  background: var(--jl-kind-authorize-fg);
+.legend-badges .kind-tag {
+  margin-top: 0;
 }
 
 /* ═══════════════════════════════════════════════════════════

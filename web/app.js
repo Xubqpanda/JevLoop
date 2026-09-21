@@ -17,13 +17,18 @@
  *
  * ## 待拆
  *
- * 开头的「两个视图，同一串事件」是一句话，但文件内部是十一节：
- * DOM 小工具 / 状态 / 视图切换 / 渲染：对话 / 渲染：轨迹 / 右栏：记账 /
- * 事件分发 / 运行 / DECISION.md 面板 / 主题 / 会话。
+ * 开头的「两个视图，同一串事件」是一句话，但文件内部是十三节：
+ * DOM 小工具 / 状态 / 视图切换 / 渲染：对话 / 滚动 / 跳转轨 /
+ * 渲染：轨迹 / 右栏：记账 / 事件分发 / 运行 / DECISION.md 面板 /
+ * 主题 / 会话。
  *
  * 接缝就是这些节，而且**三条链几乎不交叉**：`渲染：对话`、`渲染：轨迹`
  * 各自闭包（都只读同一份事件数组），`事件分发 + 运行` 是另一块。
  * 拆的时候按这三块走，不按行数。
+ *
+ * `滚动` 和 `跳转轨` 是后加的：两者都只操作 `.stream` 一个元素，
+ * 既不碰事件流也不碰渲染，合起来是一块独立的「视口控制」——
+ * 要摘的话先摘它。
  */
 
 // ═══════════════════════════════════════════════════════════
@@ -141,8 +146,170 @@ for (const v of VIEWS) $(`tab-${v}`).addEventListener('click', () => selectView(
 // 渲染：对话
 // ═══════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════
+// 滚动：跟着最新走，但不跟用户抢
+// ═══════════════════════════════════════════════════════════
+
+const stream = $('stream')
+
+/**
+ * 多靠近底部才算「在底部」。
+ *
+ * 这个判断是整段滚动逻辑的核心 —— 没有它，两条路都是错的：
+ * 每来一行就滚到底，你往回翻第 3 步时页面自己在动，翻不上去；
+ * 完全不自动滚，长任务就得手动追着拖。
+ *
+ * 所以规则是：**你离开底部我就停手，你回到底部我接着跟。**
+ *
+ * 阈值不取 0，是因为「底部」在像素上永远差一两像素（行高取整、
+ * 平滑滚动还没停稳）。精确比较会把它误判成「用户滚走了」而永久停手 ——
+ * 表现就是自动滚动彻底失效，且看不出原因。
+ */
+const STICK_GAP_PX = 32
+
+let stick = true
+
+function nearBottom() {
+  return stream.scrollHeight - stream.scrollTop - stream.clientHeight <= STICK_GAP_PX
+}
+
+/**
+ * 跟着尾巴滚 —— 只在用户没有主动离开时。
+ *
+ * 用 `scrollTop = scrollHeight`，**不用 `scrollIntoView`**。后者有两个毛病，
+ * 合起来正好就是「页面完全不动」：
+ *
+ *   1. 它会一路滚动**所有**可滚动的祖先，包括页面本身；
+ *   2. 连续调用时，后一次平滑动画会取消前一次 —— 每 390ms 来一行，
+ *      上一段动画还没走完就被取消，于是永远停在原地。
+ */
+function followTail() {
+  if (!stick) return
+  stream.scrollTop = stream.scrollHeight
+  syncToBottom()
+}
+
+function syncToBottom() {
+  $('to-bottom').hidden = nearBottom()
+}
+
+/** 正在做程序化的平滑滚动。期间不接受滚动事件的判决。 */
+let smoothJump = false
+
+/**
+ * 回到底部（点按钮时）。这里用平滑滚动，所以需要一个标志位：
+ * 动画途中每一帧都「不靠近底部」，不加标志的话每一帧都会把 stick
+ * 判成 false —— 按钮自己把自己的自动跟随关掉了。
+ */
+function backToBottom() {
+  stick = true
+  smoothJump = true
+  stream.scrollTo({ top: stream.scrollHeight, behavior: 'smooth' })
+  clearTimeout(backToBottom.timer)
+  backToBottom.timer = setTimeout(() => {
+    smoothJump = false
+    stick = nearBottom()
+    syncToBottom()
+    syncActiveMark()
+  }, 400)
+}
+
+stream.addEventListener('scroll', () => {
+  if (smoothJump) return
+  stick = nearBottom()
+  syncToBottom()
+  syncActiveMark()
+})
+
+$('to-bottom').addEventListener('click', backToBottom)
+
+// ═══════════════════════════════════════════════════════════
+// 跳转轨：每一次输入一个刻度
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 屏幕右边那条轨道，一个刻度 = 一次用户输入。
+ *
+ * 它解决的是「往回翻的成本随长度增长」：跑十几步之后想回到「我最早说的是
+ * 什么」要滚很久，而且滚的过程没有落点。
+ *
+ * 刻度按**内容里的位置比例**摆，不是等距排 —— 等距只能说明「有 5 次输入」，
+ * 按比例才能说明「那 5 次分别在多深的地方」。
+ */
+const turnMarks = []
+let railEls = []
+
+function syncTurnRail() {
+  $('turn-rail').hidden = turnMarks.length < 2
+  if (turnMarks.length < 2) return
+
+  const scroller = $('turn-rail-scroller')
+
+  // 刻度只在数量变化时重建。位置每次都要重算 —— 内容变长，比例就变了。
+  if (railEls.length !== turnMarks.length) {
+    railEls = turnMarks.map((mark, i) => {
+      const el = h('button', {
+        class: 'turn-mark',
+        type: 'button',
+        title: mark.text.length > 60 ? `${mark.text.slice(0, 60)}…` : mark.text,
+        'aria-label': `第 ${i + 1} 次输入`,
+      })
+      el.addEventListener('click', () => scrollToTurn(i))
+      return el
+    })
+    scroller.replaceChildren(...railEls)
+  }
+
+  const total = stream.scrollHeight || 1
+  const top = stream.getBoundingClientRect().top
+  for (const [i, el] of railEls.entries()) {
+    // 视口坐标 + 已滚距离 = 内容坐标
+    const y = turnMarks[i].el.getBoundingClientRect().top - top + stream.scrollTop
+    el.style.top = `${(Math.min(1, Math.max(0, y / total)) * 100).toFixed(3)}%`
+  }
+  syncActiveMark()
+}
+
+/**
+ * 跳到第 i 次输入。
+ *
+ * 同样不用 `scrollIntoView` —— 它连整个页面一起滚。这里要动的只有
+ * `.stream` 一个元素，所以按「目标相对滚动视口的偏移」算差值。
+ */
+function scrollToTurn(i) {
+  const mark = turnMarks[i]
+  if (!mark) return
+  const delta = mark.el.getBoundingClientRect().top - stream.getBoundingClientRect().top
+  // 手动跳转意味着用户不是要看最新的，把自动跟随关掉
+  stick = false
+  smoothJump = true
+  stream.scrollTo({ top: Math.max(0, stream.scrollTop + delta - 12), behavior: 'smooth' })
+  clearTimeout(scrollToTurn.timer)
+  scrollToTurn.timer = setTimeout(() => {
+    smoothJump = false
+    stick = nearBottom()
+    syncToBottom()
+    syncActiveMark()
+  }, 400)
+}
+
+/** 高亮「现在读到的是哪一次输入」：最后一个已经越过视口顶部的刻度 */
+function syncActiveMark() {
+  if (!railEls.length) return
+  const top = stream.getBoundingClientRect().top
+  let active = 0
+  for (const [i, mark] of turnMarks.entries()) {
+    if (mark.el.getBoundingClientRect().top - top <= 16) active = i
+  }
+  for (const [i, el] of railEls.entries()) el.classList.toggle('active', i === active)
+}
+
 function userTurn(text) {
-  chat.append(h('div', { class: 'msg-user' }, h('div', { class: 'bubble' }, text)))
+  const el = h('div', { class: 'msg-user' }, h('div', { class: 'bubble' }, text))
+  chat.append(el)
+  turnMarks.push({ el, text })
+  syncTurnRail()
+  followTail()
 }
 
 /**
@@ -162,7 +329,7 @@ function assistantTurn() {
   const foot = h('div', { class: 'msg-foot' })
   const el = h('div', { class: 'msg-assistant' }, list, running, answer, foot)
   chat.append(el)
-  el.scrollIntoView({ block: 'end', behavior: 'smooth' })
+  followTail()
   return { el, list, running, answer, foot, rows: 0, finished: false, stopped: false }
 }
 
@@ -296,7 +463,7 @@ function finishAssistant(text, stats, halt) {
     h('span', {}, `${ratio} 判定:模型`),
     h('span', {}, `停于 ${halt}`),
   )
-  current.el.scrollIntoView({ block: 'end', behavior: 'smooth' })
+  followTail()
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -332,6 +499,64 @@ const EVENT_META = {
   'tool:call': { label: '工具', cls: 'tool', lane: LANE.tool, mono: true },
   'tool:result': { label: '工具结果', cls: 'tool', lane: LANE.tool, mono: true },
   generate: { label: '模型', cls: 'model', lane: LANE.model },
+}
+
+/**
+ * 图例的说明文字 —— 按**类**写，不按事件写。
+ *
+ * 同一档颜色下可能有好几种徽章（灰色那一档就是「审计」和「预算」），
+ * 它们在图里长得一模一样，所以在图例里也该并排出现、共用一句说明。
+ */
+const LEGEND_NOTES = {
+  decide: { text: '一次前向就出答案，不生成文本' },
+  audit: { text: '代码做的决定，不过模型' },
+  tool: { text: '唯一有真实副作用的地方' },
+  model: { text: '唯一贵的一步，整条轨迹上最宽的那一条', strong: true },
+  authorize: { text: '停下来等人' },
+}
+
+/** 图例的排列顺序。不在这里的类会被追加到末尾并标出来，不会被丢掉。 */
+const LEGEND_ORDER = ['decide', 'audit', 'tool', 'model', 'authorize']
+
+/**
+ * 图例是 EVENT_META 的**第三个**消费者（另两个是时间轴和账本）。
+ *
+ * 上一版图例是手写的 HTML，于是和轨迹漂移了个彻底：轨迹早就是 19px 的
+ * 文字徽章，图例还在画 3px 色块，连「规则」那一档的类名（`.swatch.rule`）
+ * 在轨迹侧都不存在。三样全错，却没有任何东西会报错。
+ *
+ * 从同一张表生成就没有这个问题：加一种事件，图例自己会多出一行。
+ */
+function renderLegend() {
+  const byCls = new Map()
+  for (const meta of Object.values(EVENT_META)) {
+    if (!byCls.has(meta.cls)) byCls.set(meta.cls, [])
+    byCls.get(meta.cls).push(meta.label)
+  }
+
+  // EVENT_META 里出现了、但 LEGEND_ORDER 没收录的类，追加到末尾。
+  // 说明文字缺失时报「还没写说明」，**不静默少一行** —— 少一行是看不出来的。
+  const extra = [...byCls.keys()].filter((cls) => !LEGEND_ORDER.includes(cls))
+
+  const rows = []
+  for (const cls of [...LEGEND_ORDER, ...extra]) {
+    const labels = byCls.get(cls)
+    if (!labels) continue
+    const note = LEGEND_NOTES[cls]
+    rows.push(
+      h(
+        'div',
+        { class: 'legend-row' },
+        h(
+          'span',
+          { class: 'legend-badges' },
+          ...labels.map((label) => h('span', { class: `kind-tag ${cls}` }, label)),
+        ),
+        h('span', {}, note?.strong ? h('b', {}, note.text) : (note?.text ?? '（还没写说明）')),
+      ),
+    )
+  }
+  $('legend-rows').replaceChildren(...rows)
 }
 
 /**
@@ -724,7 +949,9 @@ function onEvent(e) {
     if (row) {
       current.list.append(row)
       current.rows++
-      row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      // 新行让内容变长了，刻度的比例位置跟着变
+      followTail()
+      syncTurnRail()
     }
     if (e.type === 'tool:call') setWaiting(`正在执行 ${e.tool}`)
     else if (e.type === 'generate') setWaiting('正在生成回答')
@@ -983,6 +1210,9 @@ $('new-session').addEventListener('click', async () => {
   turns.length = 0
   current = null
   chat.replaceChildren(h('div', { class: 'empty' }, '新对话。说点什么。'))
+  turnMarks.length = 0
+  railEls = []
+  syncTurnRail()
   trajBody.replaceChildren(h('tr', {}, h('td', { colspan: '2', class: 'empty' }, '还没有跑过。')))
   spans.length = 0
   clock = 0
@@ -1039,3 +1269,5 @@ applyTheme(saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)')
 const savedView = restore('jl-view')
 selectView(VIEWS.includes(savedView) ? savedView : 'chat')
 loadSpec()
+renderLegend()
+syncToBottom()

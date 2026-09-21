@@ -269,6 +269,55 @@ npm run check          # 含 layers 规则
 
 ---
 
+## 13. CSS 令牌的 `var()` 链必须在**同一个作用域**里闭合
+
+自定义属性在**声明它的那个元素上**完成 `var()` 替换。引用一个只在
+别的元素上存在的令牌，整条属性当场变成 guaranteed-invalid，再原样
+继承下去 —— 读出来是空串，用它的地方退化成 `unset`：
+**继承属性拿到父值，非继承属性拿到初始值。**
+
+```
+:root { --jl-kind-decide-fg: var(--jl-alias-state-business-primary); }   ✗
+body  { --jl-kind-decide-fg: var(--jl-alias-state-business-primary); }   ✓
+```
+
+因为 `--jl-alias-*` / `--jl-static-*` 定义在 **body** 上（DSH 的主题挂在
+body，见 `tokens.css` 的 `body` / `body[data-jl-dark]` 两处），`:root`
+替换时找不到它们。
+
+### 实测（2026-09-21）
+
+十个 `--jl-kind-*` 写在 `:root` 上。后果不是「颜色偏了」，是**颜色从来
+没有生效过**：
+
+| 属性 | 应该 | 实际 |
+|---|---|---|
+| `color: var(--jl-kind-*)` | 类别色 | 回退 `unset` → **继承正文色** |
+| `background: var(--jl-kind-*)` | 类别底色 | 回退 `unset` → **透明** |
+
+五个徽章全是没上色的裸文字，而界面上只表现为「颜色淡了一点」。
+`getComputedStyle(document.documentElement).getPropertyValue('--jl-kind-decide-fg')`
+返回**空串**，而链上的 `--jl-alias-state-business-primary` 在 body 上
+读得到 `rgb(65,118,230)` —— 这就是判据。
+
+顺带修好的还有主题切换：挂在 `:root` 上时，即使替换成功，暗色主题在
+`body[data-jl-dark]` 上重绑 alias 也传不进来（`:root` 的值在切主题之前
+就定死了）。挪到 `body` 后这五类颜色**自己跟着主题变**。
+
+### 规矩
+
+- **声明在哪，就在哪替换。** 引用 `--jl-alias-*` / `--jl-static-*` 的
+  令牌，必须声明在 `body`（或 body 的后代）上，**不能是 `:root`**。
+- **机器检查**：`css-scope`（`scripts/check.ts`）。它扫 `tokens.css` 的
+  **所有嵌套块**，报出 `:root` 上引用了别处令牌的每一条。
+  —— 只扫顶层块的话，`@media { :root { … } }` 就是没人知道的盲区。
+
+> **为什么值得单列**：这类失效是**静默**的。没有报错、没有控制台警告、
+> 没有失败的断言，只是颜色悄悄退化成继承值。它靠肉眼比对才发现，
+> 而肉眼比对的前提是你**记得**那里本该有颜色。
+
+---
+
 ## 验证
 
 改完必须跑：
