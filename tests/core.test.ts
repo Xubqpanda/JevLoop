@@ -503,12 +503,80 @@ test('R1: 没有内容来源时，目标文件的内容一个字节都不变', a
       // 万一还是走到授权闸门，就批准 —— 这个测试要验的是「内容会不会落盘」，
       // 不是审批行为。
       onAskHuman: async () => true,
-      // ★ 故意不传 provideWriteContent
+      // ★ **`null` = 明确不要写入能力**，不是「不传」。
+      //
+      //   不传的话 `runAgent` 会用生成器现造一个内容来源（那是缺省，理由见
+      //   `agent.ts` 里那段）—— 于是 `write_file` 进候选，而这个测试里那个
+      //   「只要它在候选里就一定选它」的判定器会真的把 note.md 改掉。
+      //
+      //   实测：改缺省那次这条测试当场红了，而它红得对 —— 门确实被绕过了。
+      //   `null` 和 `undefined` 的区别就是为这件事留的。
+      provideWriteContent: null,
     })
 
     // 修之前：这里会变成「（内容由调用方提供）」—— 一句占位符把真实内容整个替换掉，
     // 而且 write_file 仍在候选里，会连续重写 5 次，最后 halt: max_steps。
     assert.equal(await readFile(target, 'utf8'), original)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('★ 不传内容来源时，缺省会用生成器现造 —— 而且**真的写到盘上**', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-w2-'))
+  try {
+    const wpath = join(cwd, 'note.md')
+    const original = '# 原内容\n'
+    await writeFile(wpath, original, 'utf8')
+
+    // 只要 write_file 在候选里就选它 —— 和 R1 同一个最坏调用方
+    const insistWrite = {
+      name: 'insist-write',
+      decide: async (req: { questions: Record<string, { type: string; criteria?: unknown }> }) => {
+        const answers: Record<string, unknown> = {}
+        for (const [id, q] of Object.entries(req.questions)) {
+          const crit = Object.keys((q.criteria ?? {}) as Record<string, string>)
+          if (q.type === 'noul') {
+            const low = id === 'needs_auth' || id === 'done' || id === 'unsupported'
+            answers[id] = { type: 'noul', noul: low ? 0.05 : 0.9 }
+          } else if (q.type === 'score')
+            answers[id] = { type: 'score', score: 0, legend: {}, probabilities: {}, confidence: 0.9 }
+          else {
+            const pick = id === 'tool' && crit.includes('write_file') ? 'write_file' : (crit[0] ?? '')
+            answers[id] = { type: 'choice', choice: pick, probabilities: pick ? { [pick]: 0.99 } : {}, confidence: 0.99 }
+          }
+        }
+        return { answers, provider: 'fake', latencyMs: 0 }
+      },
+    }
+
+    // ★ 这是一次**真跑**：素材来自 list_dir 的真实输出，内容是生成器产出的
+    let sawEvidence = ''
+    await runAgent({
+      task: '把工作目录里有什么写进 note.md',
+      cwd,
+      decider: new Decider({ provider: insistWrite as never, meter: new Meter() }),
+      generator: {
+        name: 'capture',
+        generate: async (req: { evidence: string }) => {
+          sawEvidence = req.evidence
+          return { text: '```\n# 生成的内容\n```', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+        },
+      },
+      maxSteps: 8,
+      onAskHuman: async () => true,
+    })
+
+    const after = await readFile(wpath, 'utf8')
+    assert.notEqual(after, original, '★ 这一次**应该**被写 —— 有内容来源')
+    assert.equal(after, '# 生成的内容\n', '围栏被剥掉了，写进去的是内容本身')
+    assert.match(sawEvidence, /list_dir/, '生成时拿到的素材里有前面工具的输出')
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

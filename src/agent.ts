@@ -46,6 +46,7 @@ import {
   stepOk,
   isDone,
   canDeliver,
+  GENERATOR_INSTRUCTION,
 } from './decisions.ts'
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
@@ -61,6 +62,7 @@ import { decisionEvent, type AgentObserver, type BudgetLine, type RunBudget } fr
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
 import { foldConversation, type ConversationReport } from './conversation.ts'
+import { writeContentVia } from './write-content.ts'
 
 export interface AgentOptions {
   task: string
@@ -82,11 +84,12 @@ export interface AgentOptions {
    * `write_file` 仍在候选里而连续重写了 5 次，最后 `halt: max_steps`。
    *
    * 返回 `undefined` 表示这次写不了 → loop 停机，而不是写个占位符交差。
+   *
+   * ⚠️ **不传 = 用生成器现造**（缺省，见下面那段）。**传 `null` = 明确不要
+   *   写入能力** —— 那道门会关上，`write_file` 不进候选。这两种情况的区别
+   *   是有意的：不传是「我没想过这件事」，`null` 是「我知道，我不要」。
    */
-  provideWriteContent?: (
-    file: string,
-    ctx: AgentCtx,
-  ) => string | undefined | Promise<string | undefined>
+  provideWriteContent?: null | ((file: string, ctx: AgentCtx) => string | undefined | Promise<string | undefined>)
   /**
    * 之前的轮次。**多轮会话的入口** —— 没有它，每一句都是孤立的任务，
    * 「再读一遍那个文件」里的"那个"无处可指。
@@ -220,6 +223,43 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const genHistory = folded.recent.length > 0 ? folded.recent : undefined
   const genDigest = folded.digest.length > 0 ? folded.digest : undefined
 
+  /*
+    ★ **内容来源有缺省值：用生成器现造。**
+
+    在这之前 `provideWriteContent` 是**可选的**，而 `src/server.ts`、
+    `src/cli.ts`、`examples/` **一个都没传** —— 于是 `write_file` 在每一次
+    网页 / CLI 运行里都不进候选（见 `frame.ts` 那道门），**通过这个服务
+    永远写不出文件**，而唯一的信号是一个看起来像「判定不确定」的停机。
+
+    实测（2026-09-21）：任务「把两个文件里的函数写进新建的 SUMMARY.md」，
+    21 次判定、读完两个源文件之后，第 18 步 `pickTool` 的候选里**只有**
+    `read_file` 和 `done` —— 判定模型在两个错误选项里选了较不坏的那个
+    （0.58，低于门限）然后停机。**它的行为是对的，缺的是那个选项。**
+
+    所以缺省值补在这里，而不是让每个调用方各接一次：这个钩子对「能用的
+    agent」不是可选项，把它当可选就是那个窟窿的成因（N 个调用方、0 个接）。
+    `opts.provideWriteContent` 仍然可以覆盖 —— 想用别的内容来源（模板、
+    固定文件、从别处取）的调用方照样能换。
+  */
+  // ⚠️ **不能用 `??`** —— `null ?? x` 会走缺省，于是「明确不要写入」
+  //    就没有任何表达方式了。`undefined`（没传）= 用缺省；`null` = 关掉。
+  const writeContent =
+    opts.provideWriteContent === undefined
+      ? writeContentVia(opts.generator, GENERATOR_INSTRUCTION, (g) => {
+          // 和主回答那两处同一个形状（`kind` 里写明是哪一种生成），
+          // 所以界面、账本、计数都不用为它加特例
+          emit({
+            type: 'generate',
+            step,
+            kind: `generate/write (${opts.generator.name})`,
+            latencyMs: g.result.latencyMs,
+            inputTokens: g.result.inputTokens,
+            outputTokens: g.result.outputTokens,
+            estimatedInputTokens: g.estimatedInputTokens,
+          })
+        })
+      : opts.provideWriteContent
+
   const earlier = folded.recent.slice().reverse().map((t) => t.task).join(' / ')
   const ctx: AgentCtx = {
     task: opts.task,
@@ -227,8 +267,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     earlier,
     files: [],
     history: [],
-    // 没有内容来源时 `write_file` 不进候选（见 AgentOptions.provideWriteContent）
-    canWrite: typeof opts.provideWriteContent === 'function',
+    // `null` = 调用方明确不要写入 → 门关上，`write_file` 不进候选（见 `frame.ts`）
+    canWrite: typeof writeContent === 'function',
   }
   let step = 0
   let halt = 'max_steps'
@@ -324,7 +364,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // 工具参数是一次**判定**，不是写死的代码（审计 N3）
-    const input = await resolveInput(tool, ctx, ask, opts.provideWriteContent)
+    const input = await resolveInput(tool, ctx, ask, writeContent)
     if (input === undefined) {
       halt = 'input_unclear'
       trace(`  could not choose an input for ${tool} → stopping`)

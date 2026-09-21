@@ -291,6 +291,11 @@ const LAYER: Record<string, number> = {
   'decision-shape': 0,
   decisiondoc: 0,
   'decision-compile': 2,
+  // `write-content` 放 L3：它把 agent 的上下文**编译**成一个生成请求
+  // （和 `frame.ts` 编判定帧是同一件事），所以要能 import `llm.ts`（L2）。
+  // 补的是一个实测出来的窟窿：此前没有任何调用方提供 `write_file` 的内容来源，
+  // 于是它在候选里永远不出现 —— 见该文件头。
+  'write-content': 3,
   // L4 —— 判定节点
   decisions: 4,
   // L5 —— 循环
