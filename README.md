@@ -148,6 +148,73 @@ policy: [
 
 A decision model may decide *whether to ask a human*. It must never decide *whether to skip authorisation*.
 
+## DECISION.md — the decisions, compiled
+
+Every generation of agent framework leaves behind a `.md`. `AGENTS.md` holds conventions, `SKILL.md` holds capabilities — and both are **prose for a model to read**. The model pays tokens for them every turn, it can ignore them, and nothing tells you whether it did.
+
+`DECISION.md` is the first one that gets **compiled**.
+
+> **Not a decision *record*.** A record is written afterwards, to explain what an agent did. `DECISION.md` declares what the loop is *going to* decide, and a program turns it into the questions the decision model is asked.
+
+One file, two consumers:
+
+```
+structure blocks  →  questions + policy  →  the decision model   (tens of ms, no tokens)
+prose             →  system prompt       →  the LLM              (the one expensive step)
+```
+
+So it is subtraction: every block you move into the file is one question the LLM no longer has to be asked. [`headline()`](src/decisiondoc.ts) counts them **from the file itself** — change a `kind` and the sentence changes with it.
+
+And the file cannot quietly rot. [`tests/decisiondoc.test.ts`](tests/decisiondoc.test.ts) compiles it and asserts, in both directions, that it matches what [`src/decisions.ts`](src/decisions.ts) actually asks: no decision missing, none invented, every question's primitive type the same.
+
+### The syntax
+
+```markdown
+# DECISION.md
+
+## grade_risk
+kind: mixed
+when: before every tool call that actually runs
+
+### risk
+ask: How risky is this tool call?
+- read-only
+- reversible write
+- irreversible
+- destructive
+
+### needs_auth
+ask: This call must be explicitly authorised by a human before it runs
+- true — it can destroy data, spend money, or leave the machine
+- false — it only reads or writes inside the working directory
+
+policy:
+  - score:risk >= 2 → ask_human
+  - prob:needs_auth >= 0.5 → ask_human
+  - score:risk >= 1 → auto_audit
+  - else → auto
+```
+
+| Written | Means |
+|---|---|
+| `## <id>` | one decision block |
+| `kind: choice \| noul \| score \| mixed \| rule` | required on every block — this is where you take a position |
+| `when:` / `dynamic:` | prose: when it is asked, and how the candidates are rebuilt each step |
+| `ask: <question>` | the question that reaches the decision model |
+| `- name — criteria` | an option (em dash or `--`, spaces required) |
+| `- criteria`, no name | a level of a `score` |
+| `### <id>` | a second question in the same block (`mixed`) |
+| `policy:` then `- <predicate> → <action>` | answers → action |
+| `## generator` | prose, injected verbatim into the system prompt |
+
+**The question type is inferred from how the options are written, never declared.** Two options named `true` and `false` is a `noul`; every option named is a `choice`; none named is a `score`; a mix is an error rather than a guess. `kind` then has to agree with what the writing implies.
+
+**Predicates are a closed vocabulary.** `else`, `top >= n` / `top < n` (single-question blocks only), `prob:<id>` (on a `noul`), `score:<id> >= n` (on a `score`), `picked:<id> = <option>` (on a `choice`). There is deliberately no `>` and no `<=`: a condition you cannot write here is a condition that belongs in code.
+
+**A predicate aimed at the wrong kind of question is rejected, not compiled.** Left alone it would become a rule that never fires — the author believes they wrote a gate, there is no gate, and it fails open. Actions are a closed list too, and an unknown one is reported with its line number. Nothing is ever silently dropped: everything unrecognised lands in `problems`, with the line it came from.
+
+Writing `dynamic: <how it is computed>` lifts the "a choice needs at least two options" rule, because a decision whose candidates are rebuilt every step can only list a placeholder — the real options come from code.
+
 ## Accounting
 
 The `Meter` is not a nice-to-have — it's the point. Every run ends with the number that justifies the architecture:
@@ -242,12 +309,18 @@ Both gotchas are the same lesson from [Jev Engineering](https://madewithjev.com/
 ## Layout
 
 ```
+DECISION.md      ★ the decisions as a file — compiled, and checked against the code
 src/
-  types.ts       Question / Answer / Decision — the whole vocabulary
+  vocab.ts       Question / Answer / Decision — the whole vocabulary
   decisions.ts   ★ all six of the agent's judgements, one file
+  decisiondoc.ts the DECISION.md parser (nothing is silently dropped)
+  decision-compile.ts  blocks → questions + policy
   decide.ts      the six steps of one decision
   policy.ts      answers → action (pure code, unit-testable)
-  provider.ts    Jev / Laya / Mock — swap by baseUrl
+  seam-provider.ts     the decision-backend interface
+  provider-http.ts     Jev / Laya — swap by baseUrl
+  provider-mock.ts     a stand-in that never guesses
+  provider-fallback.ts try them in order, report every downgrade
   meter.ts       ★ decisions vs model calls
   agent.ts       ★ the loop
   tools.ts       list / read / write, path-locked to cwd
