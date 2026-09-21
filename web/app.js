@@ -28,7 +28,21 @@ function h(tag, attrs = {}, ...children) {
   return el
 }
 
-const pct = (n) => `${(n * 100).toFixed(n >= 0.995 || n <= 0.005 ? 0 : 1)}%`
+/**
+ * 概率的显示。
+ *
+ * **四舍五入绝不能跨过 0 和 1 这两个端点。** 先前的写法是
+ * `n >= 0.995 ? toFixed(0) : toFixed(1)`，于是 0.995 画成 `100%`、
+ * 0.004 画成 `0%` —— 把一个**不确定**的判定画成了**确定**的。
+ * 这个界面的全部主张就是「判定带概率」，所以端点必须保住：
+ * 只有恰好等于 1 才配显示 100%。
+ */
+const pct = (n) => {
+  if (n >= 1) return '100%'
+  if (n <= 0) return '0%'
+  const s = (n * 100).toFixed(1)
+  return s === '100.0' ? '>99.9%' : s === '0.0' ? '<0.1%' : `${s}%`
+}
 const ms = (n) => `${Math.round(n)}ms`
 
 // ═══════════════════════════════════════════════════════════
@@ -44,6 +58,7 @@ function updateTally() {
   $('t-decide').textContent = state.decisions
   $('t-model').textContent = state.models
   $('t-tool').textContent = state.tools
+  $('t-rules').textContent = state.rules
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -208,7 +223,10 @@ function renderAuthorize(e) {
 }
 
 function renderAudit(e) {
+  // 审计留痕也是「代码做的决定」，要进计数 ——
+  // 之前 state.rules 只自增不上屏，是明确写了一半的状态（审计 W4）。
   state.rules++
+  updateTally()
   const r = e.record ?? {}
   return h(
     'div',
@@ -226,18 +244,32 @@ function renderAudit(e) {
 
 function renderEnd(e) {
   const s = e.stats ?? {}
-  const ratio = s.modelCalls ? (s.decisions / s.modelCalls).toFixed(1) : String(s.decisions)
+
+  // `?? 0` 会把「没有数据」显示成「0」：一次失败的运行看起来就和一次
+  // 跑得很快的正常运行一样（审计 W7）。缺数据就明说缺数据。
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? String(v) : '—')
+  const dur = (v) => (typeof v === 'number' && Number.isFinite(v) ? ms(v) : '—')
+
+  // 判定 : 模型 —— **直接用服务端的值**，不在这里重算。
+  // `meter.ts` 已经算过一遍，两处实现会在「没有模型调用」这个边界上分叉：
+  // 服务端给 `Infinity`，而重算的版本会拼成 `12 : 1`，凭空声称有一次模型调用（审计 W3）。
+  const r = s.ratio
+  const ratio =
+    typeof r !== 'number' ? '?'
+    : !Number.isFinite(r) ? `${num(s.decisions)} : 0`
+    : `${r.toFixed(1)} : 1`
 
   $('side-stats').replaceChildren(
-    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '判定次数'), h('div', { class: 'metric-v decide' }, s.decisions ?? 0)),
-    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '判定总耗时'), h('div', { class: 'metric-v decide' }, ms(s.decisionMs ?? 0))),
-    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '模型调用'), h('div', { class: 'metric-v model' }, s.modelCalls ?? 0)),
-    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '模型总耗时'), h('div', { class: 'metric-v model' }, ms(s.modelMs ?? 0))),
-    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '工具执行'), h('div', { class: 'metric-v' }, state.tools)),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '判定次数'), h('div', { class: 'metric-v decide' }, num(s.decisions))),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '判定总耗时'), h('div', { class: 'metric-v decide' }, dur(s.decisionMs))),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '模型调用'), h('div', { class: 'metric-v model' }, num(s.modelCalls))),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '模型总耗时'), h('div', { class: 'metric-v model' }, dur(s.modelMs))),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '工具执行'), h('div', { class: 'metric-v' }, num(state.tools))),
+    h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '审计留痕'), h('div', { class: 'metric-v' }, num(s.audits))),
     h(
       'div',
       { class: 'ratio' },
-      h('div', { class: 'ratio-v' }, `${ratio} : 1`),
+      h('div', { class: 'ratio-v' }, ratio),
       h('div', { class: 'ratio-k' }, '判定 : 模型'),
     ),
   )
@@ -310,6 +342,9 @@ function run() {
   const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}`)
 
   es.onmessage = (msg) => {
+    // 防御性：服务端会先发一行 `: connected` 注释（`server.ts` 的 `openStream`），
+    // 但按 SSE 规范注释行由解析器消费、**不会派发 message 事件**，正常收不到它。
+    // 留着是为了万一中间有代理把它当数据转发时，不至于报一个假的解析错误。
     if (msg.data.startsWith(':')) return
     try {
       const e = JSON.parse(msg.data)
@@ -324,13 +359,23 @@ function run() {
     }
   }
 
+  // 这里**故意**在第一次错误就 close()，和 EventSource 默认的自动重连相反：
+  // `/api/run` 不是幂等的 —— 自动重连就是重新发一次 GET，服务端会**再跑一遍 agent**，
+  // 也就是再花一次钱。所以断线时宁可放弃接收，也不能让它自己重来。
+  // （服务端没有取消机制，见审计 V2：断线后原来那一次仍会跑完。）
   es.onerror = () => {
     es.close()
     state.running = false
     $('run').disabled = false
     $('run').textContent = '运行'
     if (!timeline.querySelector('.card')) {
-      timeline.replaceChildren(h('div', { class: 'empty' }, '连接断开，检查服务端日志'))
+      timeline.replaceChildren(
+        h(
+          'div',
+          { class: 'empty' },
+          '连接断开。已停止接收事件；服务端那一次运行可能仍在继续（本版本没有取消机制）',
+        ),
+      )
     }
   }
 }

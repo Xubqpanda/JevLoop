@@ -81,6 +81,9 @@ body {
 .tally-item.tool b {
   color: var(--jl-tool-fg);
 }
+.tally-item.rule b {
+  color: var(--jl-rule-fg);
+}
 
 .cols {
   display: grid;
