@@ -117,8 +117,18 @@ function checkFile(file: string): Violation[] {
   }
 
   const stem = basename(file, '.ts')
-  if (!raw.includes(`@module JevLoop/${stem}`)) {
-    add(0, 'module-tag', `头部缺少 \`@module JevLoop/${stem}\``)
+  // ★ 只在**文件头部那个文档块**里找，不是全文件子串匹配。
+  //
+  //   以前是 `raw.includes(...)`：实测把标签从头部文档块挪到文件末尾一条普通
+  //   `//` 注释里，检查照样全绿 —— 而这条规则的文档（本文件头部、AGENTS.md §3）
+  //   写的是「**模块头部**有 `@module …`」。§7 不允许检查比规范松：
+  //   一个比自己的文档弱的检查会让人以为规范已经被守住了。
+  //   `#!` 那一行要放行：可执行脚本的 shebang 必须是文件第一行，
+  //   文档块只能跟在它后面 —— 那是正确写法，不是违规。
+  //   （第一版收紧时没放行，于是 examples/demo.ts 被误报了。）
+  const header = /^(?:#![^\n]*\n)?\s*\/\*\*([\s\S]*?)\*\//.exec(raw)?.[1]
+  if (!header || !header.includes(`@module JevLoop/${stem}`)) {
+    add(0, 'module-tag', `头部文档块里缺少 \`@module JevLoop/${stem}\``)
   }
 
   return found
