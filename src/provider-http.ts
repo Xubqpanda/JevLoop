@@ -9,72 +9,12 @@
  * @module JevLoop/provider-http
  */
 
-import { ProviderError, type ProviderErrorCode, type Provider, type DecideRequest, type DecideResponse } from './seam-provider.ts'
+import type { Provider, DecideRequest, DecideResponse } from './seam-provider.ts'
+import { httpFailure, transportFailure } from './http-error.ts'
+
+// 再导出：这两条是纯函数，测试和消费方一直从这里拿
+export { httpErrorCode, parseRetryAfter } from './http-error.ts'
 import type { AnswerSet } from './vocab.ts'
-
-// ═══════════════════════════════════════════════════════════
-// 失败分类：HTTP 状态 → 稳定的 code
-// ═══════════════════════════════════════════════════════════
-
-/**
- * 一个非 2xx 响应属于哪一类。
- *
- * 形状照 DSH 的 `httpErrorCode`（`llm-deepseek/src/adapter.ts`），
- * 保留它对**顺序**的处理：先认少数几个确定的，再按区间兜底。
- *
- * @param status HTTP 状态码
- * @param detail 响应体前若干字符。**只在 400 时读**，用来分辨
- *   「上下文超限」和「请求不合法」—— 那两种该怎么处理完全相反。
- */
-export function httpErrorCode(status: number, detail = ''): ProviderErrorCode {
-  if (status === 401 || status === 403) return 'AUTH'
-  if (status === 413) return 'INVALID_REQUEST'
-  // 余额耗尽的措辞各家不同，但状态码多半是 402，也有用 429 的 ——
-  // 所以先看措辞再看码，否则一个 429 的「余额不足」会被当成限流去重试
-  if (looksLikeQuota(detail)) return 'QUOTA'
-  if (status === 429) return 'RATE_LIMIT'
-  if (status === 400) {
-    return looksLikeContextOverflow(detail) ? 'CONTEXT_WINDOW_EXCEEDED' : 'INVALID_REQUEST'
-  }
-  // ★ **≥ 500 一律 SERVER，含 529。** 实测 2026-09-21：托管 Jev 的
-  //   529 `system_overloaded` 因为当时没有分类、没有重试，直接把整轮
-  //   判定打到 mock 的恒定 0.5 上，而轨迹里只有一句 `degraded: true`。
-  if (status >= 500) return 'SERVER'
-  return `HTTP_${status}`
-}
-
-/** 余额 / 配额耗尽的措辞。**归到 QUOTA 是为了不重试** —— 它不会自己好 */
-function looksLikeQuota(detail: string): boolean {
-  return /insufficient|quota|balance|billing|credit/i.test(detail)
-}
-
-/** 上下文超限的措辞。归到这一类是为了**不重试**（同一个请求发多少次都一样） */
-function looksLikeContextOverflow(detail: string): boolean {
-  return /context[\s_-]*(length|window)|too\s+(large|long)\s+for|maximum\s+context/i.test(detail)
-}
-
-/**
- * `Retry-After` 头 → 毫秒。
- *
- * **两种格式都认**（RFC 9110）：秒数，或者一个 HTTP-date。认不出来返回
- * `undefined` —— 那时按本地退避算，而不是当成 0。
- */
-export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
-  if (value === null) return undefined
-  const v = value.trim()
-  if (/^\d+$/.test(v)) {
-    const ms = Number(v) * 1000
-    return Number.isFinite(ms) && ms > 0 ? ms : undefined
-  }
-  const at = Date.parse(v)
-  if (!Number.isFinite(at)) return undefined
-  const ms = at - now
-  return ms > 0 ? ms : undefined
-}
-
-// ═══════════════════════════════════════════════════════════
-// HTTP —— 说 Jev 线格式（官方 API 和本地 Laya 共用这一个）
-// ═══════════════════════════════════════════════════════════
 
 export interface HttpProviderOptions {
   baseUrl: string
@@ -123,19 +63,9 @@ export class HttpProvider implements Provider {
       })
 
       const text = await res.text()
-      if (!res.ok) {
-        // ★ 抛**带分类**的错误，而不是一句拼出来的 message。
-        //
-        //   以前这里是 `throw new Error(\`${this.name} HTTP ${res.status}: …\`)`
-        //   —— 状态码只活在**给人看的那句话里**，于是调用方要分支就只能
-        //   去解析 message，而那正是「改一次措辞就静默失效」的写法。
-        const code = httpErrorCode(res.status, text.slice(0, 200))
-        const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'))
-        throw new ProviderError(`${this.name} HTTP ${res.status} (${code}): ${text.slice(0, 200)}`, code, {
-          status: res.status,
-          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-        })
-      }
+      // 抛**带分类**的错误，而不是一句拼出来的 message —— 状态码只活在
+      // 给人看的那句话里的话，调用方要分支就只能解析 message（§8.12）
+      if (!res.ok) throw httpFailure(this.name, res.status, text, res.headers.get('retry-after'))
 
       const body: any = JSON.parse(text)
       const { answers, dropped } = normalizeAnswers(body.answers ?? {})
@@ -160,17 +90,7 @@ export class HttpProvider implements Provider {
         ...(notes.length ? { warnings: notes } : {}),
       }
     } catch (err) {
-      if (err instanceof ProviderError) throw err
-      // 传输层的两类失败要**分得开**：超时是我们自己掐的（本地定时器），
-      // 传输失败是根本连不上。两者都可重试，但排查方向完全不同 ——
-      // 前者要调 `timeoutMs`，后者要看网络和地址。
-      const aborted = ctrl.signal.aborted
-      const code: ProviderErrorCode = aborted ? 'TIMEOUT' : 'TRANSPORT'
-      throw new ProviderError(
-        `${this.name} ${aborted ? `超时（${req.timeoutMs ?? this.#timeout}ms）` : '连不上'}：${(err as Error).message}`,
-        code,
-        { cause: err },
-      )
+      throw transportFailure(this.name, err, ctrl.signal.aborted, req.timeoutMs ?? this.#timeout)
     } finally {
       clearTimeout(timer)
     }

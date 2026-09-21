@@ -221,7 +221,7 @@ test('onRetry 报出每一次安排 —— 「特别慢」和「主后端在过�
   )
   assert.deepEqual(got.map((g) => g.attempt), [1, 2])
   assert.deepEqual(got.map((g) => g.delayMs), [100, 200])
-  assert.equal(got[0]!.provider, 'inner')
+  assert.equal(got[0]!.who, 'inner')
   assert.equal(got[0]!.code, 'SERVER')
 })
 
@@ -232,5 +232,99 @@ test('包装器的名字和里层一样 —— 界面上那句「用哪些后端
 test('超时（TIMEOUT）和连不上（TRANSPORT）都可重试 —— 但排查方向不同', () => {
   for (const code of ['TIMEOUT', 'TRANSPORT'] as const) {
     assert.equal(isRetryable(new ProviderError(code, code)), true, code)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════
+// 生成那条缝：同一个机制，另一个接线点
+//
+// ★ DSH 的重试包叫 `llm-retry`，注释写的是「provider-routed
+//   **model-request** retry policy」—— 而 JevLoop 有两条通向后端的缝，
+//   **生成这条才是「模型请求」**。实测代价：`npm run demo` 在一次
+//   `api.deepseek.com` 连接超时上直接抛栈退出。
+// ═══════════════════════════════════════════════════════════
+
+test('★ RetryingGenerator：生成失败会重试，用尽之后原样抛', async () => {
+  const { RetryingGenerator } = await import('../src/llm.ts')
+  let n = 0
+  const gen = new RetryingGenerator(
+    {
+      name: 'fake-gen',
+      generate: async () => {
+        n++
+        if (n < 3) throw new ProviderError('overloaded', 'SERVER')
+        return { text: 'ok', latencyMs: 1, inputTokens: 0, outputTokens: 0, model: 'fake' }
+      },
+    },
+    { maxRetries: 3, initialDelayMs: 1, random: fixedRandom(0.5) },
+  )
+  const r = await gen.generate({ task: 't', evidence: 'e' } as never)
+  assert.equal(r.text, 'ok')
+  assert.equal(n, 3, '两次失败之后第三次成功')
+})
+
+test('RetryingGenerator 用尽重试后把最后一次的错误抛出去 —— 生成没有降级链', async () => {
+  const { RetryingGenerator } = await import('../src/llm.ts')
+  let n = 0
+  const gen = new RetryingGenerator(
+    {
+      name: 'fake-gen',
+      generate: async () => {
+        n++
+        throw new ProviderError('down', 'SERVER')
+      },
+    },
+    { maxRetries: 2, initialDelayMs: 1, random: fixedRandom(0.5) },
+  )
+  await assert.rejects(() => gen.generate({ task: 't', evidence: 'e' } as never), /down/)
+  assert.equal(n, 3, '首次 + 2 次重试')
+})
+
+test('RetryingGenerator 不重试不可重试的错误（凭据坏了）', async () => {
+  const { RetryingGenerator } = await import('../src/llm.ts')
+  let n = 0
+  const gen = new RetryingGenerator(
+    {
+      name: 'fake-gen',
+      generate: async () => {
+        n++
+        throw new ProviderError('bad key', 'AUTH')
+      },
+    },
+    { maxRetries: 3, initialDelayMs: 1 },
+  )
+  await assert.rejects(() => gen.generate({ task: 't', evidence: 'e' } as never), /bad key/)
+  assert.equal(n, 1)
+})
+
+test('★ 端到端：假后端先回两次 529，第三次成功 —— 生成不再一次失败就整轮丢掉', async () => {
+  const { createServer } = await import('node:http')
+  const { resolveGenerator } = await import('../src/index.ts')
+
+  let n = 0
+  const srv = createServer((_req, res) => {
+    n++
+    if (n <= 2) {
+      res.writeHead(529, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ detail: { error_type: 'system_overloaded' } }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ choices: [{ message: { content: '写好了' } }], usage: {} }))
+  })
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+  const port = (srv.address() as { port: number }).port
+
+  try {
+    const gen = resolveGenerator({
+      baseUrl: `http://127.0.0.1:${port}`,
+      apiKey: 'x',
+      retry: { initialDelayMs: 5, maxDelayMs: 50 },
+    })
+    const r = await gen.generate({ task: 't', evidence: 'e' } as never)
+    assert.equal(r.text, '写好了')
+    assert.equal(n, 3, '两次 529 之后第三次拿到结果')
+  } finally {
+    srv.close()
   }
 })

@@ -276,6 +276,10 @@ const LAYER: Record<string, number> = {
   // `session-path` 是纯字符串函数（编码、布局），`session-log` 是纯编解码
   // （一行 JSON ↔ 轮次）。都零 IO —— 同 context-prune 的先例
   'session-path': 0,
+  // 两条缝共用的失败分类：零 IO、零 import（同 context-prune 的先例）
+  'http-error': 0,
+  // 重试机制：唯一的杂质是可注入的等待（setTimeout 是定时器不是 IO）
+  retry: 1,
   'session-log': 0,
   // 一次性迁移，有 IO
   'session-migrate': 2,

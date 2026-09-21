@@ -28,7 +28,7 @@ export type { Provider, DecideRequest, DecideResponse } from './seam-provider.ts
 // 失败分类：**按 code 分支，不要解析 message**（见 seam-provider.ts）
 export { ProviderError, isRetryable, RETRYABLE_CODES } from './seam-provider.ts'
 export type { ProviderErrorCode } from './seam-provider.ts'
-export { httpErrorCode, parseRetryAfter } from './provider-http.ts'
+export { httpErrorCode, parseRetryAfter, httpFailure, transportFailure } from './http-error.ts'
 export { noul, choice, score, confidenceOf } from './vocab.ts'
 export { defineDecision, isDecision } from './vocab-decision.ts'
 
@@ -46,7 +46,11 @@ export { MockProvider } from './provider-mock.ts'
 export { FallbackProvider } from './provider-fallback.ts'
 // 重试：每一跳自己的策略，降级链在外面组合（见 provider-retry.ts 的文件头）
 export { RetryingProvider } from './provider-retry.ts'
-export type { RetryInfo, RetryOptions } from './provider-retry.ts'
+// 生成那条缝的同名机制（DSH 的 `llm-retry` 说的「model request」是这一条）
+export { RetryingGenerator } from './llm.ts'
+// 重试机制与失败分类本身：两条缝共用，调用方要自己接的话从这里拿
+export { resolveRetry, retryCall, planDelay, RETRY_DEFAULTS } from './retry.ts'
+export type { RetryInfo, RetryOptions, ResolvedRetry } from './retry.ts'
 export type { HttpProviderOptions } from './provider-http.ts'
 
 // ── 记账 ─────────────────────────────────────────────────────

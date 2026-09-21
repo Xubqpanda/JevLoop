@@ -14,6 +14,8 @@
  */
 
 import type { ConversationTurn } from './conversation.ts'
+import { httpFailure, transportFailure } from './http-error.ts'
+import { resolveRetry, retryCall, type RetryOptions } from './retry.ts'
 
 /**
  * 一轮对话的形状住在 `conversation.ts`（L1）—— 那里才是**用它**的地方
@@ -215,7 +217,12 @@ export class HttpGenerator implements Generator {
         signal: ctrl.signal,
       })
 
-      if (!res.ok) throw new Error(`generate HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+      // ★ **抛带分类的失败**，和判定那条缝**同一套**（`http-error.ts`）。
+      //
+      //   以前这里是 `throw new Error(\`generate HTTP ${res.status}: …\`)` ——
+      //   状态码只活在给人看的那句话里，于是「这个 529 该不该重试」在两条缝上
+      //   会得出不同的答案，而它们连的是同一类后端。
+      if (!res.ok) throw httpFailure(this.name, res.status, await res.text(), res.headers.get('retry-after'))
       const body: any = await res.json()
       const text = body?.choices?.[0]?.message?.content ?? ''
 
@@ -226,8 +233,43 @@ export class HttpGenerator implements Generator {
         outputTokens: body?.usage?.completion_tokens ?? 0,
         model: this.#model,
       }
+    } catch (err) {
+      throw transportFailure(this.name, err, ctrl.signal.aborted, this.#timeoutMs)
     } finally {
       clearTimeout(timer)
     }
+  }
+}
+
+/**
+ * 给生成后端加一层有界重试。
+ *
+ * ★ **这才是 DSH 说的那个「model request」。**
+ *
+ *   用户问「模型重试该怎么做」时我去看 DSH，它的包叫 `llm-retry`、注释写的是
+ *   「provider-routed **model-request** retry policy」—— 而 JevLoop 有两条
+ *   通向后端的缝，**生成这条才是「模型请求」**。我先把重试加在了判定那条上
+ *   （那条也确实需要，529 会把整轮打到 mock），而这条一直没接。
+ *
+ *   实测代价（2026-09-21）：`npm run demo` 在一次 `api.deepseek.com` 连接超时上
+ *   **直接抛栈退出** —— 判定全都正常跑完了，最后那一次生成挂了，整个 demo 就
+ *   失败了，而那是一次**瞬时故障**。
+ *
+ * 和判定那条缝的区别：生成没有降级链，所以重试是唯一的补救；用尽之后
+ * 原样抛出（`agent.ts` 的两处 `generate()` 没有 try，见那里的说明）。
+ */
+export class RetryingGenerator implements Generator {
+  readonly name: string
+  readonly #inner: Generator
+  readonly #cfg
+
+  constructor(inner: Generator, opts: RetryOptions = {}) {
+    this.#inner = inner
+    this.name = inner.name
+    this.#cfg = resolveRetry(opts)
+  }
+
+  generate(req: GenerateRequest): Promise<GenerateResult> {
+    return retryCall(this.name, this.#cfg, () => this.#inner.generate(req))
   }
 }

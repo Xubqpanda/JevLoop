@@ -17,7 +17,9 @@
 import { HttpProvider } from './provider-http.ts'
 import { MockProvider } from './provider-mock.ts'
 import { FallbackProvider } from './provider-fallback.ts'
-import { RetryingProvider, type RetryOptions } from './provider-retry.ts'
+import { RetryingProvider } from './provider-retry.ts'
+import { RetryingGenerator } from './llm.ts'
+import type { RetryOptions } from './retry.ts'
 import { HttpGenerator, ScriptedGenerator } from './llm.ts'
 import type { Provider } from './seam-provider.ts'
 import type { Generator } from './llm.ts'
@@ -118,8 +120,8 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
       onRetry: (info) =>
         notice?.(
           new Error(`${info.code}，等 ${Math.round(info.delayMs)}ms 后重试${info.fromServer ? '（服务端要求的）' : ''}`),
-          info.provider,
-          info.provider,
+          info.who,
+          info.who,
         ),
     })
 
@@ -143,6 +145,14 @@ export interface GeneratorChoice {
   scripted?: boolean
   /** 脚本生成器模拟的延迟，毫秒 */
   scriptedLatencyMs?: number
+  /**
+   * 生成后端每一跳的重试参数。缺省见 `retry.ts`（3 次 / 300ms 起 / 上限 5s）。
+   *
+   * ★ 生成**没有降级链**，所以重试是唯一的补救。实测（2026-09-21）：
+   *   `npm run demo` 在一次 `api.deepseek.com` 连接超时上直接抛栈退出 ——
+   *   判定全都正常跑完了，最后那一次生成挂了，整个 demo 就失败。
+   */
+  retry?: RetryOptions
 }
 
 /**
@@ -162,9 +172,21 @@ export function resolveGenerator(choice: GeneratorChoice = {}): Generator {
     )
   }
 
-  return new HttpGenerator({
-    baseUrl: choice.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1',
-    apiKey,
-    model: choice.model ?? process.env.DEEPSEEK_MODEL ?? 'deepseek-flash',
-  })
+  /*
+    ★ **包一层重试，不含糊。**
+
+    生成是整轮里**唯一**一次真正花钱的调用，也是**唯一没有降级**的一步 ——
+    判定挂了有 `FallbackProvider` 兜底，生成挂了整轮就没了。一次连接超时
+    不该把跑完的 loop 全丢掉。
+
+    脚本生成器不包：它不碰网络，不会瞬时失败。
+  */
+  return new RetryingGenerator(
+    new HttpGenerator({
+      baseUrl: choice.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1',
+      apiKey,
+      model: choice.model ?? process.env.DEEPSEEK_MODEL ?? 'deepseek-flash',
+    }),
+    choice.retry ?? {},
+  )
 }
