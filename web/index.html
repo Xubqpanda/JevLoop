@@ -21,7 +21,7 @@
           <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向，几十毫秒</div>
           <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定，不过模型</div>
           <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
-          <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步</b></div>
+          <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步，整条轨迹上最宽的那一条</b></div>
           <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
         </div>
       </aside>
@@ -75,9 +75,44 @@
 
         <!-- 轨迹：和对话看的是同一串事件，只是不折叠 -->
         <section class="view" id="view-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
-          <div class="timeline">
-            <div class="timeline-inner" id="timeline">
-              <div class="empty">还没有跑过。切回「对话」发一条。</div>
+          <div class="trace-wrap">
+            <!-- 时间轴：三条泳道，横轴是真实耗时 -->
+            <div class="plot">
+              <div class="plot-labels"><span>判定</span><span>工具</span><span>模型</span></div>
+              <div class="plot-track" id="plot-track">
+                <div class="plot-lanes" id="plot-lanes"></div>
+                <div class="plot-empty" id="plot-empty">还没有跑过</div>
+              </div>
+            </div>
+
+            <div class="split">
+              <div class="table-pane">
+                <table class="traj">
+                  <thead>
+                    <tr>
+                      <th class="col-event">事件</th>
+                      <th>内容</th>
+                    </tr>
+                  </thead>
+                  <tbody id="traj-body">
+                    <tr>
+                      <td colspan="2" class="empty">切回「对话」发一条，这里会按行记下来。</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- 详情：选中某一行时显示它的全部内容 -->
+              <aside class="details">
+                <div class="details-header">
+                  <div class="details-title"><span id="detail-title">详情</span></div>
+                  <span class="details-location" id="detail-location"></span>
+                </div>
+                <div class="detail-tabs" role="tablist" id="detail-tabs"></div>
+                <div class="detail-body" id="detail-body">
+                  <div class="detail-empty">点左边任意一行</div>
+                </div>
+              </aside>
             </div>
           </div>
         </section>

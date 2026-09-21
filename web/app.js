@@ -70,7 +70,6 @@ let current = null
 
 const $ = (id) => document.getElementById(id)
 const chat = $('chat')
-const timeline = $('timeline')
 
 function updateTally() {
   $('t-decide').textContent = state.decisions
@@ -187,27 +186,257 @@ function processLine(e) {
 // ═══════════════════════════════════════════════════════════
 // 渲染：轨迹
 //
-// 一张判定卡要回答四个问题：
-//   问了什么 · 有哪些选项 · 各多少概率 · 命中了哪条策略
+// 结构照搬 DSH 的 ui-trajectory：顶部时间轴 + 事件账本 + 详情面板。
+//
+// 时间轴横轴是**真实耗时**，三条泳道是判定 / 工具 / 模型。它一眼要说的
+// 就是那个主张：蓝的一堆、橙的只有一个，而橙的那个最宽。
+//
+// 账本一行一个事件，30px。点一行，右边显示它的全部内容 ——
+// 判定卡里那些概率条搬到了那里，因为一行 30px 放不下四个选项，
+// 而概率恰恰是这个界面最不该省略的东西。
 // ═══════════════════════════════════════════════════════════
 
-function renderDecision(e) {
-  state.decisions++
-  updateTally()
+/** 泳道号。顺序和 .plot-labels 里的三行标签一一对应 */
+const LANE = { decide: 0, tool: 1, model: 2 }
 
-  const card = h('div', { class: 'card decide' })
-  card.append(
+/**
+ * 事件 → 它在轨迹里的样子。
+ *
+ * 时间轴和账本共用这张表，所以两边的分类永远不会不一致 ——
+ * 分两处写的话，加一种事件时必然只改一处。
+ */
+const EVENT_META = {
+  decision: { label: '判定', cls: 'decide', lane: LANE.decide },
+  authorize: { label: '授权', cls: 'decide', lane: LANE.decide },
+  audit: { label: '审计', cls: 'audit', lane: LANE.decide },
+  // 工具那两行用等宽字体：它们的内容是命令和输出，不是句子
+  'tool:call': { label: '工具', cls: 'tool', lane: LANE.tool, mono: true },
+  'tool:result': { label: '工具结果', cls: 'tool', lane: LANE.tool, mono: true },
+  generate: { label: '模型', cls: 'model', lane: LANE.model },
+}
+
+/**
+ * 事件自己报的耗时。
+ *
+ * 时间轴按它排布。没有耗时的那些（工具发起、授权、审计）给一个标称宽度 ——
+ * 它们在时间轴上只是"发生过"的记号，不是可测量的区间。
+ * 标称值不参与总时长计算，否则会把它撑大，让真正贵的那个显得没那么宽。
+ */
+function durationOf(e) {
+  switch (e.type) {
+    case 'decision':
+      return { ms: e.latencyMs ?? 0, measured: true }
+    case 'tool:result':
+      return { ms: e.ms ?? 0, measured: true }
+    case 'generate':
+      return { ms: e.latencyMs ?? 0, measured: true }
+    default:
+      return { ms: 0, measured: false }
+  }
+}
+
+/** 一行里「内容」列写什么。返回一串节点，让调用方决定怎么排版 */
+function contentOf(e) {
+  const mono = (t) => h('span', { class: 'mono' }, t)
+  const dim = (t) => h('span', { class: 'dim' }, t)
+
+  switch (e.type) {
+    case 'decision': {
+      const picked = Object.entries(e.answers ?? {})[0]
+      const bits = [h('span', { class: 'hit' }, e.action)]
+      if (picked) {
+        const [qid, a] = picked
+        if (a.type === 'choice') {
+          bits.push(dim(' · '), mono(qid), ' = ', mono(a.choice), dim(` ${pct(a.probabilities?.[a.choice] ?? 0)}`))
+        } else if (a.type === 'noul') {
+          bits.push(dim(' · '), mono(qid), ' ', dim(a.noul >= 0.5 ? '真' : '假'), dim(` ${pct(a.noul)}`))
+        } else if (a.type === 'score') {
+          bits.push(dim(' · '), mono(qid), ' ', dim(`档位 ${a.score}`))
+        }
+      }
+      return bits
+    }
+    case 'tool:call':
+      return [mono(e.tool), dim('('), dim(e.input || '无输入'), dim(')')]
+    case 'tool:result': {
+      const body = String(e.output ?? '')
+      const first = body.split('\n')[0].slice(0, 120)
+      return [dim(`${body.length} 字符 · ${ms(e.ms)} · `), first]
+    }
+    case 'generate':
+      return [
+        h('span', { class: 'warn' }, e.kind),
+        dim(` · ${ms(e.latencyMs)} · ${e.tokens} tokens · 整个 loop 里唯一贵的一步`),
+      ]
+    case 'authorize':
+      return [e.approved ? '已授权' : '已拒绝', dim(` · ${e.tool} · ${e.reason}`)]
+    case 'audit':
+      return [mono(e.record?.tool ?? ''), dim(` 记了审计留痕 · risk ${e.record?.risk ?? '?'}`)]
+    default:
+      return [e.type]
+  }
+}
+
+// ── 账本 ──────────────────────────────────────────────────
+
+const trajBody = $('traj-body')
+const plotLanes = $('plot-lanes')
+const plotEmpty = $('plot-empty')
+const detailTitle = $('detail-title')
+const detailLocation = $('detail-location')
+const detailTabs = $('detail-tabs')
+const detailBody = $('detail-body')
+
+/** 时间轴上的条。`start`/`dur` 是累计毫秒 */
+const spans = []
+let clock = 0
+let selected = null
+let rowsAdded = 0
+
+function addSpan(e, dur) {
+  const meta = EVENT_META[e.type]
+  if (!meta) return
+  // 有耗时的按真实区间排；没有的给 1ms 标称宽度，且不推进时钟
+  const width = dur.measured ? Math.max(dur.ms, 1) : 1
+  spans.push({ lane: meta.lane, cls: meta.cls, start: clock, dur: width, event: e })
+  if (dur.measured) clock += dur.ms
+  renderPlot()
+}
+
+/**
+ * 重画时间轴。
+ *
+ * 每次事件都整体重画：一次运行几十个条，重画比维护增量便宜得多，
+ * 而且总时长还在长 —— 百分比定位必须跟着总长走。
+ */
+function renderPlot() {
+  if (spans.length === 0) {
+    plotEmpty.hidden = false
+    plotLanes.replaceChildren()
+    return
+  }
+  plotEmpty.hidden = true
+  const total = clock > 0 ? clock : 1
+  plotLanes.replaceChildren(
+    ...spans.map((s) => {
+      const el = h('div', {
+        class: `span ${s.cls}`,
+        style: `--lane:${s.lane};--left:${(s.start / total) * 100}%;--width:${Math.max(0.4, (s.dur / total) * 100)}%`,
+        title: `${EVENT_META[s.event.type]?.label ?? s.event.type} · ${Math.round(s.dur)}ms`,
+      })
+      return el
+    }),
+  )
+}
+
+function addRow(e, dur, step) {
+  const meta = EVENT_META[e.type]
+  if (!meta) return
+
+  // 步骤边界：行顶一条 2px 细线（CSS 的 ::before），左上角一个 8px 的步骤号徽章。
+  // 第一次见到某个 step 时打上标记 —— DSH 的 data-turn-start 是同一个做法。
+  const stepStart = e.type === 'decision' && step && step !== lastStep
+  if (stepStart) lastStep = step
+
+  const tr = h('tr', {
+    tabindex: '0',
+    ...(stepStart ? { 'data-step-start': 'true' } : {}),
+    ...(meta.mono ? { 'data-mono': 'true' } : {}),
+  })
+
+  // 事件列：36px 左留白里放步骤号，76px 的槽里右对齐一个文字徽章
+  tr.append(
     h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge kind-decide' }, '判定'),
-      h('span', { class: 'card-id' }, e.id),
-      h('span', { class: `badge action${/escalate/.test(e.action) ? ' warn' : ''}` }, e.action),
-      h('span', { class: 'card-lat' }, ms(e.latencyMs)),
+      'td',
+      { class: 'col-event' },
+      stepStart ? h('span', { class: 'step-label' }, `step ${step}`) : null,
+      h(
+        'div',
+        { class: 'event-inner' },
+        h('span', { class: 'kind-slot' }, h('span', { class: `kind-tag ${meta.cls}` }, meta.label)),
+        e.id || e.tool ? h('span', { class: 'event-id' }, e.id ?? e.tool) : null,
+      ),
+    ),
+    h('td', { class: 'content-cell' }, h('span', { class: 'content-text' }, ...contentOf(e))),
+  )
+
+  const select = () => selectRow(tr, e)
+  tr.addEventListener('click', select)
+  tr.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault()
+      select()
+    }
+  })
+
+  trajBody.append(tr)
+  rowsAdded++
+}
+
+function selectRow(tr, e) {
+  if (selected) selected.removeAttribute('aria-selected')
+  tr.setAttribute('aria-selected', 'true')
+  selected = tr
+  showDetail(e)
+}
+
+// ── 详情 ──────────────────────────────────────────────────
+
+/** 右侧详情有两个 tab：概览看结论，决策帧看模型当时看到了什么 */
+const DETAIL_TABS = ['概览', '决策帧']
+let detailEvent = null
+let detailTab = 0
+
+function showDetail(e) {
+  detailEvent = e
+  detailTab = 0
+  const meta = EVENT_META[e.type]
+  detailTitle.textContent = `${meta?.label ?? e.type}${e.id ? ` ${e.id}` : ''}`
+  detailLocation.textContent = e.tool ?? e.kind ?? ''
+  detailTabs.replaceChildren(
+    ...DETAIL_TABS.map((name, i) =>
+      h(
+        'button',
+        {
+          class: 'detail-tab',
+          role: 'tab',
+          'aria-selected': String(i === detailTab),
+          onclick: () => {
+            detailTab = i
+            for (const [j, b] of [...detailTabs.children].entries()) {
+              b.setAttribute('aria-selected', String(j === i))
+            }
+            renderDetail()
+          },
+        },
+        name,
+      ),
     ),
   )
-  card.append(h('div', { class: 'card-reason' }, e.reason))
+  renderDetail()
+}
 
+const field = (k, v) => h('div', { class: 'field' }, h('div', { class: 'field-k' }, k), h('div', { class: 'field-v' }, v))
+
+function renderDetail() {
+  const e = detailEvent
+  if (!e) return
+
+  if (detailTab === 1) {
+    // 决策帧：真正发给模型的东西。判定质量的上限由这一帧决定
+    detailBody.replaceChildren(
+      e.state
+        ? field('发给模型的 state', h('pre', {}, JSON.stringify(e.state, null, 2)))
+        : h('div', { class: 'detail-empty' }, '这个事件没有决策帧'),
+    )
+    return
+  }
+
+  const kids = []
+  if (e.reason) kids.push(field('为什么是这个动作', e.reason))
+  if (e.latencyMs != null) kids.push(field('判定耗时', ms(e.latencyMs)))
+
+  // 每个问题：选项 + 概率条。这是这个界面最不该省略的东西
   for (const [qid, q] of Object.entries(e.questions ?? {})) {
     const a = e.answers?.[qid]
     if (!a) continue
@@ -215,7 +444,6 @@ function renderDecision(e) {
     qa.append(h('div', { class: 'q-instruction' }, h('span', { class: 'q-id' }, qid), q.instructions ?? ''))
 
     if (a.type === 'choice') {
-      // 按概率降序 —— 模型认定的最优解应该在最上面
       const opts = Object.entries(a.probabilities ?? {}).sort((x, y) => y[1] - x[1])
       for (const [name, p] of opts) {
         qa.append(
@@ -229,7 +457,6 @@ function renderDecision(e) {
         )
       }
     } else if (a.type === 'noul') {
-      // noul 只看一端就够 —— 画成两段，右边是「真」的概率
       qa.append(
         h(
           'div',
@@ -257,106 +484,35 @@ function renderDecision(e) {
           ),
         )
       }
-      qa.append(h('div', { class: 'card-reason' }, `期望档位 ${a.score}`))
+      qa.append(h('div', { class: 'scale' }, `期望档位 ${a.score}`))
     }
-    card.append(qa)
+    kids.push(qa)
   }
 
-  // 原始决策帧 —— 折叠着。想看「模型到底看到了什么」时才展开，
-  // 但它的存在本身很重要：判定质量的上限由这一帧决定。
-  card.append(
-    h(
-      'details',
-      { class: 'raw' },
-      h('summary', {}, '决策帧（真正发给模型的东西）'),
-      h('pre', {}, JSON.stringify(e.state, null, 2)),
-    ),
-  )
-  return card
+  if (e.type === 'tool:call') kids.push(field('输入', h('pre', {}, e.input || '(无输入)')))
+  if (e.type === 'tool:result') {
+    kids.push(field('耗时', ms(e.ms)))
+    kids.push(field('输出', h('pre', {}, String(e.output ?? ''))))
+  }
+  if (e.type === 'generate') {
+    kids.push(field('耗时', ms(e.latencyMs)))
+    kids.push(field('tokens', String(e.tokens)))
+  }
+  if (e.type === 'audit') {
+    kids.push(field('目标', h('pre', {}, e.record?.target ?? '')))
+    kids.push(field('风险档位', String(e.record?.risk ?? '?')))
+  }
+  if (e.type === 'authorize') kids.push(field('结果', e.approved ? '已授权' : '已拒绝'))
+
+  detailBody.replaceChildren(...(kids.length ? kids : [h('div', { class: 'detail-empty' }, '没有更多内容')]))
 }
 
-function renderToolCall(e) {
-  return h(
-    'div',
-    { class: 'card tool' },
-    h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge kind-tool' }, '工具'),
-      h('span', { class: 'card-id' }, e.tool),
-    ),
-    h('div', { class: 'io' }, e.input || '(无输入)'),
-  )
-}
-
-function renderToolResult(e) {
-  state.tools++
-  updateTally()
-  const body = String(e.output ?? '')
-  const shown = body.length > 700 ? `${body.slice(0, 700)}…` : body
-  return h(
-    'div',
-    { class: 'card tool' },
-    h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge kind-tool' }, '工具结果'),
-      h('span', { class: 'card-id' }, e.tool),
-      h('span', { class: 'card-lat' }, ms(e.ms)),
-    ),
-    h('div', { class: 'io' }, shown),
-  )
-}
-
-function renderGenerate(e) {
-  state.models++
-  updateTally()
-  return h(
-    'div',
-    { class: 'card model' },
-    h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge kind-model' }, '模型生成'),
-      h('span', { class: 'card-id' }, e.kind),
-      h('span', { class: 'card-lat' }, `${ms(e.latencyMs)} · ${e.tokens} tokens`),
-    ),
-    h('div', { class: 'card-reason' }, '整个 loop 里唯一贵的一步'),
-  )
-}
-
-function renderAuthorize(e) {
-  return h(
-    'div',
-    { class: 'card authorize' },
-    h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge action warn' }, e.approved ? '已授权' : '已拒绝'),
-      h('span', { class: 'card-id' }, e.tool),
-    ),
-    h('div', { class: 'card-reason' }, e.reason),
-  )
-}
-
-function renderAudit(e) {
-  // 审计留痕也是「代码做的决定」，要进计数
-  state.rules++
-  updateTally()
-  const r = e.record ?? {}
-  return h(
-    'div',
-    { class: 'card audit' },
-    h(
-      'div',
-      { class: 'card-head' },
-      h('span', { class: 'badge kind-decide' }, '审计留痕'),
-      h('span', { class: 'card-id' }, r.tool ?? ''),
-      h('span', { class: 'card-lat' }, `risk ${r.risk ?? '?'}`),
-    ),
-    h('div', { class: 'io' }, r.target ?? ''),
-  )
-}
+// ═══════════════════════════════════════════════════════════
+// 右栏：记账
+//
+// 它和左栏是一对 —— 左栏的 DECISION.md 说**应该**问哪些问题，
+// 这里说**实际**花了多少。
+// ═══════════════════════════════════════════════════════════
 
 function renderEndStats(e) {
   const s = e.stats ?? {}
@@ -431,22 +587,26 @@ function onEvent(e) {
       break
   }
 
-  // 轨迹侧：一张卡
-  if (e.step && e.step !== lastStep && e.type === 'decision') {
-    timeline.append(h('div', { class: 'step-head' }, `step ${e.step}`))
-    lastStep = e.step
+  // 轨迹侧：账本加一行，时间轴加一条
+  const dur = durationOf(e)
+  addSpan(e, dur)
+  addRow(e, dur, e.step)
+
+  // 计数
+  if (e.type === 'decision') {
+    state.decisions++
+    updateTally()
+  } else if (e.type === 'tool:result') {
+    state.tools++
+    updateTally()
+  } else if (e.type === 'generate') {
+    state.models++
+    updateTally()
+  } else if (e.type === 'audit') {
+    // 审计留痕也是「代码做的决定」，要进计数
+    state.rules++
+    updateTally()
   }
-
-  const card =
-    e.type === 'decision' ? renderDecision(e)
-    : e.type === 'tool:call' ? renderToolCall(e)
-    : e.type === 'tool:result' ? renderToolResult(e)
-    : e.type === 'generate' ? renderGenerate(e)
-    : e.type === 'authorize' ? renderAuthorize(e)
-    : e.type === 'audit' ? renderAudit(e)
-    : null
-
-  if (card) timeline.append(card)
 
   if (e.type === 'run:end') {
     renderEndStats(e)
@@ -470,6 +630,16 @@ function run(task) {
   if (turns.length === 0) chat.replaceChildren()
   userTurn(task)
   current = { task, events: [], ...assistantTurn() }
+
+  // 轨迹侧清空。时间轴按**这一轮**的真实耗时排布，混进上一轮的条
+  // 会让「橙色的那个最宽」这个结论失真
+  trajBody.replaceChildren()
+  spans.length = 0
+  clock = 0
+  rowsAdded = 0
+  selected = null
+  detailEvent = null
+  renderPlot()
   turns.push(current)
 
   $('run').disabled = true

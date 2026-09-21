@@ -825,4 +825,22 @@ body {
    * 而不是靠每一处 `var()` 的兜底参数各自为政。
    */
   --jl-content-font-size: var(--jl-font-size);
+
+  /*
+   * 模型生成的紫罗兰。
+   *
+   * DSH 用它标 assistant message：品牌蓝 60% 混错误红 —— 得到的是一个
+   * 既不像"成功"也不像"失败"的颜色，符合它「这不是状态，是产物」的定位。
+   * 这里沿用同一套混法，因为它同样不该被读成一种状态。
+   */
+  --jl-model-violet: color-mix(
+    in srgb,
+    var(--jl-alias-brand-primary-new-colorprimary-new-color) 60%,
+    var(--jl-alias-state-error-secondary)
+  );
+  --jl-model-violet-bg: color-mix(
+    in srgb,
+    var(--jl-model-violet) 15%,
+    var(--jl-alias-bg-layer-1)
+  );
 }

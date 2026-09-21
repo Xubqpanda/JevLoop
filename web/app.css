@@ -186,10 +186,10 @@ body {
   color: var(--jl-alias-label-tertiary);
 }
 .tally-item.tool b {
-  color: var(--jl-alias-state-success-primary);
+  color: var(--jl-alias-state-warn-label);
 }
 .tally-item.model b {
-  color: var(--jl-alias-state-warn-primary);
+  color: var(--jl-model-violet);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -492,269 +492,452 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   轨迹卡片
+   轨迹：时间轴 + 事件账本 + 详情
+
+   结构照搬 DSH 的 ui-trajectory：顶部一条 50px 的泳道图，
+   下面是 table-layout: fixed 的**账本**（行高 30px、12px 字号、
+   sticky 表头、0.5px 行线），右边是详情面板。
+
+   为什么是表格不是卡片流：一次 14 个判定，卡片每张 100px 要滚三屏，
+   账本一屏就完了。密度本身就是这个视图的功能。
    ═══════════════════════════════════════════════════════════ */
 
-.timeline {
+.trace-wrap {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  padding: 16px calc(var(--jl-composer-side-clearance) + 16px) 24px;
-}
-
-.timeline-inner {
-  max-width: var(--jl-chat-content-width);
-  width: 100%;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  overflow: hidden;
 }
 
-.step-head {
-  margin-top: 14px;
-  font-family: var(--jl-font-mono);
-  font-size: var(--jl-font-size-caption);
-  line-height: var(--jl-line-caption);
-  color: var(--jl-alias-label-caption);
-  letter-spacing: 0.4px;
-}
+/* ── 时间轴：三条泳道，横轴是时间 ─────────────────────────── */
 
-.step-head:first-child {
-  margin-top: 0;
-}
-
-.card {
-  border: 0.5px solid var(--jl-alias-border-l2);
-  border-left-width: 3px;
-  border-radius: var(--jl-radius);
-  padding: 10px 12px;
-  background: var(--jl-alias-bg-layer-1);
-  font-size: var(--jl-font-size-sm);
-  line-height: var(--jl-line-sm);
-}
-
-/* 左边框 3px 就是全部语义 —— 一眼看出这一步是什么性质 */
-.card.decide {
-  border-left-color: var(--jl-alias-brand-primary);
-}
-.card.tool {
-  border-left-color: var(--jl-alias-state-success-primary);
-}
-.card.model {
-  border-left-color: var(--jl-alias-state-warn-primary);
-  background: var(--jl-alias-state-warn-tertiary);
-}
-.card.authorize {
-  border-left-color: var(--jl-alias-state-error-primary);
-}
-.card.audit {
-  border-left-color: var(--jl-alias-label-caption);
+.plot {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  height: 50px;
+  flex: none;
+  overflow: hidden;
   background: var(--jl-alias-bg-layer-2);
+  border-bottom: 0.5px solid var(--jl-alias-border-l2);
 }
 
-.card-head {
+.plot-labels {
+  position: relative;
+  border-right: 0.5px solid var(--jl-alias-border-l1);
+  color: var(--jl-alias-label-caption);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* 三条泳道按 14px 间距排，和下面 span 的 top 对齐 */
+.plot-labels span {
+  position: absolute;
+  right: 3px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+  justify-content: flex-end;
+  height: 8px;
+}
+.plot-labels span:nth-child(1) { top: 7px; }
+.plot-labels span:nth-child(2) { top: 21px; }
+.plot-labels span:nth-child(3) { top: 35px; }
+
+.plot-track {
+  position: relative;
+  overflow: hidden;
 }
 
-.badge {
-  flex: none;
-  padding: 1px 7px;
-  border: 0.5px solid transparent;
-  border-radius: 999px;
-  corner-shape: round;
-  font-size: 11px;
-  line-height: 17px;
-  font-weight: 500;
+.plot-lanes {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  right: 0;
 }
 
-.badge.kind-decide {
-  background: var(--jl-alias-state-business-tertiary);
-  color: var(--jl-alias-state-business-primary);
+/* 每个事件一个 span。横轴是**真实耗时**，所以橙色的那一个宽度一眼可见 */
+.span {
+  position: absolute;
+  top: calc(var(--lane) * 14px);
+  left: var(--left);
+  width: max(2px, var(--width));
+  height: 8px;
+  border-radius: 1px;
+  background: var(--jl-alias-label-secondary);
+  opacity: 0.78;
 }
-.badge.kind-tool {
-  background: var(--jl-alias-state-success-tertiary);
-  color: var(--jl-alias-state-success-primary);
+.span.decide {
+  background: var(--jl-alias-state-business-primary);
 }
-.badge.kind-model {
-  background: var(--jl-alias-state-warn-tertiary);
-  color: var(--jl-alias-state-warn-label);
+.span.tool {
+  background: var(--jl-alias-state-warn-label);
+  opacity: 1;
 }
-.badge.action {
-  background: var(--jl-alias-interactive-bg-hover-solid);
-  color: var(--jl-alias-label-secondary);
-  font-family: var(--jl-font-mono);
+/* 模型生成用 DSH 给 assistant message 的紫罗兰 —— 整条时间轴上只有它该扎眼 */
+.span.model {
+  background: var(--jl-model-violet);
+  opacity: 1;
 }
-.badge.action.warn {
-  background: var(--jl-alias-state-warn-tertiary);
-  color: var(--jl-alias-state-warn-label);
+.span.audit {
+  background: var(--jl-alias-label-caption);
 }
 
-.card-id {
-  font-family: var(--jl-font-mono);
-  font-size: 12px;
-  color: var(--jl-alias-label-primary);
-}
-
-.card-lat {
-  margin-left: auto;
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
+.plot-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   color: var(--jl-alias-label-caption);
-  font-variant-numeric: tabular-nums;
+  font-size: var(--jl-font-size-sm);
 }
 
-.card-reason {
-  color: var(--jl-alias-label-tertiary);
-  font-size: 12px;
-  line-height: var(--jl-line-caption);
+/* ── 账本 ─────────────────────────────────────────────────── */
+
+.split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--jl-alias-bg-layer-1);
 }
 
-.io {
-  margin-top: 5px;
-  padding: 6px 8px;
-  border-radius: var(--jl-radius-sm);
-  background: var(--jl-alias-markdown-code-block);
-  font-family: var(--jl-font-mono);
+.table-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.traj {
+  width: 100%;
+  min-width: 0;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--jl-alias-label-primary);
+  background: var(--jl-alias-bg-layer-1);
   font-size: 12px;
   line-height: 18px;
-  color: var(--jl-alias-label-secondary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 200px;
-  overflow: auto;
 }
 
-.qa {
-  margin-top: 7px;
-}
-
-.q-instruction {
-  color: var(--jl-alias-label-secondary);
-  font-size: 12px;
-  line-height: var(--jl-line-caption);
-  margin-bottom: 5px;
-}
-
-.q-id {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--jl-alias-markdown-tag);
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
-  color: var(--jl-alias-label-tertiary);
-}
-
-/* 概率条 */
-.opt {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 1px 0;
-}
-
-.opt-name {
-  flex: none;
-  width: 132px;
+.traj th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 30px;
+  padding: 0 8px;
   overflow: hidden;
+  border-bottom: 0.5px solid var(--jl-alias-border-l2);
+  background: var(--jl-specific-sidebar-fill);
+  color: var(--jl-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--jl-font-mono);
-  font-size: 12px;
-  color: var(--jl-alias-label-secondary);
 }
 
-.opt-track {
-  flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--jl-alias-bg-skeleton);
+/* 事件列窄而右对齐，内容列吃掉剩下的 —— DSH 的 122px */
+/* 事件列：36px 左留白（给步骤徽章和竖线）+ 76px 右对齐的徽章槽 —— DSH 的几何 */
+.traj .col-event {
+  width: 122px;
+  padding-right: 4px;
+  padding-left: 36px;
+}
+
+.traj td {
+  height: 30px;
+  padding: 0 8px;
   overflow: hidden;
+  border-bottom: 0.5px solid var(--jl-alias-border-l1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.opt-fill {
-  display: block;
+.traj tbody tr {
+  cursor: default;
+  transition: background-color 120ms var(--jl-ease);
+}
+
+.traj tbody tr:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+.traj tbody tr[aria-selected='true'] {
+  background: var(--jl-alias-state-business-tertiary);
+}
+
+/* 事件列：76px 的槽，徽章在槽里右对齐 —— DSH 的 kindSlot + kindTag */
+.event-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
   height: 100%;
-  border-radius: 3px;
-  background: var(--jl-alias-label-dimmed);
 }
 
-.opt-pct {
+.kind-slot {
+  display: flex;
   flex: none;
-  width: 52px;
-  text-align: right;
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
-  color: var(--jl-alias-label-caption);
-  font-variant-numeric: tabular-nums;
+  align-items: center;
+  justify-content: flex-end;
+  width: 76px;
 }
 
-/* 被选中的那个：整行加粗、条形换成品牌色 —— 一眼看到模型选了什么 */
-.opt.picked .opt-name {
-  color: var(--jl-alias-label-primary);
-  font-weight: 600;
-}
-.opt.picked .opt-fill {
-  background: var(--jl-alias-brand-primary);
-}
-.opt.picked .opt-pct {
-  color: var(--jl-alias-label-primary);
-  font-weight: 600;
-}
-
-/* noul：两段条 */
-.noul-bar {
-  display: flex;
-  height: 8px;
+/* 是**文字徽章**不是圆点。10px / 650 字重 / 0.035em 字距 —— 照抄 DSH 的 kindTag */
+.kind-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid transparent;
   border-radius: 4px;
-  overflow: hidden;
-  background: var(--jl-alias-bg-skeleton);
-}
-
-.noul-false {
-  background: var(--jl-alias-label-dimmed);
-}
-
-.noul-true {
-  background: var(--jl-alias-brand-primary);
-}
-
-.noul-legend {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 3px;
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
-  color: var(--jl-alias-label-caption);
-}
-
-.raw {
-  margin-top: 8px;
-}
-
-.raw > summary {
-  color: var(--jl-alias-label-caption);
-  font-size: 11px;
-  cursor: pointer;
-  list-style: none;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
   user-select: none;
 }
 
-.raw > summary::-webkit-details-marker {
-  display: none;
+/* 判定 = DSH 的 user 蓝 */
+.kind-tag.decide {
+  color: var(--jl-alias-state-business-primary);
+  background: var(--jl-alias-state-business-tertiary);
 }
-
-.raw > summary:hover {
+/* 工具 = DSH 的 toolAmber */
+.kind-tag.tool {
+  color: var(--jl-alias-state-warn-label);
+  background: var(--jl-alias-state-warn-tertiary);
+}
+/* 模型生成 = DSH 的 assistantVioletBright */
+.kind-tag.model {
+  color: var(--jl-model-violet);
+  background: var(--jl-model-violet-bg);
+}
+/* 审计 = DSH 的 systemNeutral */
+.kind-tag.audit {
   color: var(--jl-alias-label-secondary);
+  background: var(--jl-alias-bg-module-platform);
 }
 
-.raw pre {
-  margin: 6px 0 0;
+.event-id {
+  flex: none;
+  margin-left: 5px;
+  color: var(--jl-alias-label-tertiary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+}
+
+/* 内容列 */
+.content-cell {
+  color: var(--jl-alias-label-primary);
+}
+.content-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.content-text .mono {
+  font-family: var(--jl-font-mono);
+}
+.content-text .dim {
+  color: var(--jl-alias-label-tertiary);
+}
+/* 选中项用品牌色标出来 —— 一行里最该被看见的就是它 */
+.content-text .hit {
+  color: var(--jl-alias-state-business-primary);
+  font-weight: 500;
+}
+.content-text .warn {
+  color: var(--jl-alias-state-warn-label);
+}
+
+/* 步骤边界：一条 2px 横贯细线，正好压在行顶上（DSH 的 tr[data-turn-start] td::before） */
+.traj tbody tr[data-step-start='true'] td {
+  position: relative;
+  overflow: visible;
+}
+.traj tbody tr[data-step-start='true']:not(:first-child) td::before {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--jl-alias-border-l1);
+  content: '';
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+/* 步骤号：左上角一个 8px 等宽徽章 —— DSH 的 turnLabel */
+.step-label {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  display: inline-grid;
+  align-items: center;
+  width: max-content;
+  padding: 1px 5px;
+  border-radius: 0 0 2px;
+  color: var(--jl-alias-label-tertiary);
+  background: var(--jl-alias-bg-module-platform);
+  font-family: var(--jl-font-mono);
+  font-size: 8px;
+  line-height: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* 工具那两行用等宽 —— 它们的内容是命令和输出，不是句子 */
+.traj tbody tr[data-mono='true'] .content-text {
+  font-family: var(--jl-font-mono);
+  font-size: 12px;
+}
+
+/* ── 详情面板 ─────────────────────────────────────────────── */
+
+.details {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: clamp(320px, 38%, 440px);
+  max-width: calc(100% - 280px);
+  min-width: 0;
+  min-height: 0;
+  border-left: 0.5px solid var(--jl-alias-border-l2);
+  background: var(--jl-alias-bg-layer-1);
+}
+
+@media (max-width: 1080px) {
+  .details {
+    display: none;
+  }
+}
+
+.details-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 42px;
+  padding: 0 8px 0 12px;
+  border-bottom: 0.5px solid var(--jl-alias-border-l2);
+}
+
+.details-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  color: var(--jl-alias-label-primary);
+}
+
+.details-location {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--jl-alias-label-tertiary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-tabs {
+  display: flex;
+  flex: none;
+  height: 34px;
+  padding: 0 8px;
+  gap: 1px;
+  overflow-x: auto;
+  border-bottom: 0.5px solid var(--jl-alias-border-l2);
+  white-space: nowrap;
+}
+
+.detail-tab {
+  position: relative;
+  flex: none;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--jl-alias-label-tertiary);
+  font: inherit;
+  font-size: var(--jl-font-size-sm);
+  cursor: pointer;
+}
+
+.detail-tab:hover {
+  color: var(--jl-alias-label-primary);
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+.detail-tab[aria-selected='true'] {
+  color: var(--jl-alias-state-business-primary);
+}
+
+/* 选中的 tab 底下一条 2px 品牌色 —— DSH 的 detailTabActive::after */
+.detail-tab[aria-selected='true']::after {
+  position: absolute;
+  right: 9px;
+  bottom: 0;
+  left: 9px;
+  height: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--jl-alias-state-business-primary);
+  content: '';
+}
+
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.detail-empty {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--jl-alias-label-caption);
+  font-size: var(--jl-font-size-sm);
+}
+
+/* 详情里的一段 */
+.field {
+  margin-bottom: 14px;
+}
+
+.field-k {
+  margin-bottom: 5px;
+  color: var(--jl-alias-label-caption);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.field-v {
+  color: var(--jl-alias-label-secondary);
+  font-size: var(--jl-font-size-sm);
+  line-height: 20px;
+}
+
+.field-v.mono {
+  font-family: var(--jl-font-mono);
+  font-size: 12px;
+}
+
+.field-v pre {
+  margin: 0;
   padding: 8px 10px;
   border-radius: var(--jl-radius-sm);
   background: var(--jl-alias-markdown-code-block);
@@ -763,7 +946,7 @@ body {
   font-size: 11px;
   line-height: 17px;
   overflow: auto;
-  max-height: 260px;
+  max-height: 320px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -868,10 +1051,10 @@ body {
   background: var(--jl-alias-label-caption);
 }
 .swatch.tool {
-  background: var(--jl-alias-state-success-primary);
+  background: var(--jl-alias-state-warn-label);
 }
 .swatch.model {
-  background: var(--jl-alias-state-warn-primary);
+  background: var(--jl-model-violet);
 }
 .swatch.authorize {
   background: var(--jl-alias-state-error-primary);
@@ -907,7 +1090,7 @@ body {
   color: var(--jl-alias-brand-primary);
 }
 .metric-v.model {
-  color: var(--jl-alias-state-warn-primary);
+  color: var(--jl-model-violet);
 }
 
 /* 头条数字：判定 : 模型 */
@@ -960,4 +1143,124 @@ button.badge.action {
 
 button.badge.action:hover {
   background: var(--jl-alias-interactive-bg-hover-solid);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   详情面板里的判定内容
+
+   概率条从卡片里搬到了这里 —— 账本的一行只有 30px，放不下
+   一个 choice 的四个选项，而**概率恰恰是这个界面最不该省略的东西**。
+   点开看，不点开不占地方。
+   ═══════════════════════════════════════════════════════════ */
+
+.qa {
+  margin-bottom: 14px;
+}
+
+.q-instruction {
+  margin-bottom: 6px;
+  color: var(--jl-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.q-id {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--jl-alias-markdown-tag);
+  color: var(--jl-alias-label-tertiary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+}
+
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 0;
+}
+
+.opt-name {
+  flex: none;
+  width: 116px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jl-alias-label-secondary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+}
+
+.opt-track {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--jl-alias-bg-skeleton);
+}
+
+.opt-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--jl-alias-label-dimmed);
+}
+
+.opt-pct {
+  flex: none;
+  width: 52px;
+  color: var(--jl-alias-label-caption);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 被选中的那一个：加粗 + 品牌色。整张详情里最该被看见的就是它 */
+.opt.picked .opt-name {
+  color: var(--jl-alias-label-primary);
+  font-weight: 600;
+}
+.opt.picked .opt-fill {
+  background: var(--jl-alias-state-business-primary);
+}
+.opt.picked .opt-pct {
+  color: var(--jl-alias-label-primary);
+  font-weight: 600;
+}
+
+/* noul 只看一端就够，画成两段，右边是「真」 */
+.noul-bar {
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--jl-alias-bg-skeleton);
+}
+
+.noul-false {
+  background: var(--jl-alias-label-dimmed);
+}
+
+.noul-true {
+  background: var(--jl-alias-state-business-primary);
+}
+
+.noul-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--jl-alias-label-caption);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+}
+
+/* score 的量表 */
+.scale {
+  margin-top: 6px;
+  color: var(--jl-alias-label-caption);
+  font-size: 11px;
+  line-height: 16px;
 }
