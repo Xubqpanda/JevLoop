@@ -716,17 +716,35 @@ function run(task) {
     // 由解析器消费、**不会派发 message 事件**，正常收不到它。留着是为了
     // 万一中间有代理把它当数据转发时，不至于报一个假的解析错误。
     if (msg.data.startsWith(':')) return
+
+    let e
     try {
-      const e = JSON.parse(msg.data)
-      if (e.type === 'run:start') return
-      onEvent(e)
-      if (e.type === 'run:end') {
-        // 记下来：正常收尾时服务端关闭连接也会触发 onerror，那不是故障
-        sawEnd = true
-        es.close()
-      }
+      e = JSON.parse(msg.data)
     } catch (err) {
       console.error('事件解析失败', err, msg.data)
+      return
+    }
+    if (e.type === 'run:start') return
+
+    // ★ 收尾标记必须设在 `onEvent` **之前**。
+    //
+    //   以前这三句在同一个 `try` 里、且没有 `finally`：`onEvent` 在 `run:end`
+    //   上抛异常就整块跳走 —— `sawEnd` 保持 false、`es.close()` 也不执行，
+    //   于是 EventSource 还开着，服务端在 STREAM_LINGER_MS 之后关连接触发
+    //   `onerror`，界面把一次**成功**的运行显示成「连接断开」。
+    //
+    //   分开之后两件事各自成立：「这次运行结束了没有」是**协议状态**，
+    //   「渲染成功了没有」是**界面问题** —— 后者不该改写前者。
+    if (e.type === 'run:end') {
+      // 记下来：正常收尾时服务端关闭连接也会触发 onerror，那不是故障
+      sawEnd = true
+      es.close()
+    }
+
+    try {
+      onEvent(e)
+    } catch (err) {
+      console.error('事件渲染失败', err, e)
     }
   }
 
