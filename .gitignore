@@ -10,3 +10,13 @@ package-lock.json
 
 # 构建产物：不进仓库（源码面 vs 产物面）
 dist/
+
+# 实验的数据与日志：不进仓库，见 experiments/README.md §1
+#
+# ★ 写法是 `dir/*` 加否定 `.gitkeep`，**不是**直接忽略整个目录 ——
+#   直接写 `experiments/dataset/` 的话连占位文件也进不来，
+#   于是别人 clone 出来那六个目录**根本不存在**，而 README 说它们存在。
+experiments/dataset/*
+!experiments/dataset/.gitkeep
+experiments/log/*
+!experiments/log/.gitkeep

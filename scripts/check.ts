@@ -47,7 +47,21 @@ interface Violation {
   detail: string
 }
 
-const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts']
+/**
+ * 需要过**格式门禁**的根。
+ *
+ * ⚠️ 加进这张表**不等于**要登记层号 —— 分层只查 `src/`（见下面 `layerViolations('src')`）。
+ * `bench/` 和 `experiments/` 在这里，是为了让**脚本也遵守同一套格式**：
+ * 七个人各写各的，如果格式不查，最后合起来的 diff 没法读。
+ */
+const ROOTS = [
+  'src/**/*.ts',
+  'examples/**/*.ts',
+  'tests/**/*.ts',
+  'scripts/**/*.ts',
+  'bench/**/*.ts',
+  'experiments/**/*.ts',
+]
 
 /**
  * `dir` 下的全部 TS 文件，**含子目录**。
