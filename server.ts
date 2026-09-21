@@ -457,6 +457,19 @@ const server = createServer(async (req, res) => {
   }
 })
 
+// 端口被占是**用户最可能遇到的第一个错误**（多半是自己已经起了一个）。
+// 原始堆栈只说 EADDRINUSE，不说该怎么办 —— 那条信息对读的人没有用。
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  ✗ 端口 ${PORT} 已被占用 —— 多半是已经有另一个 JevLoop 在跑。`)
+    console.error(`    占用它的进程：  ss -ltnp | grep :${PORT}`)
+    console.error(`    换一个端口：    PORT=7800 node --experimental-strip-types server.ts\n`)
+    process.exit(1)
+  }
+  // 别的监听错误没有「换个端口」这种统一解法，原样抛出去
+  throw err
+})
+
 server.listen(PORT, HOST, async () => {
   console.log(`\n  JevLoop · http://${HOST}:${PORT}`)
   console.log(`  判定后端 : ${resolveProvider().name}`)
