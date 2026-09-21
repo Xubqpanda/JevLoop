@@ -217,6 +217,26 @@ function setWaiting(text) {
   }
 }
 
+/**
+ * 「判定 : 模型」的显示文本。**两个调用点共用这一个函数。**
+ *
+ * 以前消息页脚（`finishAssistant`）和右侧统计栏（`renderEndStats`）各写了一份，
+ * 而且**已经不一致**：`decisions` 缺失时一个渲染 `? : 0`、另一个渲染 `— : 0` ——
+ * 同一次运行、同屏可见，两种文本。旁边那段「不在这里重算，两处实现会分叉」
+ * 的注释防住的是**除法**，没防住**格式化**，而分叉恰恰发生在格式化上。
+ *
+ * `ratio === null` 是服务端的「没有模型调用」（见 `MeterStats.ratio`）——
+ * 以前那里是 `Infinity`，而 JSON 把它变成 `null`，于是前端那条
+ * `!Number.isFinite` 分支**永远不可达**，显示成 `?` 而不是它想显示的 `N : 0`。
+ * 恰恰是「跑了 N 次判定、一次模型调用都没成」这个最需要看清的情形。
+ */
+function ratioText(s) {
+  const r = s?.ratio
+  if (r === null) return `${s?.decisions ?? '?'} : 0`
+  if (typeof r !== 'number' || !Number.isFinite(r)) return '?'
+  return `${r.toFixed(1)} : 1`
+}
+
 function finishAssistant(text, stats, halt) {
   if (!current) return
   current.finished = true
@@ -225,11 +245,7 @@ function finishAssistant(text, stats, halt) {
   current.answer.textContent = text || '（没有回答）'
 
   const s = stats ?? {}
-  const r = s.ratio
-  const ratio =
-    typeof r !== 'number' ? '?'
-    : !Number.isFinite(r) ? `${s.decisions ?? '?'} : 0`
-    : `${r.toFixed(1)} : 1`
+  const ratio = ratioText(s)
   current.foot.className = `msg-foot${halt === 'error' ? ' failed' : ''}`
   current.foot.replaceChildren(
     h('span', {}, `${s.decisions ?? '?'} 判定`),
@@ -580,13 +596,10 @@ function renderEndStats(e) {
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? String(v) : '—')
   const dur = (v) => (typeof v === 'number' && Number.isFinite(v) ? ms(v) : '—')
 
-  // 判定 : 模型 —— **直接用服务端的值**，不在这里重算。
-  // `meter.ts` 已经算过一遍，两处实现会在「没有模型调用」这个边界上分叉。
-  const r = s.ratio
-  const ratio =
-    typeof r !== 'number' ? '?'
-    : !Number.isFinite(r) ? `${num(s.decisions)} : 0`
-    : `${r.toFixed(1)} : 1`
+  // 判定 : 模型 —— 走和消息页脚**同一个**函数（`ratioText`）。
+  // 以前这里抄了一份，两处在 `decisions` 缺失时给出不同文本；
+  // 那段「不在这里重算」的注释防住了除法，没防住格式化。
+  const ratio = ratioText(s)
 
   $('side-stats').replaceChildren(
     h('div', { class: 'metric' }, h('div', { class: 'metric-k' }, '判定次数'), h('div', { class: 'metric-v decide' }, num(s.decisions))),

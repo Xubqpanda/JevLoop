@@ -76,7 +76,10 @@ export class Meter {
       avgDecisionMs: round(decisionMs / n),
       modelCalls: this.modelCalls.length,
       modelMs: round(modelMs),
-      ratio: this.modelCalls.length ? this.decisions.length / this.modelCalls.length : Infinity,
+      // ★ `null`，不是 `Infinity`。这个值要跨 JSON 出去，而
+      //   `JSON.stringify(Infinity)` 是 `null` —— 让 JSON 来替我们决定
+      //   等于把语义交给一个静默的转换。见 `MeterStats.ratio` 的说明。
+      ratio: this.modelCalls.length ? this.decisions.length / this.modelCalls.length : null,
       decisionShare: total > 0 ? decisionMs / total : 1,
       escalated: this.decisions.filter((d) => d.escalate).length,
       degraded: this.decisions.filter((d) => d.degraded).length,
@@ -161,6 +164,9 @@ const round = (v: number) => Math.round(v * 10) / 10
  *
  * 分隔符也统一成 `:`（以前 `meter` 用 `:`、`demo` 用 ` : `）。
  */
-export function formatRatio(s: { decisions: number; modelCalls: number; ratio: number }): string {
-  return s.modelCalls ? `${s.ratio.toFixed(1)}:1` : `${s.decisions}:0`
+export function formatRatio(s: { decisions: number; modelCalls: number; ratio: number | null }): string {
+  // `ratio === null` = 没有模型调用 —— 也可能是老的、被 JSON 变成 `null` 的 `Infinity`，
+  // 两种都落到 `N:0`。那才是真相：跑了 N 次判定，一次模型调用都没有。
+  if (s.ratio === null || !Number.isFinite(s.ratio)) return `${s.decisions}:0`
+  return `${s.ratio.toFixed(1)}:1`
 }

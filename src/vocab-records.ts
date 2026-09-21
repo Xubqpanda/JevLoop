@@ -60,8 +60,18 @@ export interface MeterStats {
   avgDecisionMs: number
   modelCalls: number
   modelMs: number
-  /** 判定次数 : 模型调用次数。没有模型调用时是 Infinity */
-  ratio: number
+  /**
+   * 判定次数 : 模型调用次数。**没有模型调用时是 `null`**，不是 `Infinity`。
+   *
+   * 为什么不是 `Infinity`：这个值要跨 JSON 出去（SSE 的 `run:end`），
+   * 而 `JSON.stringify(Infinity)` 是 `null` —— 也就是说 **JSON 会静默改写它**，
+   * 前端那条专门为 `Infinity` 写的 `!Number.isFinite` 分支因此**永远不可达**，
+   * 界面显示成 `?` 而不是它本来想显示的 `N : 0`。
+   *
+   * 让不可表示的值**在跨越 JSON 之前**就变成可表示的：
+   * `null` 是 JSON 能忠实携带的，而且语义明确（"没有模型调用"）。
+   */
+  ratio: number | null
   /** 判定耗时占「判定 + 模型」总耗时的比例 */
   decisionShare: number
   escalated: number

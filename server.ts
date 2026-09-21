@@ -291,7 +291,20 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
     await runAgent({
       task,
       cwd,
-      decider: new Decider({ provider, meter }),
+      decider: new Decider({
+        provider,
+        meter,
+        // ★ 预算告警必须接上出口。第十轮 R4 报的是 `strict`/`onWarn` **没有任何调用方** ——
+        //   于是 `validate()` 每次判定都算一遍，然后丢掉。`examples/demo.ts` 当时接上了，
+        //   而**这里没接** —— 偏偏 server 才是走 Mock / 规则判定那条离线路径，
+        //   也就是最需要看见预算告警的那条。
+        onWarn: (id, warnings) => {
+          for (const w of warnings) {
+            console.warn(`[budget] ${w.level} ${id}: ${w.message}`)
+            if (w.hint) console.warn(`[budget]   ↳ ${w.hint}`)
+          }
+        },
+      }),
       generator,
       maxSteps,
       // 界面上「需要授权」一律先批准：这是一个演示环境，

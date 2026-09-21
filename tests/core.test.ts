@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { resolvePolicy, gte, probGte, scoreGte, picked } from '../src/policy.ts'
-import { Meter } from '../src/meter.ts'
+import { Meter, formatRatio } from '../src/meter.ts'
 import { normalizeAnswers, MockProvider } from '../src/provider.ts'
 import { validate, clip, estimateTokens } from '../src/budget.ts'
 import { defineDecision, isDecision } from '../src/vocab-decision.ts'
@@ -97,11 +97,23 @@ test('meter 分开统计判定与模型调用', () => {
   assert.equal(s.decisionShare, 30 / 630)
 })
 
-test('没有模型调用时比值是 Infinity，不是 0 或 NaN', () => {
+test('没有模型调用时比值是 null，而且必须能原样跨过 JSON', () => {
   const m = new Meter()
   m.recordDecision(1, fakeDecision(5))
-  assert.equal(m.stats.ratio, Infinity)
+  // ★ 以前这里断言 `Infinity`。改成 `null` 不是口味问题：
+  //   这个值要经 SSE 出去，而 `JSON.stringify(Infinity)` 是 `null` ——
+  //   **JSON 会静默改写它**。让 JSON 替我们决定，等于把语义交给一个静默的转换，
+  //   而前端那条专门为 `Infinity` 写的 `!Number.isFinite` 分支因此永远不可达，
+  //   界面显示成 `?` 而不是它想显示的 `N : 0`。
+  assert.equal(m.stats.ratio, null)
   assert.equal(m.stats.decisionShare, 1)
+
+  // 这条断言才是改动的理由：往返之后必须还是同一个值
+  const wire = JSON.parse(JSON.stringify(m.stats))
+  assert.equal(wire.ratio, null, 'ratio 必须是 JSON 能忠实携带的值')
+  assert.equal(wire.ratio, m.stats.ratio, '往返不能改变它')
+  // 而且格式化出来的仍然是真相，不是 `?`（这里只记了 1 次判定）
+  assert.equal(formatRatio(wire), '1:0')
 })
 
 test('meter 统计 escalate 次数', () => {
