@@ -88,7 +88,12 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
 
   // 没有判定模型时**先说出来**。不说的话表现为「第一步就 escalate」，
   // 而那看起来像 bug，不像缺配置 —— 排查方向会被完全带偏（§8.10）。
-  if (provider.name.includes('mock')) {
+  //
+  // ⚠️ 判据是**链头**，不是 `includes('mock')`。链尾永远是 Mock 兜底
+  // （`resolveProvider` 的默认 `lastResort`），所以拿「含不含 mock」去判
+  // 会在**配了 Jev 的时候也误报** —— 实测 `jev→laya→mock` 被判成「没有判定模型」。
+  // 链头是 mock 才真的没有可用的判定后端。
+  if (provider.name.split('→')[0] === 'mock') {
     console.log('')
     console.log(yellow('  ⚠ no decision model available — every step will escalate.'))
     console.log(dim('    Set TYPESAFE_API_KEY, or run a local Laya sidecar on :7789.'))

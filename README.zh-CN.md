@@ -71,32 +71,37 @@ JevLoop · demo
 
 需要 **Node ≥ 22.6** —— 它直接跑 TypeScript，没有构建步骤。
 
-**先看这些判定被编译成了什么** —— 不用 key、不用 clone：
-
-```bash
-npx jevloop spec
-```
-
-**离线跑完整条 loop** —— 要 clone，因为离线判定器随 examples 一起走：
-
 ```bash
 git clone https://github.com/zjunlp/JevLoop && cd JevLoop
+```
+
+**离线跑完整条 loop** —— 离线判定器随 examples 一起走：
+
+```bash
 npm run demo
 ```
 
-**打开界面：**
+**看这些判定被编译成了什么** —— 不用 key、不用网络：
 
 ```bash
-npx jevloop serve          # http://127.0.0.1:7799
+node --experimental-strip-types src/cli.ts spec
+```
+
+**打开界面**（http://127.0.0.1:7799）：
+
+```bash
+npm run serve
 ```
 
 **拿它干活** —— 这一条需要判定后端：
 
 ```bash
-npx jevloop run "列出目录里的文件并说明它们是做什么的" --cwd ./你的项目
+node --experimental-strip-types src/cli.ts run "列出目录里的文件并说明它们是做什么的" --cwd ./你的项目
 ```
 
 它会自己解析后端：设了 `TYPESAFE_API_KEY` 就用托管 Jev，否则用本地 `:7789` 上的 Laya。两个都没有时，它会**说清楚它想要哪个**，然后每一步都 escalate —— 它不猜。
+
+> **还没发到 npm。** CLI 已经写好并打包了（`run` / `serve` / `spec`，`bin: jevloop`）；发布卡在 registry 账号恢复上。在它发布之前，上面的命令就是同一批入口 —— `npx jevloop …` 只是它们的简写。
 
 **让 demo 走真实的判定模型：**
 
@@ -300,11 +305,11 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 换掉任何一个都只动一个文件。loop 和判定规格一步都不用挪。
 
-要把它当库依赖：`npm install jevloop`。
+要把它当库依赖：`npm install jevloop` —— 等它发布之后。在那之前用 `npm install github:zjunlp/JevLoop`，`prepare` 脚本会替你构建 `dist/`。
 
 ## 界面
 
-`npx jevloop serve` 会在 **http://127.0.0.1:7799** 打开一个三栏界面 —— 本页顶部那张图就是它跑一次的样子。
+`npm run serve` 会在 **http://127.0.0.1:7799** 打开一个三栏界面 —— 本页顶部那张图就是它跑一次的样子。
 
 | 栏 | 显示什么 |
 |---|---|
@@ -315,11 +320,13 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 **轨迹那栏最值得看**：这条 loop 做过的每一次判定、代码拿答案做了什么、花了多久。
 
 ```bash
-npx jevloop serve --cwd ./你的项目        # 默认是一个临时演示目录
-npx jevloop serve --port 7800 --host 127.0.0.1
+npm run serve                                  # 默认工作目录是一个临时演示目录
+CWD_ROOT=./你的项目 PORT=7800 npm run serve
 ```
 
-它**没有鉴权**，默认只监听本机。`--host 0.0.0.0` 的意思是「这个网络上的任何人都能让它在这台机器上跑任务」。
+它**没有鉴权**，默认只监听本机。`HOST=0.0.0.0` 的意思是「这个网络上的任何人都能让它在这台机器上跑任务」。
+
+> 等包发到 npm 之后，`npx jevloop serve --cwd … --port … --host …` 把这三个换成命令行参数。
 
 ## 它不是什么
 

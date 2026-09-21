@@ -70,32 +70,37 @@ You were paying generation prices for decisions.
 
 Needs **Node ≥ 22.6** — it runs TypeScript directly, with no build step.
 
-**See what the decisions compile to** — no key, nothing to clone:
-
-```bash
-npx jevloop spec
-```
-
-**Run the whole loop offline** — clone it, because the offline judge lives with the examples:
-
 ```bash
 git clone https://github.com/zjunlp/JevLoop && cd JevLoop
+```
+
+**Run the whole loop offline** — the offline judge lives with the examples:
+
+```bash
 npm run demo
 ```
 
-**Open the UI:**
+**See what the decisions compile to** — no key, no network:
 
 ```bash
-npx jevloop serve          # http://127.0.0.1:7799
+node --experimental-strip-types src/cli.ts spec
+```
+
+**Open the UI** on http://127.0.0.1:7799:
+
+```bash
+npm run serve
 ```
 
 **Put it to work** — this one needs a decision backend:
 
 ```bash
-npx jevloop run "list the files and explain what they do" --cwd ./some-project
+node --experimental-strip-types src/cli.ts run "list the files and explain what they do" --cwd ./some-project
 ```
 
 It resolves its own backend: the hosted Jev API if `TYPESAFE_API_KEY` is set, otherwise a local Laya on `:7789`. With neither, it says which one it wanted and every step escalates — it does not guess.
+
+> **Not on npm yet.** The CLI is written and packaged (`run` / `serve` / `spec`, `bin: jevloop`); publishing is waiting on a registry account recovery. Until it lands, the commands above are the same entry points — `npx jevloop …` is only their shorthand.
 
 **Drive the demo with a real decision model:**
 
@@ -298,11 +303,11 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 Swapping either one touches exactly one file. The loop and the decision specs don't move.
 
-To depend on it rather than run it: `npm install jevloop`.
+To depend on it rather than run it: `npm install jevloop` — once it is published. Until then, `npm install github:zjunlp/JevLoop` builds `dist/` through the `prepare` script.
 
 ## The UI
 
-`npx jevloop serve` opens a three-pane app on **http://127.0.0.1:7799**. The picture at the top of this page is one run of it.
+`npm run serve` opens a three-pane app on **http://127.0.0.1:7799**. The picture at the top of this page is one run of it.
 
 | Pane | Shows |
 |---|---|
@@ -313,11 +318,13 @@ To depend on it rather than run it: `npm install jevloop`.
 The trace is the part worth watching: every decision the loop made, what code did with the answer, and how long it took.
 
 ```bash
-npx jevloop serve --cwd ./some-project     # default: a temporary demo directory
-npx jevloop serve --port 7800 --host 127.0.0.1
+npm run serve                                  # default cwd: a temporary demo directory
+CWD_ROOT=./some-project PORT=7800 npm run serve
 ```
 
-It has no authentication and binds to loopback only. `--host 0.0.0.0` means *anyone on this network can make it run tasks on this machine*.
+It has no authentication and binds to loopback only. `HOST=0.0.0.0` means *anyone on this network can make it run tasks on this machine*.
+
+> Once the package is on npm, `npx jevloop serve --cwd … --port … --host …` takes the same three as flags.
 
 ## What this is not
 
