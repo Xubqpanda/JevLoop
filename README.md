@@ -6,6 +6,8 @@
 
 JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
+JevLoop is an independent project. It is not affiliated with, or endorsed by, TypeSafe AI — the name is a reference to the model it routes to, nothing more.
+
 **English** · [中文](README.zh-CN.md)
 
 ![JevLoop: one demo run, twelve decisions and one model call](docs/demo.gif)

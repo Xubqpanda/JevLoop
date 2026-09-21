@@ -6,6 +6,8 @@
 
 JevLoop 把它们交给判定模型（[Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)），把大模型留给它唯一不可替代的那件事：**写**。
 
+JevLoop 是一个独立项目，与 TypeSafe AI 没有隶属关系，也未获其背书 —— 名字只是指向它所路由的那个模型，仅此而已。
+
 [English](README.md) · **中文**
 
 ![JevLoop：一次 demo 运行，12 次判定、1 次模型调用](docs/demo.gif)
