@@ -170,6 +170,10 @@ const LAYER: Record<string, number> = {
   budget: 1,
   meter: 1,
   events: 1,
+  // `context` 放 L1 而不是 L3：它与 `frame.ts`（L3）都做「裁剪/编译」，
+  // 但 `frame.ts` 知道 `AgentCtx`，而 `context.ts` 只收 `readonly string[]` ——
+  // 它比 L3 更不知道上下文。而且它**零 import**，放哪层都不会产生依赖问题。
+  context: 1,
   // L2 —— 接缝
   'seam-provider': 2,
   provider: 2,
