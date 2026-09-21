@@ -37,7 +37,7 @@
  */
 
 import { readFileSync, globSync } from 'node:fs'
-import { basename } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import ts from 'typescript'
 
 interface Violation {
@@ -491,6 +491,46 @@ function cssTierViolations(): Violation[] {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════
+// 文件体量：超线就必须**把判断写下来**
+//
+// `AGENTS.md §12` 的判据是「这个文件能不能用一句话说完它负责什么」——
+// 而它自己写着「检查只覆盖了模块之间的方向，文件内部的体量没有检查」。
+// 于是这条规矩一直**靠人记得**，执行得不均匀。
+//
+// 这条规则**不替你判断该不该拆**（那需要读懂文件）：它只强制
+// **超线就必须在模块 JSDoc 里写明「为什么不能再拆」或「待拆」**。
+// 写不出来的，按 §12 的原话，「就是该拆」——`decisions.ts` 是前者的形态
+// （写明理由 → 合法），`provider.ts` 是后者（承认待拆、指向计划）。
+//
+// 基线在 `scripts/file-focus-baseline.json`，**只能变小**。
+// ═══════════════════════════════════════════════════════════
+
+const FILE_FOCUS_LIMIT = 300
+
+/** 超线文件的模块 JSDoc 必须说明「为什么不能再拆」或「待拆」 */
+function fileFocusViolations(dir: string): Violation[] {
+  const baseline = new Set<string>(
+    JSON.parse(readFileSync(join(dirname(dir), 'scripts/file-focus-baseline.json'), 'utf8')).files,
+  )
+  const out: Violation[] = []
+  for (const f of globSync(`${dir}/*.ts`)) {
+    if (baseline.has(basename(f))) continue   // 基线存的是文件名（含 .ts）
+    const raw = readFileSync(f, 'utf8')
+    const n = raw.split('\n').length - 1
+    if (n <= FILE_FOCUS_LIMIT) continue
+    const head = /^(?:#![^\n]*\n)?\s*\/\*\*([\s\S]*?)\*\//.exec(raw)?.[1] ?? ''
+    if (/为什么不能再拆|待拆/.test(head)) continue
+    out.push({
+      file: f,
+      line: 0,
+      rule: 'file-focus',
+      detail: `${n} 行超过 ${FILE_FOCUS_LIMIT}，而模块 JSDoc 没写明「为什么不能再拆」或「待拆」（AGENTS.md §12）`,
+    })
+  }
+  return out
+}
+
 const files = ROOTS.flatMap((pattern) => [...globSync(pattern)]).sort()
 if (files.length === 0) {
   console.error('没有匹配到任何文件 —— glob 模式写错了？')
@@ -503,6 +543,7 @@ const violations = [
   ...publicSurfaceViolations('src'),
   ...publicTypeSurfaceViolations('src'),
   ...cssTierViolations(),
+  ...fileFocusViolations('src'),
 ]
 
 if (violations.length === 0) {

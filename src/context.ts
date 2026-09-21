@@ -40,6 +40,12 @@
  * **本文件目前没有被任何生产代码引用** —— 只被 `tests/context.test.ts` 引用。
  * 这是有意的：接上去会让证据被预算两次。
  *
+ * ## 待拆（342 行）
+ *
+ * 两件事：**单条结果怎么裁**（`prune*`，已切到 `context-prune.ts`）与
+ * **整段预算怎么定**（`fit*`）。`context-prune.ts` 那一步已经做过，
+ * 剩下这一半是否继续切排在 `docs/PLAN-layering-2026-09-21.md` 第五节的队列里。
+ *
  * @module JevLoop/context
  */
 
