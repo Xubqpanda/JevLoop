@@ -43,7 +43,17 @@ const T = {
   inputPick: 0.5,
   riskAuth: 2,
   riskAudit: 1,
-  stepOk: 0.5,
+  // ★ 0.5 → 0.6。
+  //
+  //   0.5 是 `noul` **最不确定**的取值，而门限是闭区间 `>=` ——
+  //   一个等于「毫无信息」的值不该能放行任何事。
+  //
+  //   `stepOk` 是唯一一个「放行 = 当没事发生」的门：它放行的意思是
+  //   「这一步成功了，继续」，于是**失败被吞掉**。实测：Mock 的 0.5
+  //   在这里被读成「成功」，正是 §8.10 要防的那种假装成功。
+  //   （`needsTool` / `inputPick` 保持 0.5 是有理由的：它们放行的是
+  //   下游还有闸门的路径 —— 真要动工具仍要过 `gradeRisk`。）
+  stepOk: 0.6,
   done: 0.6,
   deliver: 0.6,
 }
@@ -55,6 +65,10 @@ const T = {
 // 常规 agent 也"判断"这件事，但方式是让大模型输出一段话来表达它。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 这一步需要动手吗。`use_tool` / `answer` —— 后者**直接跳到生成、省掉整个工具循环**，
+ * 所以这是最省的一步，也是最该早判的一步。
+ */
 export const needsTool = defineDecision({
   id: 'loop.needsTool',
   describe: '这一步需要调用工具，还是可以直接回答？',
@@ -89,6 +103,10 @@ export const needsTool = defineDecision({
 //   比如刚写完文件，"write_file" 就不该再出现在候选里。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 下一步调哪个工具。候选由 `toolsFor(ctx)` **每步重建**：做过的动作会消失，
+ * 还没读过的文件仍然在。选中项概率不过门限就 `escalate`，**不猜**。
+ */
 export const pickTool = defineDecision({
   id: 'loop.pickTool',
   describe: '下一步调用哪个工具（选项随已做的动作动态重建）',
@@ -130,6 +148,12 @@ export const pickTool = defineDecision({
 // 「写什么内容」是生成，仍由调用方提供（不在本次范围内）。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 给已选定的工具挑一个输入（读 / 写哪个文件）。
+ *
+ * 调用方必须先问 `hasFileOptions(ctx)`：**没有候选就不要问** ——
+ * 一个 `criteria` 为空的 choice 是无效问题，只会拿到无意义的答案。
+ */
 export const pickInput = defineDecision({
   id: 'loop.pickInput',
   describe: '给已选定的工具挑一个输入（读/写哪个文件）',
@@ -163,6 +187,12 @@ export const pickInput = defineDecision({
 //   判定模型可以决定「要不要问人」，绝不能决定「要不要跳过授权」。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 给这次工具调用打风险分，驱动分级审批。`ask_human` / `auto_audit` / `auto`。
+ *
+ * ★ **授权闸门不接受概率绕过**：`risk ≥ 2` 是一条硬规则。
+ * 判定模型可以决定「要不要问人」，**绝不能**决定「要不要跳过授权」。
+ */
 export const gradeRisk = defineDecision({
   id: 'loop.gradeRisk',
   describe: '给这次工具调用打风险分，驱动分级审批',
@@ -215,6 +245,12 @@ export const gradeRisk = defineDecision({
 // 常规做法是每一步都叫一次大模型来判断"工具输出看起来对吗"。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 刚才那次工具调用成功了吗。`continue` / `stop`。
+ *
+ * **没有重试分支**：重试需要一个错误分类策略，而那个策略不存在 ——
+ * 所以动作名只承诺实际发生的事（以前叫 `retry_or_stop`，名字承诺了做不到的事）。
+ */
 export const stepOk = defineDecision({
   id: 'loop.stepOk',
   describe: '刚才那次工具调用是否达到了预期效果',
@@ -252,6 +288,11 @@ export const stepOk = defineDecision({
 // 而不是傻等到迭代上限。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 任务完成了吗。`finish` / `keep_going`。
+ *
+ * 语义早停：简单的任务立刻结束，而不是傻等到 `maxSteps` 上限。
+ */
 export const isDone = defineDecision({
   id: 'loop.isDone',
   describe: '任务是否已经完成，可以开始生成回答了',
@@ -284,6 +325,13 @@ export const isDone = defineDecision({
 // 靠事后人工抽查。现在每条输出都能过一遍闸门。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 生成的回答能交付吗。`deliver` / `revise`。
+ *
+ * 它拿工具结果逐句核对回答，所以 `evidence` 的预算给得比别处宽（最近一次 600 字符）：
+ * **帧喂少了会让它"正确地"判出「回答里有证据不支持的内容」—— 那是帧的问题，
+ * 不是回答的问题**（§8.2）。
+ */
 export const canDeliver = defineDecision({
   id: 'loop.canDeliver',
   describe: '生成的回答是否完整、准确、可以直接交付',

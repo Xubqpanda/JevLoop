@@ -88,6 +88,16 @@ export interface AgentResult {
   meter: Meter
 }
 
+/**
+ * 跑一次 agent。**整个 loop 里只有最后一次 `generate()` 是大模型调用**，
+ * 其余每一步都是判定（见模块头部的图）。
+ *
+ * 停机原因在返回值的 `halt` 里，而且它是**诚实的**：`max_steps` 就是撞上了
+ * 迭代上限、`input_unclear` 就是选不出输入、`denied` 就是授权被拒 ——
+ * 不要把这些折叠成一句「失败了」，因为排查方向完全不同。
+ *
+ * 不会抛：判定后端挂掉会记 `degraded` 并走到 `escalate`（见 `Decider.decide`）。
+ */
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const { decider, generator } = opts
   // Decider 的 meter 是必填的（见 decide.ts 的说明）—— 这里不再自建。

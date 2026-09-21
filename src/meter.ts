@@ -21,6 +21,14 @@ import type { AuditRecord, DecisionRecord, MeterStats, ModelCallRecord } from '.
 
 export type { AuditRecord, DecisionRecord, MeterStats, ModelCallRecord } from './vocab-records.ts'
 
+/**
+ * 记账本 —— 判定次数和模型调用次数**分开记**。
+ *
+ * 这两件事分开记是这个项目的主张本身：分母是模型调用，分子是判定，
+ * 两者的比值说明「一个 loop 里有多少决定是判定做的」。合成一个计数器
+ * 就再也说不出这句话了。`decisions` 与 `modelCalls` 都带各自的延迟，
+ * 所以「判定耗时占墙钟多少」也能直接算出来（见 `stats.decisionShare`）。
+ */
 export class Meter {
   readonly decisions: DecisionRecord[] = []
   readonly modelCalls: ModelCallRecord[] = []
@@ -115,11 +123,10 @@ export class Meter {
   /** 一句能直接发给别人看的话 */
   summary(): string {
     const s = this.stats
-    const ratio = s.modelCalls ? `${s.ratio.toFixed(1)}:1` : `${s.decisions}:0`
     return (
       `${s.decisions} decisions / ${s.decisionMs}ms  ·  ` +
       `${s.modelCalls} model calls / ${s.modelMs}ms  ·  ` +
-      `decisions:models = ${ratio}  ·  ` +
+      `decisions:models = ${formatRatio(s)}  ·  ` +
       `decision time = ${(s.decisionShare * 100).toFixed(1)}%`
     )
   }
@@ -143,3 +150,17 @@ function summarizeAnswers(answers: Record<string, any>): string {
 }
 
 const round = (v: number) => Math.round(v * 10) / 10
+
+/**
+ * 「判定 : 模型」的统一格式化。**所有出口都必须调它**，不要在调用点各自拼字符串。
+ *
+ * 为什么值得单独一个函数：`examples/demo.ts` 以前自己拼了一份，写成
+ * `(s.modelCalls ? ratio.toFixed(1) : String(s.decisions)) + ' : 1'` ——
+ * 0 次模型调用时输出 `3 : 1`，而真相是「3 次判定 / 0 次模型调用」。
+ * **这个比值是项目的卖点本身**，在离线和规则模式下把它报反，等于把卖点报反。
+ *
+ * 分隔符也统一成 `:`（以前 `meter` 用 `:`、`demo` 用 ` : `）。
+ */
+export function formatRatio(s: { decisions: number; modelCalls: number; ratio: number }): string {
+  return s.modelCalls ? `${s.ratio.toFixed(1)}:1` : `${s.decisions}:0`
+}

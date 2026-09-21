@@ -28,6 +28,13 @@ export interface HttpProviderOptions {
   timeoutMs?: number
 }
 
+/**
+ * 判定后端：`POST <baseUrl>/v1/systemone`，一次请求拿到全部问题的答案。
+ *
+ * 线协议是 `{model, state, questions}` → `{answers, model, usage}`。
+ * **响应永远要过 `normalizeAnswers()`** —— 后端返回畸形 JSON 比整个挂掉
+ * 更危险，因为挂掉会被 `FallbackProvider` 抓到，畸形响应不会（见 §8.10）。
+ */
 export class HttpProvider implements Provider {
   readonly name: string
   #baseUrl: string
@@ -100,28 +107,53 @@ export function normalizeAnswers(raw: Record<string, any>): { answers: AnswerSet
       dropped.push(id)
       continue
     }
-    if (a.type === 'noul' || typeof a.noul === 'number') {
-      answers[id] = { type: 'noul', noul: clamp(Number(a.noul) || 0, 0, 1) }
+    // ★ 判定要认**值**在不在，不能只认类型标签。
+    //
+    //   以前三个分支的写法是 `a.type === 'noul' || typeof a.noul === 'number'`：
+    //   一个只有标签、没有值的畸形答案（`{"type":"noul"}`）会走到
+    //   `Number(undefined) || 0`，被**补成 `noul: 0`**。它既不进 `dropped`
+    //   也不进 `missing`，于是 `degraded` 保持 false —— 在日志上和一次正常
+    //   判定完全一样。而 `0` 在策略里是一个**明确的否定**（"不需要工具"、
+    //   "没成功"），比整个后端挂掉危险得多：挂掉会被 FallbackProvider 抓到，
+    //   伪造的 0 不会。这是 §8.10「不假装成功」在解析层的漏洞。
+    //
+    //   标签仍然可以不写（`{ noul: 0.7 }` 照收）—— 容忍的是缺标签，不是缺值。
+    if (a.type === 'noul' || a.noul !== undefined) {
+      if (!isNum(a.noul)) {
+        dropped.push(id)
+        continue
+      }
+      answers[id] = { type: 'noul', noul: clamp(a.noul, 0, 1) }
       continue
     }
-    if (a.type === 'score' || typeof a.score === 'number') {
+    if (a.type === 'score' || a.score !== undefined) {
+      if (!isNum(a.score)) {
+        dropped.push(id)
+        continue
+      }
       const p = numMap(a.probabilities)
       answers[id] = {
         type: 'score',
-        score: Number(a.score) || 0,
+        score: a.score,
         legend: a.legend ?? {},
         probabilities: p,
-        confidence: typeof a.confidence === 'number' ? a.confidence : maxOf(p),
+        confidence: isNum(a.confidence) ? a.confidence : maxOf(p),
       }
       continue
     }
-    if (a.type === 'choice' || typeof a.choice === 'string') {
+    if (a.type === 'choice' || a.choice !== undefined) {
+      // 空字符串不是一个选项 —— 放过去会让 `pickInput` 返回 `''`，
+      // 上游拿着它去拼路径，错误要隔好几层才暴露出来。
+      if (typeof a.choice !== 'string' || a.choice === '') {
+        dropped.push(id)
+        continue
+      }
       const p = numMap(a.probabilities)
       answers[id] = {
         type: 'choice',
-        choice: String(a.choice ?? ''),
+        choice: a.choice,
         probabilities: p,
-        confidence: typeof a.confidence === 'number' ? a.confidence : maxOf(p),
+        confidence: isNum(a.confidence) ? a.confidence : maxOf(p),
       }
       continue
     }
@@ -129,6 +161,8 @@ export function normalizeAnswers(raw: Record<string, any>): { answers: AnswerSet
   }
   return { answers, dropped }
 }
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
 function normalizeUsage(u: any): DecideResponse['usage'] {
   if (!u || typeof u !== 'object') return undefined
@@ -144,12 +178,27 @@ function normalizeUsage(u: any): DecideResponse['usage'] {
 //
 // 这里**故意不做启发式猜测**。
 // 猜得越像，越容易让人误以为判定是对的。
-// 保守答案（概率 0.5、第一个选项、低置信度）会让 policy 的
-// 置信度门限自动走到 escalate —— 这正是框架要演示的事：
+// 保守答案（概率 0.5、第一个选项、低置信度）会落在各条 policy 的兜底分支上，
+// 这正是框架要演示的事：
 //
 //     **判定质量不够时，正确的行为是把决定交回上层，而不是硬猜。**
+//
+// ⚠️ 别把这句话读成「一定会走到 escalate」——`0.5` 恰好**越过**任何阈值为 0.5 的门
+// （`>=` 是闭区间）。实测 Mock 的真实结果是：
+// gradeRisk→ask_human、isDone→keep_going、canDeliver→revise、needsTool→use_tool。
+// 所以**凡是「放行 / 继续」那一条，阈值必须严格大于 0.5** ——
+// 否则「毫无信息」会被读成「同意」。`T.stepOk` 因此从 0.5 提到了 0.6
+// （见 `docs/REVIEWS-2026-09-21-round4.md` 方案 2）。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 保守判定后端：不接任何模型，对每个问题返回「不表态」的答案
+ * （`noul` 给 0.5、`choice` 给第一个选项、`score` 给中间档）。
+ *
+ * 它让整条 loop **离线可跑**，并演示「判定质量不够时，正确的行为是把决定
+ * 交回上层」。返回的 `degraded` 永远是 `true` 并带一条 warning ——
+ * 用 Mock 跑出来的数字**不能**当成判定质量的证据。
+ */
 export class MockProvider implements Provider {
   readonly name = 'mock'
   #latencyMs: number
@@ -199,6 +248,12 @@ function conservative(q: Question): Answer {
 // Fallback —— 主 Provider 挂了怎么办
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 链式兜底：按顺序试每一个后端，第一个成功的胜出。
+ *
+ * 全部失败时**记原计划用的那个后端名**（不覆盖成 `none`）再抛出，
+ * 这样日志里看得出「本来想用谁」—— 覆盖掉就等于把排查线索删了（§8.10）。
+ */
 export class FallbackProvider implements Provider {
   readonly name: string
   #chain: Provider[]

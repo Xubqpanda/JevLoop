@@ -104,6 +104,13 @@ export function isToolName(v: string): v is ToolName {
   return Object.hasOwn(TOOLS, v)
 }
 
+/**
+ * 全部工具名，顺序即 `TOOLS` 的声明顺序。
+ *
+ * 用来展示或做基于名字的校验。**要判断一个字符串是不是工具名请用
+ * `isToolName()`** —— 它走 `Object.hasOwn`，不会被 `__proto__`
+ * 这类继承来的键骗过去。
+ */
 export const toolNames = (): ToolName[] => Object.keys(TOOLS) as ToolName[]
 
 /**

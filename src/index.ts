@@ -41,7 +41,7 @@ export { HttpProvider, MockProvider, FallbackProvider, normalizeAnswers } from '
 export type { HttpProviderOptions } from './provider.ts'
 
 // ── 记账 ─────────────────────────────────────────────────────
-export { Meter } from './meter.ts'
+export { Meter, formatRatio } from './meter.ts'
 export { assertNever } from './util.ts'
 export type { MeterStats, DecisionRecord, ModelCallRecord, AuditRecord } from './meter.ts'
 

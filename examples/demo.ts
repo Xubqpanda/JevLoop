@@ -17,7 +17,7 @@ import { mkdir, writeFile, rm, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { Decider, Meter, runAgent, loadEnv, resolveProvider, resolveGenerator } from '../src/index.ts'
+import { Decider, Meter, runAgent, loadEnv, resolveProvider, resolveGenerator, formatRatio } from '../src/index.ts'
 import { RuleJudge } from './rule-judge.ts'
 
 // 先加载 .env（有 TYPESAFE_API_KEY 就会自动用官方 Jev）
@@ -85,7 +85,20 @@ const provider =
       })
 
 const meter = new Meter()
-const decider = new Decider({ provider, meter })
+const decider = new Decider({
+  provider,
+  meter,
+  // ★ 这两个选项以前**没有任何调用方**（`grep -rn "onWarn\|strict" examples/ server.ts`
+  //   零命中）—— 于是预算校验只在 `decide()` 里算一遍就丢掉，算了没人看等于没算。
+  //   这也是 C1（`headBudget` 死字段）修好之后仍然不生效的原因：只做 C1 不做这条，
+  //   `error` 级别也只是一行没人读的字符串。
+  onWarn: (id, warnings) => {
+    for (const w of warnings) console.log(C.yellow(`  ⚠ 预算 [${id}] ${w.message}`))
+    for (const w of warnings) if (w.hint) console.log(C.dim(`      ${w.hint}`))
+  },
+  // --strict：预算的 error 级别直接抛，在**发请求之前**拦住
+  strict: process.argv.includes('--strict'),
+})
 const generator = resolveGenerator({ scripted: prefer === 'scripted' })
 
 const TASK = '列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数。'
@@ -132,7 +145,8 @@ console.log(
 )
 console.log('')
 console.log(
-  `  ${C.bold('判定 : 模型 =')} ${C.bold(C.green(s.modelCalls ? s.ratio.toFixed(1) : String(s.decisions)) + ' : 1')}` +
+  // 走 meter 的统一出口。以前这里自己拼，0 次模型调用时会报成 `3 : 1`（真相是 3:0）。
+  `  ${C.bold('判定 : 模型 =')} ${C.bold(C.green(formatRatio(s)))}` +
     C.dim(`   判定耗时只占 ${(s.decisionShare * 100).toFixed(1)}%`),
 )
 console.log('')

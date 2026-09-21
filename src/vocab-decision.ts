@@ -53,6 +53,14 @@ export interface DecisionSpec<Ctx, Q extends QuestionSet = QuestionSet> {
 
 const DECISION = Symbol.for('JevLoop.decision')
 
+/**
+ * 定义一个判定节点。**它只做一件事：盖一个不可枚举的标记。**
+ *
+ * 标记的作用是让 `isDecision()` 在运行时认得出「这是一个判定」——
+ * 因为 `questions` 允许写成 `ctx => Q` 的函数，光看类型分不出来。
+ * 标记用 `Symbol.for` 而不是字符串键：别让它在 `JSON.stringify` 里出现，
+ * 也别让外部能伪造一个同名的普通对象混进来。
+ */
 export function defineDecision<Ctx, Q extends QuestionSet>(
   spec: DecisionSpec<Ctx, Q>,
 ): DecisionSpec<Ctx, Q> {

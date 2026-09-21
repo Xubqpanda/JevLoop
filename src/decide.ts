@@ -46,6 +46,14 @@ export interface DecideOptions {
   model?: string
 }
 
+/**
+ * 判定器 —— 把一次判定从 ctx 跑到动作。构造一次、用一整个 loop。
+ *
+ * `setStep()` 标步号，`decide()` 是唯一入口。后端整个挂掉时它**不抛**，
+ * 而是记一笔 `degraded` 并返回 `escalate`：判定失败不该让 loop 崩，
+ * 但也**不能**被下游当成一次正常判定 —— 那正是 `degraded` 与 `escalate`
+ * 两个字段同时存在的理由。
+ */
 export class Decider {
   readonly provider: Provider
   readonly meter: Meter

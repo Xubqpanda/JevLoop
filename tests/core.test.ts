@@ -377,3 +377,126 @@ test('N3: 工具参数是判定 —— 「读取全部文件」必须能读到�
     await rm(cwd, { recursive: true, force: true })
   }
 })
+
+// ═══════════════════════════════════════════════════════════
+// 第 4 轮落地项的回归测试
+//
+// 每条注释写的是**修之前会发生什么** —— 不写的话，这些测试会慢慢退化成
+// 「看起来在测什么、其实测不出什么」。
+// ═══════════════════════════════════════════════════════════
+
+test('R9-P1: 畸形答案认值不认标签，不被伪造成 0', () => {
+  const { answers, dropped } = normalizeAnswers({
+    a: { type: 'noul' }, // 有标签、没值
+    b: { type: 'score' }, // 有标签、没值
+    c: { type: 'choice' }, // 有标签、没值
+    d: { type: 'choice', choice: '' }, // 空串不是一个选项
+    e: { noul: 0.7 }, // 没标签、有值 → 照收
+    f: { type: 'noul', noul: 'high' }, // 值的类型不对
+  })
+  // 修之前：a/b/c 被 `Number(x) || 0` 补成 noul:0 / score:0 / choice:''，
+  // 既不进 dropped 也不进 missing，于是 degraded 保持 false ——
+  // 在日志上和一次正常判定完全一样，而 0 在策略里是**明确的否定**。
+  assert.deepEqual(Object.keys(answers), ['e'])
+  assert.deepEqual(dropped.sort(), ['a', 'b', 'c', 'd', 'f'])
+  assert.equal((answers.e as { noul: number }).noul, 0.7)
+})
+
+test('R9-P2: stepOk 不把「完全不确定」读成「成功」', async () => {
+  const { stepOk } = await import('../src/decisions.ts')
+  // 0.5 是 noul 最不确定的取值，而门限是闭区间 `>=`：
+  // 修之前 T.stepOk = 0.5，Mock 的 0.5 被判成 continue —— **失败被吞掉**。
+  const action = (p: number) => resolvePolicy(stepOk.policy, ans({ ok: { type: 'noul', noul: p } }) as never).action
+  assert.equal(action(0.5), 'stop')
+  // 真成功时仍要放行（离线规则判定器给的是 0.92）
+  assert.equal(action(0.92), 'continue')
+})
+
+test('C2: 0 次模型调用时比值报 N:0，不是 N:1', async () => {
+  const { formatRatio } = await import('../src/meter.ts')
+  // 修之前 examples/demo.ts 自己拼字符串，0 次模型调用时报成 `3 : 1` ——
+  // 而这个比值是项目的卖点本身。
+  assert.equal(formatRatio({ decisions: 3, modelCalls: 0, ratio: Infinity }), '3:0')
+  assert.equal(formatRatio({ decisions: 12, modelCalls: 1, ratio: 12 }), '12.0:1')
+})
+
+test('R1/R2: write_file 只在有内容来源时进候选，写过就撤出', async () => {
+  const { pickTool } = await import('../src/decisions.ts')
+  const opts = (ctx: unknown) =>
+    Object.keys(((pickTool.questions as (c: unknown) => { tool: { criteria: Record<string, string> } })(ctx)).tool.criteria)
+  const base = { task: 't', cwd: '.', files: ['a.ts'], history: [] }
+
+  assert.ok(!opts({ ...base }).includes('write_file'), '缺省没有内容来源，write_file 不该出现')
+  assert.ok(!opts({ ...base, canWrite: false }).includes('write_file'))
+  assert.ok(opts({ ...base, canWrite: true }).includes('write_file'), '有来源时应当可选')
+
+  // §8.4：写过就不再是候选，否则模型会反复选它（实测连续 5 次）
+  const used = {
+    ...base,
+    canWrite: true,
+    history: [{ step: 1, tool: 'write_file', input: 'a.ts\nx', result: 'ok' }],
+  }
+  assert.ok(!opts(used).includes('write_file'), '写完还在候选里，模型会再选它')
+})
+
+test('R1: 没有内容来源时，目标文件的内容一个字节都不变', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-w-'))
+  try {
+    const target = join(cwd, 'note.md')
+    const original = '# 我的真实笔记\n这里是很重要的内容\n'
+    await writeFile(target, original, 'utf8')
+
+    // 最坏情况的调用方：只要 write_file 在候选里就一定选它
+    const insistWrite = {
+      name: 'insist-write',
+      decide: async (req: { questions: Record<string, { type: string; criteria?: unknown }> }) => {
+        const answers: Record<string, unknown> = {}
+        for (const [id, q] of Object.entries(req.questions)) {
+          const crit = Object.keys((q.criteria ?? {}) as Record<string, string>)
+          // ★ 两个「低分」都是必须的，各修掉一次假通过（都是反向验证抓出来的）：
+          //   · `done` 给高了 → isDone 立刻 finish，循环根本走不到 write_file
+          //   · `needs_auth` 给高了 → 授权闸门拒掉调用，write_file 压根没执行
+          //   两种情况下文件都不会变，测试就会"绿"得毫无意义。
+          if (q.type === 'noul') {
+            const low = id === 'needs_auth' || id === 'done' || id === 'unsupported'
+            answers[id] = { type: 'noul', noul: low ? 0.05 : 0.9 }
+          } else if (q.type === 'score')
+            answers[id] = { type: 'score', score: 0, legend: {}, probabilities: {}, confidence: 0.9 }
+          else {
+            const pick = id === 'tool' && crit.includes('write_file') ? 'write_file' : (crit[0] ?? '')
+            answers[id] = { type: 'choice', choice: pick, probabilities: pick ? { [pick]: 0.99 } : {}, confidence: 0.99 }
+          }
+        }
+        return { answers, provider: 'fake', latencyMs: 0 }
+      },
+    }
+
+    const decider = new Decider({ provider: insistWrite as never, meter: new Meter() })
+    await runAgent({
+      task: '把 note.md 的内容改掉',
+      cwd,
+      decider,
+      generator: {
+        name: 'noop',
+        generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'noop' }),
+      },
+      maxSteps: 6,
+      // 万一还是走到授权闸门，就批准 —— 这个测试要验的是「内容会不会落盘」，
+      // 不是审批行为。
+      onAskHuman: async () => true,
+      // ★ 故意不传 provideWriteContent
+    })
+
+    // 修之前：这里会变成「（内容由调用方提供）」—— 一句占位符把真实内容整个替换掉，
+    // 而且 write_file 仍在候选里，会连续重写 5 次，最后 halt: max_steps。
+    assert.equal(await readFile(target, 'utf8'), original)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})

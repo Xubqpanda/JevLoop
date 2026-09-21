@@ -142,6 +142,13 @@ export const probGte =
     return ans?.type === 'noul' ? ans.noul >= threshold : false
   }
 
+/**
+ * 布尔概率的「小于」门限 —— `probGte` 的反面。
+ *
+ * 用在「只有当它**不**成立时才怎样」的规则上，比写 `!probGte(...)` 可读：
+ * `when: probLt("ok", 0.5)` 直接读成「不太可能成功」。
+ * 答案缺失或不是 `noul` 时返回 `false`（和 `probGte` 一样偏保守）。
+ */
 export const probLt =
   (id: string, threshold: number) =>
   (a: AnswerSet): boolean => {

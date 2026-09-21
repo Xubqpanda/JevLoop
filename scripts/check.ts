@@ -25,6 +25,7 @@
  *   · 相对导入带 `.ts` 扩展名
  *   · 模块头部有 `@module JevLoop/<文件名>`
  *   · `src/` 内的 import 方向符合分层（见 DESIGN-layers-2026-09-21.md）
+ *   · `src/index.ts` 公开导出的**值**有 JSDoc（类型/接口不查，见下）
  *
  * **不检查什么**（规则本身不精确，硬查会误伤）：
  *   · 缩进是不是恰好 2 空格 —— 续行、模板字符串、对齐注释都会让逐行判定失真
@@ -253,13 +254,98 @@ function layerViolations(dir: string): Violation[] {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════
+// 公开面的 JSDoc
+//
+// 第九轮 R7 报的是「JSDoc 覆盖率 38%，且**对外主入口正好是缺的那几个**」。
+// 执行把口径**收窄**了，理由必须写清楚：
+//
+//   原始的 126 个导出里混着大量内部类型别名（`export type BlockKind = …`），
+//   按那个口径补文档只会产出填充物 —— 而 §7 禁止「为了通过检查而降低检查标准」，
+//   附录也写明「文档讲**为什么**和**契约**」。
+//
+//   收窄后的口径是「**`src/index.ts` 导出的值**必须有 JSDoc」：
+//   公开的值是使用者唯一会去查的东西，也是 `.d.ts` 里唯一会显示成 IDE 提示的东西
+//   （`//` 横幅注释不进 `.d.ts`，所以不算）。
+//
+//   **类型与接口不查** —— 它们的契约由字段自己说明，逼着写只会得到同义反复。
+// ═══════════════════════════════════════════════════════════
+
+/** 取一个语句声明的名字。不是带名字的声明（import / export / if …）就返回 undefined */
+function declaredName(st: ts.Statement): string | undefined {
+  if (
+    ts.isFunctionDeclaration(st) ||
+    ts.isClassDeclaration(st) ||
+    ts.isInterfaceDeclaration(st) ||
+    ts.isTypeAliasDeclaration(st) ||
+    ts.isEnumDeclaration(st)
+  ) {
+    return st.name?.text
+  }
+  if (ts.isVariableStatement(st)) {
+    const d = st.declarationList.declarations[0]
+    return d && ts.isIdentifier(d.name) ? d.name.text : undefined
+  }
+  return undefined
+}
+
+/** 类型/接口 —— 只有类型空间里有意义，运行时不存在 */
+const isTypeOnly = (st: ts.Statement): boolean =>
+  ts.isInterfaceDeclaration(st) || ts.isTypeAliasDeclaration(st)
+
+/**
+ * 检查 `index.ts` 公开导出的**值**是否都有前置 JSDoc。
+ *
+ * 判定方法是「声明前的 trivia 是否以一个块注释的结束符收尾」——
+ * 也就是它前面紧挨着一个块注释。
+ * 宽松但有意义：它拦的是「公开的东西一句话说明都没有」，不是评注的质量。
+ *
+ * @param dir `src` 目录
+ */
+function publicSurfaceViolations(dir: string): Violation[] {
+  const documented = new Set<string>()
+  const valueNames = new Set<string>()
+
+  for (const f of globSync(`${dir}/*.ts`)) {
+    const raw = readFileSync(f, 'utf8')
+    const sf = ts.createSourceFile(f, raw, ts.ScriptTarget.Latest, false)
+    for (const st of sf.statements) {
+      const name = declaredName(st)
+      if (!name) continue
+      if (!isTypeOnly(st)) valueNames.add(name)
+      if (raw.slice(st.getFullStart(), st.getStart(sf)).trimEnd().endsWith('*/')) documented.add(name)
+    }
+  }
+
+  const facade = `${dir}/${FACADE}.ts`
+  const raw = readFileSync(facade, 'utf8')
+  const sf = ts.createSourceFile(facade, raw, ts.ScriptTarget.Latest, false)
+  const out: Violation[] = []
+
+  for (const st of sf.statements) {
+    if (!ts.isExportDeclaration(st) || !st.exportClause || !ts.isNamedExports(st.exportClause)) continue
+    for (const el of st.exportClause.elements) {
+      // `export { local as public }` —— 要查的是**本地**那个名字的声明
+      const name = (el.propertyName ?? el.name).text
+      if (!valueNames.has(name) || documented.has(name)) continue
+      out.push({
+        file: facade,
+        line: sf.getLineAndCharacterOfPosition(el.getStart(sf)).line + 1,
+        rule: 'public-jsdoc',
+        detail: `公开导出的值 '${name}' 没有 JSDoc —— 它是使用者唯一会查的东西，也是 .d.ts 里唯一会显示成提示的东西`,
+      })
+    }
+  }
+  return out
+}
+
 const files = ROOTS.flatMap((pattern) => [...globSync(pattern)]).sort()
 if (files.length === 0) {
   console.error('没有匹配到任何文件 —— glob 模式写错了？')
   process.exit(1)
 }
 
-const violations = [...files.flatMap(checkFile), ...layerViolations('src')]
+const violations = [...files.flatMap(checkFile), ...layerViolations('src'), ...publicSurfaceViolations('src')]
 
 if (violations.length === 0) {
   console.log(`check: ${files.length} 个文件，全部通过`)

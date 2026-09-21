@@ -80,12 +80,6 @@ export class ScriptedGenerator implements Generator {
 }
 
 /**
- * HTTP 生成器 —— 接任何 OpenAI 兼容的 /chat/completions。
- *
- *     new HttpGenerator({ baseUrl: "https://api.openai.com/v1", apiKey, model: "gpt-..." })
- *     new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" })   // ollama
- */
-/**
  * HTTP 生成器的默认指令。
  *
  * 三件事都是刻意的：**只用给到的证据**（判定节点会拿这条去查「回答里有没有
@@ -96,6 +90,12 @@ const DEFAULT_INSTRUCTION =
   'Answer the task using only the evidence provided. Reply in the same language as the task. ' +
   'State only what the evidence supports; do not invent files, functions or results. Be direct.'
 
+/**
+ * HTTP 生成器 —— 接任何 OpenAI 兼容的 /chat/completions。
+ *
+ *     new HttpGenerator({ baseUrl: "https://api.openai.com/v1", apiKey, model: "gpt-..." })
+ *     new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" })   // ollama
+ */
 export class HttpGenerator implements Generator {
   readonly name: string
   #baseUrl: string
