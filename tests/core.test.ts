@@ -591,3 +591,137 @@ test('E1: `export KEY=VALUE` 要设上 KEY，不能造出一个叫 `export KEY` 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ═══════════════════════════════════════════════════════════
+// 第 6 轮：A2 / A3 / E3
+// ═══════════════════════════════════════════════════════════
+
+/** 造一个「只选第一个候选项」的判定器，风险分由参数给 */
+const fakeJudge = (risk: number, opts: { denyAfter?: number } = {}) => ({
+  name: 'fake',
+  decide: async (req: { state: unknown; questions: Record<string, { type: string; criteria?: unknown }> }) => {
+    const s = req.state as { files_known?: string[]; already_read?: string[]; already_done?: string[] | string }
+    const answers: Record<string, unknown> = {}
+    for (const [id, q] of Object.entries(req.questions)) {
+      const crit = Object.keys((q.criteria ?? {}) as Record<string, string>)
+      if (q.type === 'noul') {
+        const read = (s.already_read ?? []).length
+        // ★ `needs_auth` 必须给**低**分，否则授权闸门会把调用拒掉，
+        //   循环根本走不到生成 —— A3 的第一版就是这么"空跑"的。
+        //   A2 要的是硬闸门（`scoreGte('risk', 2)`），不靠这一条。
+        answers[id] =
+          id === 'needs_auth' || id === 'unsupported'
+            ? { type: 'noul', noul: 0.05 }
+            : { type: 'noul', noul: id === 'done' ? (read >= 3 ? 0.9 : 0.05) : 0.9 }
+      } else if (q.type === 'score') {
+        answers[id] = { type: 'score', score: risk, legend: {}, probabilities: {}, confidence: 0.9 }
+      } else {
+        let pick = crit[0] ?? ''
+        if (id === 'tool') {
+          const listed = String(s.already_done ?? '').includes('list_dir')
+          const read = new Set(s.already_read ?? [])
+          const unread = (s.files_known ?? []).filter((f) => !read.has(f))
+          pick = !listed ? 'list_dir' : crit.includes('read_file') && unread.length ? 'read_file' : 'done'
+        }
+        if (id === 'file') {
+          const read = new Set(s.already_read ?? [])
+          pick = crit.find((f) => !read.has(f)) ?? crit[0] ?? ''
+        }
+        answers[id] = { type: 'choice', choice: pick, probabilities: pick ? { [pick]: 0.99 } : {}, confidence: 0.99 }
+      }
+    }
+    void opts
+    return { answers, provider: 'fake', latencyMs: 0 }
+  },
+})
+
+test('A2: 授权被拒之后 lastTool 必须和 history 说同一件事', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-deny-'))
+  try {
+    // risk = 3 ≥ riskAuth(2) → 硬闸门 ask_human；不给 onAskHuman 就等于拒绝
+    const decider = new Decider({ provider: fakeJudge(3) as never, meter: new Meter() })
+    const r = await runAgent({
+      task: 't',
+      cwd,
+      decider,
+      generator: {
+        name: 'noop',
+        generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'noop' }),
+      },
+      maxSteps: 3,
+    })
+    assert.equal(r.halt, 'denied')
+    // 历史被回退了，`lastTool` 以前**没跟着回退** —— 于是下一轮判定会看到一个
+    // 从未发生过的调用（gradeRisk.state.tool / stepOk.state.tool /
+    // frame.ts 里 `lastTool === 'write_file'` 那个分支都会读到它）。
+    assert.equal(r.ctx.history?.length ?? -1, 0)
+    assert.equal(r.ctx.lastTool, undefined, `lastTool 必须跟着 history 回退，实际 ${String(r.ctx.lastTool)}`)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('A3: 交给生成器的证据有上界，且承认自己被截过', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-ev-'))
+  try {
+    // 三个都够大：全部读完之后，原样拼接会远超 6000 字符的证据预算
+    const big = 'x'.repeat(3000)
+    for (const f of ['a.ts', 'b.ts', 'c.ts']) await writeFile(join(cwd, f), big, 'utf8')
+
+    let seen = ''
+    const decider = new Decider({ provider: fakeJudge(0) as never, meter: new Meter() })
+    await runAgent({
+      task: '读全部',
+      cwd,
+      decider,
+      generator: {
+        name: 'capture',
+        generate: async (req: { evidence: string }) => {
+          seen = req.evidence
+          return { text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+        },
+      },
+      maxSteps: 12,
+    })
+
+    // 修之前：`evidence` 把整份 history 原样拼起来 —— 这条路径上没有任何上界，
+    // 而它进的是**生成请求**，`budget.validate()` 管不到。
+    assert.ok(seen.length <= 6200, `证据必须有上界，实际 ${seen.length} 字符`)
+    // §8.10：被省略/被截断的部分必须被承认，否则读起来就像"本来就这些"
+    assert.match(seen, /因为预算被省略|工具输出被截断/, '截断必须报出来')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('E3: decisionEvent 只接受一个参数，步号取自 DecisionResult', async () => {
+  const { decisionEvent } = await import('../src/events.ts')
+  // 以前是 `decisionEvent(step, d)` —— 两个参数说同一件事，而
+  // `Decider` 内部还另有一个 `#step`。同一个事实两个出处就迟早分叉，
+  // 而事件步号错位会让界面上整条轨迹的对应关系全错。
+  assert.equal(decisionEvent.length, 1, '签名必须是 decisionEvent(d)')
+  const e = decisionEvent({
+    id: 'x',
+    step: 7,
+    state: {},
+    questions: {},
+    answers: {},
+    action: 'a',
+    reason: 'r',
+    latencyMs: 1,
+    provider: 'p',
+  } as never)
+  assert.equal((e as { step: number }).step, 7)
+})

@@ -48,11 +48,19 @@ export type AgentEvent =
 /** 观察者。返回值被忽略，抛出的异常被隔离。 */
 export type AgentObserver = (event: AgentEvent) => void
 
-/** 把一次判定的结果转成事件。字段逐个搬，避免把 DecisionResult 的内部形状泄漏成事件契约。 */
-export function decisionEvent(step: number, d: DecisionResult<unknown>): AgentEvent {
+/**
+ * 把一次判定的结果转成事件。字段逐个搬，避免把 `DecisionResult` 的内部形状泄漏成事件契约。
+ *
+ * ★ 步号取自 `d.step`，**不再单独传一个 `step` 参数**。
+ *   以前是 `decisionEvent(step, d)`，而两个参数说的是同一件事 ——
+ *   同一个事实有两个出处就迟早会分叉（`Decider` 内部还维护着一个 `#step`），
+ *   而事件里的步号一旦错位，界面上整条轨迹的对应关系就错了。
+ *   `DecisionResult` 本来就带着 `step`，找它要就行。
+ */
+export function decisionEvent(d: DecisionResult<unknown>): AgentEvent {
   return {
     type: 'decision',
-    step,
+    step: d.step,
     id: d.id,
     state: d.state,
     questions: d.questions,

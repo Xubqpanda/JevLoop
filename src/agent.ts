@@ -29,6 +29,7 @@
 import { Decider } from './decide.ts'
 import type { DecisionResult } from './vocab-decision.ts'
 import { Meter } from './meter.ts'
+import { clip } from './budget.ts'
 import {
   needsTool,
   pickTool,
@@ -127,7 +128,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
    * 界面上就少一个决策点，而那种缺失不会报错，只会静默地少一块。
    */
   const record = <A>(d: DecisionResult<A>): DecisionResult<A> => {
-    emit(decisionEvent(step, d as DecisionResult<unknown>))
+    emit(decisionEvent(d as DecisionResult<unknown>))
     return d
   }
 
@@ -192,6 +193,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       if (!approved) {
         halt = 'denied'
         ctx.history = ctx.history.slice(0, -1)
+        // ★ `lastTool` 必须跟着一起回退。它和 `history` 是**两个字段说同一件事**
+        //   （「最后发生了什么」），而两者都会被读进后续的帧：
+        //   `gradeRisk.state.tool`、`stepOk.state.tool`、以及 `frame.ts` 里
+        //   `ctx.lastTool === 'write_file'` 那个分支。
+        //   只回退一个，下一轮判定就会看到一个**从未发生过的调用** —— 帧在说谎，
+        //   而下游每个判定都会"正确地"基于它做判断（同 A1 的失效形状）。
+        ctx.lastTool = ctx.history.at(-1)?.tool
         break
       }
     } else {
@@ -244,7 +252,47 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   }
 
   // ── 生成（整个 loop 里唯一贵的一步）────────────────────────
-  const evidence = () => (ctx.history ?? []).map((h) => `${h.tool}(${h.input}) → ${h.result}`).join('\n')
+  /**
+   * 交给生成器的证据。**必须有界，而且必须承认自己被截过。**
+   *
+   * 以前这里没有任何上界：`ctx.history` 有多长证据就有多长 ——
+   * `maxSteps` 是 12、单次工具结果最多 4000 字符（`read_file` 的截断），
+   * 最坏能到约 200KB。
+   *
+   * 为什么没人发现：它进的是**生成请求**（LLM 侧），**不是决策帧**，
+   * 所以 `budget.ts` 的 `validate()` 管不到它 ——
+   * 帧有预算、证据没有。这是个遗漏，不是有意的设计。
+   *
+   * 中文 1 字 ≈ 1 token，所以下面这些预算数大致就是 token 量级。
+   */
+  const EVIDENCE_MAX_CHARS = 6000
+  const EVIDENCE_PER_STEP = 800
+
+  const evidence = (): string => {
+    const h = ctx.history ?? []
+    const lines: string[] = []
+    let used = 0
+    let omitted = 0
+    let clipped = 0
+
+    // 从**最近**往回取：最新的结果最可能和当前这一步相关
+    for (let i = h.length - 1; i >= 0; i--) {
+      const x = h[i]!
+      if (x.result.length > EVIDENCE_PER_STEP) clipped++
+      const line = `${x.tool}(${clip(x.input, 120)}) → ${clip(x.result, EVIDENCE_PER_STEP)}`
+      if (used + line.length + 1 > EVIDENCE_MAX_CHARS) {
+        omitted = i + 1
+        break
+      }
+      lines.unshift(line)
+      used += line.length + 1
+    }
+
+    // §8.10：被丢掉/被截断的东西要**报出来**，否则读起来就像"本来就这些"
+    if (omitted > 0) lines.unshift(`（更早的 ${omitted} 步因为预算被省略）`)
+    if (clipped > 0) lines.push(`（其中 ${clipped} 步的工具输出被截断）`)
+    return lines.join('\n')
+  }
 
   let genStep = step + 1
   decider.setStep(genStep)
