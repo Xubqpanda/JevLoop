@@ -472,87 +472,87 @@ body[data-jl-dark] {
 /* 由 @deepseek-figma-plugin/custom-variable-name 插件导出 */
 /* Markdown 阶梯整体按 0.875（正文 16 → 14）等比缩放，四舍五入到整数像素；
    重新从 Figma 导出时需要保留这一缩放。 */
-/* 正文字号调节：--dsh-content-font-size 由主题 bootstrap 与 ThemePresenter
+/* 正文字号调节：--jl-content-font-size 由主题 bootstrap 与 ThemePresenter
    写在 body 上（整数 px，12–17，默认 14）。标题与正文变体按同一像素增量
-   （--dsh-content-font-delta）随动，保持层级。低一档文本（think、工具/bash
+   （--jl-content-font-delta）随动，保持层级。低一档文本（think、工具/bash
    行的标题与摘要、markdown 表格、流内次级说明等）统一读
-   --dsh-content-font-size-secondary：设置 ≤14 时为设置值 −1，>14 时为
+   --jl-content-font-size-secondary：设置 ≤14 时为设置值 −1，>14 时为
    设置值 −2（12→11、13→12、14→13、15→13、16→14、17→15）。式中
    max(13px,·) 的作用是让低设置取 −1 而非 −2，不是结果下限——12 设置下
    层级触底 11px。small、code 属于密集次级文本，保持固定。 */
 body {
-  --dsh-content-font-delta: calc(var(--dsh-content-font-size, 14px) - 14px);
-  --dsh-content-font-size-secondary: min(calc(var(--dsh-content-font-size, 14px) - 1px), max(13px, calc(var(--dsh-content-font-size, 14px) - 2px)));
-  --dsh-content-font-delta-secondary: calc(var(--dsh-content-font-size-secondary) - 13px);
+  --jl-content-font-delta: calc(var(--jl-content-font-size, 14px) - 14px);
+  --jl-content-font-size-secondary: min(calc(var(--jl-content-font-size, 14px) - 1px), max(13px, calc(var(--jl-content-font-size, 14px) - 2px)));
+  --jl-content-font-delta-secondary: calc(var(--jl-content-font-size-secondary) - 13px);
 
-  --jl-font-markdown-h1: 700 calc(21px + var(--dsh-content-font-delta)) / calc(30px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h1: 700 calc(21px + var(--jl-content-font-delta)) / calc(30px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-h1-font-family: var(--jl-font-family);
   --jl-font-markdown-h1-font-weight: 700;
-  --jl-font-markdown-h1-line-height: calc(30px + var(--dsh-content-font-delta));
-  --jl-font-markdown-h1-font-size: calc(21px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h1-line-height: calc(30px + var(--jl-content-font-delta));
+  --jl-font-markdown-h1-font-size: calc(21px + var(--jl-content-font-delta));
   --jl-font-markdown-h1-font-style: normal;
 
-  --jl-font-markdown-h2: 700 calc(19px + var(--dsh-content-font-delta)) / calc(28px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h2: 700 calc(19px + var(--jl-content-font-delta)) / calc(28px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-h2-font-family: var(--jl-font-family);
   --jl-font-markdown-h2-font-weight: 700;
-  --jl-font-markdown-h2-line-height: calc(28px + var(--dsh-content-font-delta));
-  --jl-font-markdown-h2-font-size: calc(19px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h2-line-height: calc(28px + var(--jl-content-font-delta));
+  --jl-font-markdown-h2-font-size: calc(19px + var(--jl-content-font-delta));
   --jl-font-markdown-h2-font-style: normal;
 
-  --jl-font-markdown-h3: 700 calc(18px + var(--dsh-content-font-delta)) / calc(26px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h3: 700 calc(18px + var(--jl-content-font-delta)) / calc(26px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-h3-font-family: var(--jl-font-family);
   --jl-font-markdown-h3-font-weight: 700;
-  --jl-font-markdown-h3-line-height: calc(26px + var(--dsh-content-font-delta));
-  --jl-font-markdown-h3-font-size: calc(18px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h3-line-height: calc(26px + var(--jl-content-font-delta));
+  --jl-font-markdown-h3-font-size: calc(18px + var(--jl-content-font-delta));
   --jl-font-markdown-h3-font-style: normal;
 
-  --jl-font-markdown-h4: 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h4: 600 var(--jl-content-font-size, 14px) / calc(24px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-h4-font-family: var(--jl-font-family);
   --jl-font-markdown-h4-font-weight: 600;
-  --jl-font-markdown-h4-line-height: calc(24px + var(--dsh-content-font-delta));
-  --jl-font-markdown-h4-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-h4-line-height: calc(24px + var(--jl-content-font-delta));
+  --jl-font-markdown-h4-font-size: var(--jl-content-font-size, 14px);
   --jl-font-markdown-h4-font-style: normal;
 
-  --jl-font-markdown-base: var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base: var(--jl-content-font-size, 14px) / calc(24px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-base-font-family: var(--jl-font-family);
   --jl-font-markdown-base-font-weight: 400;
-  --jl-font-markdown-base-line-height: calc(24px + var(--dsh-content-font-delta));
-  --jl-font-markdown-base-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-line-height: calc(24px + var(--jl-content-font-delta));
+  --jl-font-markdown-base-font-size: var(--jl-content-font-size, 14px);
   --jl-font-markdown-base-font-style: normal;
 
-  --jl-font-markdown-base-strong: 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-strong: 600 var(--jl-content-font-size, 14px) / calc(24px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-base-strong-font-family: var(--jl-font-family);
   --jl-font-markdown-base-strong-font-weight: 600;
-  --jl-font-markdown-base-strong-line-height: calc(24px + var(--dsh-content-font-delta));
-  --jl-font-markdown-base-strong-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-strong-line-height: calc(24px + var(--jl-content-font-delta));
+  --jl-font-markdown-base-strong-font-size: var(--jl-content-font-size, 14px);
   --jl-font-markdown-base-strong-font-style: normal;
 
-  --jl-font-markdown-base-italic: italic var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-italic: italic var(--jl-content-font-size, 14px) / calc(24px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-base-italic-font-family: var(--jl-font-family);
   --jl-font-markdown-base-italic-font-weight: 400;
-  --jl-font-markdown-base-italic-line-height: calc(24px + var(--dsh-content-font-delta));
-  --jl-font-markdown-base-italic-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-italic-line-height: calc(24px + var(--jl-content-font-delta));
+  --jl-font-markdown-base-italic-font-size: var(--jl-content-font-size, 14px);
   --jl-font-markdown-base-italic-font-style: italic;
 
-  --jl-font-markdown-base-strong-italic: italic 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-strong-italic: italic 600 var(--jl-content-font-size, 14px) / calc(24px + var(--jl-content-font-delta)) var(--jl-font-family);
   --jl-font-markdown-base-strong-italic-font-family: var(--jl-font-family);
   --jl-font-markdown-base-strong-italic-font-weight: 600;
-  --jl-font-markdown-base-strong-italic-line-height: calc(24px + var(--dsh-content-font-delta));
-  --jl-font-markdown-base-strong-italic-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-strong-italic-line-height: calc(24px + var(--jl-content-font-delta));
+  --jl-font-markdown-base-strong-italic-font-size: var(--jl-content-font-size, 14px);
   --jl-font-markdown-base-strong-italic-font-style: italic;
 
-  --jl-font-markdown-table: var(--dsh-content-font-size-secondary, 13px)/calc(22px + var(--dsh-content-font-delta-secondary, 0px)) var(--jl-font-family);
+  --jl-font-markdown-table: var(--jl-content-font-size-secondary, 13px)/calc(22px + var(--jl-content-font-delta-secondary, 0px)) var(--jl-font-family);
   --jl-font-markdown-table-font-family: var(--jl-font-family);
   --jl-font-markdown-table-font-weight: 400;
-  --jl-font-markdown-table-line-height: calc(22px + var(--dsh-content-font-delta-secondary, 0px));
-  --jl-font-markdown-table-font-size: var(--dsh-content-font-size-secondary, 13px);
+  --jl-font-markdown-table-line-height: calc(22px + var(--jl-content-font-delta-secondary, 0px));
+  --jl-font-markdown-table-font-size: var(--jl-content-font-size-secondary, 13px);
   --jl-font-markdown-table-font-style: normal;
 
-  --jl-font-markdown-table-head: 500 var(--dsh-content-font-size-secondary, 13px)/calc(22px + var(--dsh-content-font-delta-secondary, 0px)) var(--jl-font-family);
+  --jl-font-markdown-table-head: 500 var(--jl-content-font-size-secondary, 13px)/calc(22px + var(--jl-content-font-delta-secondary, 0px)) var(--jl-font-family);
   --jl-font-markdown-table-head-font-family: var(--jl-font-family);
   --jl-font-markdown-table-head-font-weight: 500;
-  --jl-font-markdown-table-head-line-height: calc(22px + var(--dsh-content-font-delta-secondary, 0px));
-  --jl-font-markdown-table-head-font-size: var(--dsh-content-font-size-secondary, 13px);
+  --jl-font-markdown-table-head-line-height: calc(22px + var(--jl-content-font-delta-secondary, 0px));
+  --jl-font-markdown-table-head-font-size: var(--jl-content-font-size-secondary, 13px);
   --jl-font-markdown-table-head-font-style: normal;
 
   --jl-font-markdown-small: 12px/20px var(--jl-font-family);
@@ -815,4 +815,14 @@ body {
   --jl-radius: 10px;
   --jl-gap: 12px;
   --jl-pad: 16px;
+
+  /*
+   * 正文字号轴。
+   *
+   * DSH 里这个值由 ThemePresenter 从设置面板发布到 body，所以主题表只
+   * 引用它、不定义它。这里没有设置面板，于是显式钉成默认值 —— 让整条
+   * `calc(21px + var(--jl-content-font-delta))` 有一个确定的起点，
+   * 而不是靠每一处 `var()` 的兜底参数各自为政。
+   */
+  --jl-content-font-size: var(--jl-font-size);
 }
