@@ -255,6 +255,9 @@ const LAYER: Record<string, number> = {
   // `surface` 零 import：表面机制（追加 / 替换一段）不认识任何领域概念。
   // 同 context-prune / estimate 的先例 —— 依赖面为零就放最底下。
   surface: 0,
+  // `cli-args` 同 surface：零 import、纯函数，把 argv 变成一个决定，
+  // 不认识任何领域概念。切出来的理由见该文件头（两半的依赖面不同）。
+  'cli-args': 0,
   // L2 —— 接缝
   'seam-provider': 2,
   // 按 §12 拆成三件事，各自 L2（都只依赖 seam-provider / vocab）：
@@ -295,6 +298,9 @@ const LAYER: Record<string, number> = {
   // L6 —— 组合
   backends: 6,
   env: 6,
+  // 命令行入口。它组合判定、生成、工具三条缝并把它们接到 argv 上，
+  // 所以和 `backends` 同层。`server.ts` 是同一类东西，但它在包根、不在 `src/`。
+  cli: 6,
 }
 
 /** 层号 → 一句话，报错时要说清两边各是什么 */

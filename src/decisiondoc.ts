@@ -522,15 +522,18 @@ export function summarize(doc: DecisionDoc): DocSummary {
  *
  * 数字全部**从文件本身推出来**，不是许愿 —— 改一个块的 kind，
  * 这句话就跟着变。
+ *
+ * 英文：它同时是 `jevloop spec` 的输出和界面「规格」页的标题，
+ * 两者都是给外面的人看的门面（同 `examples/demo.ts` 的输出）。
  */
 export function headline(doc: DecisionDoc): string {
   const s = summarize(doc)
   const parts = [
-    `${s.blocks} 个判定点`,
-    `${s.questions} 个问题`,
-    `${s.modelDecisions} 个过判定模型`,
-    `${s.codeDecisions} 个由代码直接决定`,
+    `${s.blocks} decisions`,
+    `${s.questions} questions`,
+    `${s.modelDecisions} answered by the decision model`,
+    `${s.codeDecisions} decided by code`,
   ]
-  if (s.gates > 0) parts.push(`${s.gates} 道授权闸门`)
-  return `${parts.join('，')}；共 ${s.options} 个选项`
+  if (s.gates > 0) parts.push(`${s.gates} authorisation ${s.gates === 1 ? 'gate' : 'gates'}`)
+  return `${parts.join(', ')}; ${s.options} options in total`
 }

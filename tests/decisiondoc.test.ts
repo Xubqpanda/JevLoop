@@ -81,7 +81,7 @@ test('headline 的数字是从文件推出来的', () => {
     s.questions,
     doc.blocks.reduce((n, b) => n + b.questions.length, 0),
   )
-  assert.match(headline(doc), /7 个判定点/)
+  assert.match(headline(doc), /7 decisions/)
 })
 
 // ═══════════════════════════════════════════════════════════

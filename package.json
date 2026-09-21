@@ -28,6 +28,9 @@
     "typescript": "5.7.2",
     "@types/node": "^22.0.0"
   },
+  "bin": {
+    "jevloop": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -37,6 +40,8 @@
   "files": [
     "dist",
     "src",
+    "server.ts",
+    "web",
     "README.md",
     "LICENSE",
     "AGENTS.md",
