@@ -53,6 +53,7 @@ import { foldEvidence, priceGenerateRequest, EVIDENCE_POLICY, type ContextReport
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
+import { foldConversation, type ConversationReport } from './conversation.ts'
 
 export interface AgentOptions {
   task: string
@@ -111,6 +112,13 @@ export interface AgentResult {
    * 「这次压掉了什么」，而不是只能去解析 evidence 末尾那句散文。
    */
   context?: ContextReport
+  /**
+   * 上文的折叠账目。和 `context` 是**两块独立的预算**（步 vs 轮），
+   * 所以各报各的 —— 合在一起就说不清是哪个超了。
+   *
+   * 同样**可能没有**：没超触发线时不做任何折叠，那也是一种结果。
+   */
+  conversation?: ConversationReport
 }
 
 /**
@@ -148,7 +156,24 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   //
   //   **别看它"顺序不对"就顺手正过来** —— 这个方向是故意的；
   //   正过来就退回成「模型看得见第 1 轮、看不见用户在最后一轮改的口径」。
-  const earlier = (opts.history ?? []).slice().reverse().map((t) => t.task).join(' / ')
+  //
+  // ★ 上文的折叠**在这里算一次**，和下面的证据同一条规矩：`opts.history`
+  //   在一次运行里不会变，算第二遍只会重复发同一个事件。
+  //   它必须算在 `earlier` **之前** —— 判定帧和生成请求要看**同一份**上文，
+  //   否则「模型看得见第 7 轮、判定看不见」这种错位会静默地影响选工具。
+  const folded = foldConversation(opts.history ?? [])
+
+  // ★ **缺省就是缺省**：没有上文时传 `undefined`，不传空数组。
+  //
+  //   两者对现在的两个生成器没差别（都写 `req.history ?? []`），但 `[]`
+  //   在 JS 里是**真值** —— 一个写 `if (req.history)` 的生成器会走进
+  //   「有上文」的分支去读一个空列表。而且空数组只可能出现在「本来就没有
+  //   上文」这一种情况（留尾至少一轮），所以它并不比 `undefined` 多带信息。
+  //   摘要同理：没折过就没有摘要，而不是「有一段空摘要」。
+  const genHistory = folded.recent.length > 0 ? folded.recent : undefined
+  const genDigest = folded.digest.length > 0 ? folded.digest : undefined
+
+  const earlier = folded.recent.slice().reverse().map((t) => t.task).join(' / ')
   const ctx: AgentCtx = {
     task: opts.task,
     cwd: opts.cwd,
@@ -162,6 +187,21 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   let halt = 'max_steps'
 
   emit({ type: 'run:start', task: opts.task, cwd: opts.cwd, at: Date.now() })
+
+  // 上文被折过就说出来。它发生在 loop 之前，所以步号是 0。
+  // **只有真的动了才发** —— 没超触发线时什么都不做，那没什么可报的。
+  if (folded.report.acted) {
+    emit({
+      type: 'conversation',
+      step: 0,
+      rawChars: folded.report.rawChars,
+      keptChars: folded.report.keptChars,
+      rawTurns: folded.report.rawTurns,
+      keptTurns: folded.report.keptTurns,
+      foldedTurns: folded.report.foldedTurns,
+      overRetain: folded.report.overRetain,
+    })
+  }
 
   /**
    * 记一笔判定并发事件。
@@ -367,7 +407,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const evidenceEstimate = priceGenerateRequest({
     task: ctx.task,
     evidence: evidenceText,
-    history: opts.history,
+    history: genHistory,
+    historyDigest: genDigest,
   })
 
   let genStep = step + 1
@@ -375,7 +416,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const gen = await generator.generate({
     task: ctx.task,
     evidence: evidenceText,
-    history: opts.history,
+    history: folded.recent,
+    historyDigest: folded.digest,
   })
   meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,
@@ -406,9 +448,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     decider.setStep(genStep)
     const retry = await generator.generate({
       task: ctx.task,
-      // 同一份证据 —— 循环早就结束了，history 没变过
+      // 同一份证据和同一份上文 —— 循环早就结束了，两者都没变过
       evidence: evidenceText,
-      history: opts.history,
+      history: genHistory,
+      historyDigest: genDigest,
       instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
     })
     meter.recordModelCall(genStep, {
@@ -435,7 +478,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   }
 
   emit({ type: 'run:end', halt, steps: step, answer: ctx.draft, stats: meter.stats })
-  return { answer: ctx.draft, halt, steps: step, ctx, meter, context: lastEvidence }
+  return {
+    answer: ctx.draft,
+    halt,
+    steps: step,
+    ctx,
+    meter,
+    context: lastEvidence,
+    // 没折过就给 undefined，而不是一份「什么都没做」的账 ——
+    // 两者的区别是「不需要压」和「压了但压不动」，读的人要能分开（§8.10）。
+    conversation: folded.report.acted ? folded.report : undefined,
+  }
 }
 
 /**

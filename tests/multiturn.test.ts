@@ -239,3 +239,178 @@ test('★ M1：上文截断保留的是**最近**几轮，不是最早的', asyn
   assert.ok(earlier.includes('第8轮'), `最近的必须留下，实际：${earlier}`)
   assert.ok(!earlier.includes('第1轮'), `最早的必须让位给最近的，实际：${earlier}`)
 })
+
+// ═══════════════════════════════════════════════════════════
+// 会话折叠（`conversation.ts`）—— 上文有预算了
+//
+// 上面测的是「上文到没到」。这里测的是**上文太长了会怎样**：
+// 旧的折成摘要，留尾那几轮逐字，而且两件事都要在账面上看得见。
+// ═══════════════════════════════════════════════════════════
+
+/** 造一段超线的上文：12 轮 × 约 1500 字符 ≈ 18000，触发线是 12800 */
+const HUGE: ConversationTurn[] = Array.from({ length: 12 }, (_, i) => ({
+  task: `第${i}轮的问题`,
+  answer: 'x'.repeat(1500),
+}))
+
+/** 一个只会说「不需要工具」的判定器 —— 让 loop 直接走到生成那一步 */
+function quietDecider(): Decider {
+  return new Decider({
+    meter: new Meter(),
+    provider: {
+      name: 'spy',
+      decide: async () => ({ answers: { needs_tool: { type: 'noul', noul: 0.1 } }, provider: 'spy', latencyMs: 0 }),
+    } as never,
+  })
+}
+
+test('HttpGenerator 把折叠摘要放进 system，而不是伪装成一问一答', async () => {
+  let sent: { messages: { role: string; content: string }[] } | undefined
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    sent = JSON.parse(init.body)
+    return { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: {} }) }
+  }) as never
+
+  try {
+    const g = new HttpGenerator({ baseUrl: 'http://x', model: 'm' })
+    await g.generate({ task: 'T', evidence: '', history: TURNS, historyDigest: '[更早的 3 轮已折叠成要点]' })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  const msgs = sent!.messages
+  // ★ 摘要**不能**多出两条 user/assistant —— 那会让模型以为有人真的这么说过
+  assert.equal(msgs.length, 1 + TURNS.length * 2 + 1, '摘要不该增加消息条数')
+  assert.equal(msgs[0]!.role, 'system')
+  assert.match(msgs[0]!.content, /更早的 3 轮已折叠成要点/)
+  // 逐字那几轮还是老老实实的一问一答
+  assert.equal(msgs[1]!.role, 'user')
+  assert.equal(msgs[2]!.role, 'assistant')
+})
+
+test('没有摘要时 system 就是纯指令 —— 不留一段空壳', async () => {
+  let sent: { messages: { role: string; content: string }[] } | undefined
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    sent = JSON.parse(init.body)
+    return { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: {} }) }
+  }) as never
+
+  try {
+    const g = new HttpGenerator({ baseUrl: 'http://x', model: 'm' })
+    await g.generate({ task: 'T', evidence: '' })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  assert.equal(sent!.messages.length, 2, 'system + 当前这一条')
+  assert.doesNotMatch(sent!.messages[0]!.content, /folded/)
+})
+
+test('runAgent 会折叠超线的上文，生成器收到的是折过的那一份', async () => {
+  let seenHistory: unknown = 'unset'
+  let seenDigest: unknown = 'unset'
+  await runAgent({
+    task: '那第一个函数接受什么参数？',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: HUGE,
+    generator: {
+      name: 'capture',
+      generate: async (req) => {
+        seenHistory = req.history
+        seenDigest = req.historyDigest
+        return { text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+      },
+    },
+    maxSteps: 1,
+  })
+
+  const recent = seenHistory as ConversationTurn[]
+  // ★ 留尾那几轮是**逐字**的 —— 指代的落点
+  assert.deepEqual(recent, HUGE.slice(HUGE.length - recent.length))
+  assert.equal(recent.length < HUGE.length, true, '旧的轮次必须被折掉')
+  assert.equal(typeof seenDigest, 'string')
+  assert.match(seenDigest as string, /已折叠成要点/)
+  // 摘要里要留有问句，否则「那个函数」无处可指
+  assert.match(seenDigest as string, /第\d轮的问题/)
+})
+
+test('折叠会在账目里报出来 —— AgentResult 和事件都要有', async () => {
+  const events: { type: string }[] = []
+  const result = await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: HUGE,
+    generator: {
+      name: 'capture',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }),
+    },
+    onEvent: (e) => events.push(e as { type: string }),
+    maxSteps: 1,
+  })
+
+  const ev = events.find((e) => e.type === 'conversation') as
+    | { type: 'conversation'; rawTurns: number; keptTurns: number; foldedTurns: number; rawChars: number; keptChars: number }
+    | undefined
+  assert.ok(ev, '必须发 conversation 事件 —— 折了什么要让人看得见（§8.10）')
+  assert.equal(ev.foldedTurns > 0, true)
+  assert.equal(ev.keptTurns + ev.foldedTurns, ev.rawTurns, '一轮都不能凭空消失')
+  assert.equal(ev.keptChars < ev.rawChars, true, '折了就必须变小')
+
+  assert.ok(result.conversation, 'AgentResult 里也要有这份账')
+  assert.equal(result.conversation!.foldedTurns, ev.foldedTurns)
+})
+
+test('上文没超线时一个字节都不动，也不发事件', async () => {
+  const events: { type: string }[] = []
+  let seenHistory: unknown = 'unset'
+  const result = await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: TURNS,
+    generator: {
+      name: 'capture',
+      generate: async (req) => {
+        seenHistory = req.history
+        return { text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+      },
+    },
+    onEvent: (e) => events.push(e as { type: string }),
+    maxSteps: 1,
+  })
+
+  assert.deepEqual(seenHistory, TURNS, '没超线就该原样传下去')
+  assert.equal(events.some((e) => e.type === 'conversation'), false, '没动手就别发事件')
+  assert.equal(result.conversation, undefined, '没动手就没有账 —— 不是一份「什么都没做」的账')
+})
+
+test('判定帧和生成请求看到的是**同一份**上文', async () => {
+  let seenFrame: { earlier?: string } | undefined
+  let seenHistory: ConversationTurn[] = []
+  await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: HUGE,
+    onEvent: (e) => {
+      const ev = e as { type: string; id?: string; state?: unknown }
+      if (ev.type === 'decision' && ev.id === needsTool.id) seenFrame = ev.state as { earlier?: string }
+    },
+    generator: {
+      name: 'capture',
+      generate: async (req) => {
+        seenHistory = (req.history ?? []) as ConversationTurn[]
+        return { text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+      },
+    },
+    maxSteps: 1,
+  })
+
+  // 折过之后两边都只看得到留尾那几轮；判定帧只留最近 200 字符，
+  // 所以它必须是**留尾里最新的那一句**，不能是被折掉的最老那一句
+  assert.equal(seenFrame?.earlier?.includes('第0轮的问题') ?? false, false, '被折掉的最老轮次不该出现在判定帧里')
+  assert.equal(seenHistory.length < HUGE.length, true)
+})

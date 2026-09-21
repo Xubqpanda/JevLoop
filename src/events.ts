@@ -95,6 +95,28 @@ export type AgentEvent =
       /** 压完仍然超过目标线吗 */
       overRetain: boolean
     }
+  /**
+   * 交给生成器的**上文**（多轮的问答）被折叠过。
+   *
+   * 和 `context` 是一对，但**单位不同**：`context` 管这一轮的**步**
+   * （工具结果），这里管之前的**轮**（问答）。两块是独立预算 ——
+   * 证据再大也不该把上文挤掉，反之亦然，所以各有各的事件。
+   *
+   * 同样**只有真的动了才发**。
+   */
+  | {
+      type: 'conversation'
+      /** 折叠发生在 loop 之前，所以步号恒为 0 */
+      step: number
+      rawChars: number
+      keptChars: number
+      rawTurns: number
+      keptTurns: number
+      /** 有几轮被折进摘要（**不是丢了** —— 原文还在服务端和轨迹里） */
+      foldedTurns: number
+      /** 折到只剩留尾那几轮仍然超线吗（留尾是故意的，所以超线可能是正确的） */
+      overRetain: boolean
+    }
   | { type: 'run:end'; halt: string; steps: number; answer: string; stats: MeterStats }
 
 /** 观察者。返回值被忽略，抛出的异常被隔离。 */

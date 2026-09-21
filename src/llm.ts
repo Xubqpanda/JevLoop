@@ -13,21 +13,15 @@
  * @module JevLoop/llm
  */
 
+import type { ConversationTurn } from './conversation.ts'
+
 /**
- * 一轮对话。**只有问答，没有中间的工具记录。**
+ * 一轮对话的形状住在 `conversation.ts`（L1）—— 那里才是**用它**的地方
+ * （折叠按轮算预算），这里只转发。
  *
- * 中间过程（判定、工具调用、工具结果）故意不进这里：那是**这一轮**的素材，
- * 由 `evidence` 承载；进了这里的只有「问过什么、答了什么」，
- * 因为多轮要的是**指代关系**（"再读一遍那个文件"里的"那个"），
- * 不是把每一轮的完整过程堆进 prompt —— 那是上下文预算的事，
- * 而预算属于 `context.ts`。
+ * 定义留在这里的话，L1 的折叠模块就得反过来依赖 L2，分层方向会倒（§11）。
  */
-export interface ConversationTurn {
-  /** 用户那一句 */
-  task: string
-  /** agent 当时答的那一段 */
-  answer: string
-}
+export type { ConversationTurn }
 
 export interface GenerateRequest {
   /** 任务描述 */
@@ -43,6 +37,17 @@ export interface GenerateRequest {
    * 调用方负责给出**有界**的份数（服务端只保留最近若干轮）。
    */
   history?: readonly ConversationTurn[]
+  /**
+   * 更早的若干轮折成的摘要（`conversation.ts`）。
+   *
+   * ★ 它和 `history` 是**同一个上文的两个部分**，不是两份东西 ——
+   * 从老到新依次是：`historyDigest` → `history[0..]` → 本次的 `task`。
+   *
+   * 分成两个字段，是因为它们在请求里的**身份不同**：摘要不是任何一轮的
+   * 真实发言，把它伪装成一对 user/assistant 消息会让模型以为那是真的
+   * 对话记录，进而引用一段从未逐字出现过的话。所以它进 **system**。
+   */
+  historyDigest?: string
 }
 
 export interface GenerateResult {
@@ -81,6 +86,9 @@ export class ScriptedGenerator implements Generator {
     const prior = req.history ?? []
     const text = [
       ...(prior.length ? [`（上文 ${prior.length} 轮：${prior.map((t) => t.task).join(' / ')}）`, ``] : []),
+      // 折叠摘要也摆出来 —— 脚本生成器要让「上文被折过」这件事**看得见**，
+      // 否则它的输出和一个没折过的会话长得一模一样（§8.10）。
+      ...(req.historyDigest ? [`（更早的上文已折叠：`, req.historyDigest, `）`, ``] : []),
       `任务：${req.task}`,
       ``,
       `已完成：`,
@@ -141,6 +149,14 @@ export class HttpGenerator implements Generator {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), this.#timeoutMs)
 
+    // 折叠摘要进 **system**，不伪装成一问一答 —— 它不是任何一轮的真实发言。
+    // 摘要在前、逐字轮次在后，顺序上就是真实的时间顺序。
+    const instruction = req.instruction ?? DEFAULT_INSTRUCTION
+    const system = req.historyDigest
+      ? `${instruction}\n\nEarlier turns in this conversation, folded to their essentials. ` +
+        `The full text is not in this request:\n${req.historyDigest}`
+      : instruction
+
     try {
       const res = await fetch(`${this.#baseUrl}/chat/completions`, {
         method: 'POST',
@@ -151,7 +167,7 @@ export class HttpGenerator implements Generator {
         body: JSON.stringify({
           model: this.#model,
           messages: [
-            { role: 'system', content: req.instruction ?? DEFAULT_INSTRUCTION },
+            { role: 'system', content: system },
             // 之前的轮次按 user/assistant 成对铺开 —— 这是模型唯一能
             // 建立指代关系的方式。只有问答，没有中间过程（见 ConversationTurn）。
             ...(req.history ?? []).flatMap((t) => [

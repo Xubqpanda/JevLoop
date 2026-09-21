@@ -385,7 +385,7 @@ function digestFor(parts: readonly EvidencePart[]): string {
 
 /** 一次生成请求里**我们能控制**的那部分的价格 */
 export interface RequestEstimate {
-  /** 之前的轮次（问答各算） */
+  /** 之前的轮次（问答各算）+ 更早那些轮折成的摘要 */
   historyTokens: number
   /** 当前这一句 */
   taskTokens: number
@@ -425,12 +425,17 @@ export interface RequestEstimate {
 export function priceGenerateRequest(req: {
   task: string
   evidence: string
+  /** 逐字铺开的那几轮 */
   history?: readonly { task: string; answer: string }[]
+  /** 更早那些轮折成的摘要（`conversation.ts`）—— 它也在请求里，也要算钱 */
+  historyDigest?: string
 }): RequestEstimate {
-  const historyTokens = (req.history ?? []).reduce(
-    (n, t) => n + estimateTokens(t.task) + estimateTokens(t.answer),
-    0,
-  )
+  // ★ 价格的依据必须是**我们实际发出去的那一份**，不是原始的上文。
+  //   折了却按没折算钱，这个数就永远比 provider 报的小，而差额会被
+  //   归因到「system prompt 真大」上 —— 一个会把人带偏的假结论。
+  const historyTokens =
+    (req.history ?? []).reduce((n, t) => n + estimateTokens(t.task) + estimateTokens(t.answer), 0) +
+    (req.historyDigest ? estimateTokens(req.historyDigest) : 0)
   const taskTokens = estimateTokens(req.task)
   const evidenceTokens = estimateTokens(req.evidence)
   return {

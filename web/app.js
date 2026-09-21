@@ -57,6 +57,14 @@ function contextBits(e) {
   return bits
 }
 
+/** 上文（多轮问答）的账目。和 `contextBits` 是一对，但**单位是轮**，不是步 */
+function conversationBits(e) {
+  const bits = [`${e.rawTurns} → ${e.keptTurns} 轮`, `${e.rawChars} → ${e.keptChars} 字符`]
+  if (e.foldedTurns > 0) bits.push(`折叠 ${e.foldedTurns} 轮`)
+  if (e.overRetain) bits.push('⚠ 压完仍超目标')
+  return bits
+}
+
 function tokenText(e) {
   const reported = e.inputTokens > 0 || e.outputTokens > 0
   if (!reported) return `估 ${e.estimatedInputTokens} tok · 用量未报`
@@ -371,6 +379,11 @@ function processRow(e, dur) {
       detail.push(contextBits(e).join(' · '))
       break
     }
+    case 'conversation': {
+      // 同理：上文被折过而没说，模型答不出「那个文件」时会被归因到它自己身上
+      detail.push(conversationBits(e).join(' · '))
+      break
+    }
     default:
       break
   }
@@ -495,6 +508,8 @@ const EVENT_META = {
   audit: { label: '审计', cls: 'audit', lane: LANE.decide },
   // 上下文账目是**代码做的决定**（预算是纯代码），所以归「规则」那一档的灰
   context: { label: '预算', cls: 'audit', lane: LANE.decide },
+  // 上文折叠同理，也是纯代码 —— 但**单位不同**（轮 vs 步），所以徽章分开写
+  conversation: { label: '上文', cls: 'audit', lane: LANE.decide },
   // 工具那两行用等宽字体：它们的内容是命令和输出，不是句子
   'tool:call': { label: '工具', cls: 'tool', lane: LANE.tool, mono: true },
   'tool:result': { label: '工具结果', cls: 'tool', lane: LANE.tool, mono: true },
@@ -622,6 +637,13 @@ function contentOf(e) {
         return [h('span', { class: 'warn' }, '⚠ 上下文压不到目标线'), dim(' · ' + bits.join(' · '))]
       }
       return [dim('工具证据被预算压过 · '), bits.join(' · ')]
+    }
+    case 'conversation': {
+      const bits = conversationBits(e)
+      if (e.overRetain) {
+        return [h('span', { class: 'warn' }, '⚠ 上文压不到目标线'), dim(' · ' + bits.join(' · '))]
+      }
+      return [dim('上文被折叠过 · '), bits.join(' · ')]
     }
     default:
       return [e.type]
@@ -883,6 +905,18 @@ function renderDetail() {
           '⚠ 压不到目标线',
           '最后一条永远不会被丢，而它自己就超过目标 —— 这是如实报告，不是 bug',
         ),
+      )
+    }
+  }
+  if (e.type === 'conversation') {
+    kids.push(field('上文总量', `${e.rawTurns} → ${e.keptTurns} 轮`))
+    kids.push(field('字符', `${e.rawChars} → ${e.keptChars}`))
+    kids.push(field('折叠成摘要的', `${e.foldedTurns} 轮（原文在服务端和轨迹里，一轮不少）`))
+    // 留尾是**故意的**，所以超线可能是正确行为而不是失败 —— 这句要写出来，
+    // 否则读的人分不清「预算画错了」和「这几轮本来就不该折」
+    if (e.overRetain) {
+      kids.push(
+        field('⚠ 压不到目标线', '留尾那几轮永远不会被折，而它们自己就超过目标 —— 如实报告，不是 bug'),
       )
     }
   }
