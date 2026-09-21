@@ -35,6 +35,16 @@ export interface ProviderChoice {
   /** 强制只用某一个，跳过自动探测 */
   prefer?: 'jev' | 'laya' | 'mock'
   onFallback?: FallbackNotice
+  /**
+   * 链尾兜底。缺省是保守 {@link MockProvider}。
+   *
+   * 为什么要有这个口子：Mock 给的是保守答案（概率 0.5），
+   * 于是 `pickTool` 的置信度门限会走到 `escalate` —— loop 在第一步就停下。
+   * 对「无 key 也能跑完」的场景（`npm run demo`）那是错的兜底。
+   * 但**内核不该知道什么才是对的兜底**（AGENTS.md §8.6：规则属于场景），
+   * 所以由调用方注入，比如 `examples/rule-judge.ts`。
+   */
+  lastResort?: Provider
 }
 
 /**
@@ -48,7 +58,9 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   const mock = new MockProvider()
   const notice = choice.onFallback
 
-  if (choice.prefer === 'mock') return mock
+  const last = choice.lastResort ?? mock
+
+  if (choice.prefer === 'mock') return last
 
   const laya = new HttpProvider({
     baseUrl: choice.layaUrl ?? 'http://127.0.0.1:7789',
@@ -58,7 +70,7 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   })
 
   if (choice.prefer === 'laya') {
-    return notice ? new FallbackProvider([laya, mock], notice) : new FallbackProvider([laya, mock])
+    return notice ? new FallbackProvider([laya, last], notice) : new FallbackProvider([laya, last])
   }
 
   const apiKey = choice.apiKey ?? process.env.TYPESAFE_API_KEY
@@ -70,10 +82,10 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   })
 
   if (choice.prefer === 'jev') {
-    return notice ? new FallbackProvider([jev, mock], notice) : new FallbackProvider([jev, mock])
+    return notice ? new FallbackProvider([jev, last], notice) : new FallbackProvider([jev, last])
   }
 
-  const chain = apiKey ? [jev, laya, mock] : [laya, mock]
+  const chain = apiKey ? [jev, laya, last] : [laya, last]
   return notice ? new FallbackProvider(chain, notice) : new FallbackProvider(chain)
 }
 

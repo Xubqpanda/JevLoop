@@ -76,11 +76,12 @@ const provider =
     : resolveProvider({
         ...(prefer === 'jev' || prefer === 'laya' ? { prefer } : {}),
         ...(process.env.JEVOS_SIDECAR ? { layaUrl: process.env.JEVOS_SIDECAR } : {}),
-        // 有真实判定后端时，规则表当最后兜底：至少 loop 能跑完
-        onFallback: (err, from, to) => {
-          if (to === 'mock') return
-          notice(err, from, to)
-        },
+        // ★ 链尾用规则表，不用 Mock。
+        //   Mock 的保守答案会让 pickTool 走到 escalate —— 全新 clone 上
+        //   `npm run demo` 会在第一步停下，而 README 承诺「无 key 也能跑」。
+        //   规则表属于 examples（§8.6），所以在这里注入而不是写进内核。
+        lastResort: new RuleJudge(),
+        onFallback: notice,
       })
 
 const meter = new Meter()

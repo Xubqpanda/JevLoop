@@ -7,19 +7,31 @@ Every fork in a normal agent loop — *should I act? which tool? is this safe? d
 JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
 ```
-$ npm run demo          # 判定后端 = 离线规则表
+$ npm run demo          # 全新 clone，无 key、无网络
+
+  判定后端  : laya→rule-judge
+  生成后端  : scripted（脚本化，设 DEEPSEEK_API_KEY 可换真实 LLM）
 
   判定放行：list_dir（auto）
   判定放行：read_file（auto）
 
-  判定   11 次   46.4ms（均 4.2ms）
-  模型    1 次   600.5ms
+  判定   12 次   50.4ms（均 4.2ms）
+  模型    1 次   600.9ms
 
-  判定 : 模型 = 11.0 : 1      判定耗时只占 7.2%
+  判定 : 模型 = 12.0 : 1      判定耗时只占 7.7%
 ```
 
-`npm run demo -- --jev`（需 `TYPESAFE_API_KEY`）用官方 Jev 跑同一条链路：
-每一个判定都果断且正确，但每次判定约 390 ms —— 延迟账要单独算，见下表。
+**同一个命令在不同环境下自动走不同的判定后端，数字也完全不同。** 下面是三种环境的实测：
+
+| 你的环境 | `npm run demo` 实际的后端 | 判定 : 模型 | 判定耗时占比 |
+|---|---|---:|---:|
+| 全新 clone（无 key） | `laya→rule-judge` | 12 : 1 | **7.7 %** |
+| 有 `TYPESAFE_API_KEY` | `jev→laya→rule-judge` | 13 : 1 | **79.4 %** |
+| 本地 Laya sidecar 在跑 | `laya→rule-judge` | 12 : 1 | ~38 % |
+
+> 上面那组头条数字来自**规则表，不是模型** —— 它演示的是「loop 结构长什么样」，
+> 不是「判定有多准」。真实判定的质量与延迟见
+> [Which decision backend](#which-decision-backend-and-what-it-costs-you)。
 
 Zero dependencies. Zero build step. Runs offline with no API key.
 
@@ -179,14 +191,14 @@ We ran the same loop against three backends. The ratio that matters is decisions
 
 | Decision backend | Per decision | Decisions : model | Decision share of wall clock | Quality |
 |---|---:|---:|---:|---|
-| `examples/rule-judge.ts` (offline) | 4 ms | 11 : 1 | **7 %** | rule table, not a model |
+| `examples/rule-judge.ts` (offline) | 4 ms | 12 : 1 | **7.7 %** | rule table, not a model |
 | Laya `typed-decisions`, local A100 | 30–85 ms | 8 : 1 | ~38 % | **not enough zero-shot** (see below) |
-| Jev `jev-latest`, hosted API | ~390 ms | 12 : 1 | **89 %** | decisive and correct on every decision |
+| Jev `jev-latest`, hosted API | ~390 ms | 13 : 1 | **79 %** | decisive and correct on every decision |
 
 Two honest conclusions:
 
 - **The whole claim holds on a locally-served decision model** — 30 ms decisions make the loop's thinking essentially free next to one generation call.
-- **Over the hosted API it does not.** ~390 ms per decision is network round-trips, and with 12 decisions for 1 generation the decisions dominate the clock. Still ~5–8× faster than a frontier LLM call and orders of magnitude cheaper, but "decisions are free" would be a lie at that latency.
+- **Over the hosted API it does not.** ~390 ms per decision is network round-trips, and with 13 decisions for 1 generation the decisions dominate the clock. Still ~5–8× faster than a frontier LLM call and orders of magnitude cheaper, but "decisions are free" would be a lie at that latency.
 
 The obvious sweet spot is a strong decision model served locally. Neither of the two we could test is that: one is fast but not accurate enough, the other is accurate but round-trips.
 
