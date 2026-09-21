@@ -42,7 +42,7 @@ import {
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
-import { fitEvidence, EVIDENCE_POLICY, type ContextReport } from './context.ts'
+import { fitEvidence, priceGenerateRequest, EVIDENCE_POLICY, type ContextReport } from './context.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
@@ -342,7 +342,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     step: genStep,
     kind: `generate (${generator.name})`,
     latencyMs: gen.latencyMs,
-    tokens: gen.inputTokens + gen.outputTokens,
+    inputTokens: gen.inputTokens,
+    outputTokens: gen.outputTokens,
+    estimatedInputTokens: priceGenerateRequest({
+      task: ctx.task,
+      evidence: evidence(),
+      history: opts.history,
+    }).controlTokens,
   })
   ctx.draft = gen.text
 
@@ -373,7 +379,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       step: genStep,
       kind: `generate/revise (${generator.name})`,
       latencyMs: retry.latencyMs,
-      tokens: retry.inputTokens + retry.outputTokens,
+      inputTokens: retry.inputTokens,
+      outputTokens: retry.outputTokens,
+      estimatedInputTokens: priceGenerateRequest({
+        task: ctx.task,
+        evidence: evidence(),
+        history: opts.history,
+      }).controlTokens,
     })
     ctx.draft = retry.text
     deliver = record(await decider.decide(canDeliver, ctx))

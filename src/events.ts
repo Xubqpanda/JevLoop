@@ -41,8 +41,30 @@ export type AgentEvent =
   | { type: 'audit'; step: number; record: AuditRecord }
   | { type: 'tool:call'; step: number; tool: string; input: string }
   | { type: 'tool:result'; step: number; tool: string; output: string; ms: number }
-  /** 一次生成调用。整个运行里通常只有一次，最多两次（修订） */
-  | { type: 'generate'; step: number; kind: string; latencyMs: number; tokens: number }
+  /**
+   * 一次生成调用。整个运行里通常只有一次，最多两次（修订）。
+   *
+   * 三个 token 数放在一起是**刻意的** —— 它们回答不同的问题：
+   *
+   *   `estimatedInputTokens`  我们按字符启发式估的「我们发出去的那部分」
+   *   `inputTokens`           provider 报的**真值**（含生成器内部的 system prompt）
+   *   `outputTokens`          provider 报的输出
+   *
+   * provider 不报 usage 时（脚本生成器）后两个是 0 —— 那是「没量到」，
+   * 不是「量到了 0」，所以界面要能把两者分开显示（§8.10）。
+   */
+  | {
+      type: 'generate'
+      step: number
+      kind: string
+      latencyMs: number
+      /** provider 报的**输入** token；0 = 没报 */
+      inputTokens: number
+      /** provider 报的**输出** token；0 = 没报 */
+      outputTokens: number
+      /** 我们估的「我们能控制的那部分」（上文 + 当前任务 + 证据）。见 `context.ts` */
+      estimatedInputTokens: number
+    }
   /**
    * 交给生成器的证据被预算压过。
    *

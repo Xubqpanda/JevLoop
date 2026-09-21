@@ -180,6 +180,8 @@ const LAYER: Record<string, number> = {
   // 依赖（§11），而它的依赖面比 L1 任何一件都小 —— 放在最底下，
   // 谁都能依赖它，它不依赖谁。拆分理由见 AGENTS.md §12。
   'context-prune': 0,
+  // `estimate` 同 `context-prune`：零依赖纯函数，谁都能用，放最底下
+  estimate: 0,
   // L2 —— 接缝
   'seam-provider': 2,
   provider: 2,

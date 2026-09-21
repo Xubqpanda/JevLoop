@@ -43,6 +43,7 @@
  * @module JevLoop/context
  */
 
+import { estimateTokens } from './estimate.ts'
 import {
   PRUNE_DEFAULTS,
   PRUNE_MARKER_MAX_CHARS,
@@ -273,5 +274,69 @@ export function fitEvidence(
       acted: prunedCount > 0 || droppedCount > 0,
       overRetain,
     },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 请求定价：我们估的 vs provider 数的
+//
+// 上面那套预算管的是**工具证据**。但一次生成请求里还有别的：
+// 上文、当前这一句，以及生成器自己那段 system prompt。
+// 证据被压到 6000 字符，可不等于整个请求就只有那么大 ——
+// 所以「总共多大」必须**量出来**，不能只看被管住的那一块。
+// ═══════════════════════════════════════════════════════════
+
+/** 一次生成请求里**我们能控制**的那部分的价格 */
+export interface RequestEstimate {
+  /** 之前的轮次（问答各算） */
+  historyTokens: number
+  /** 当前这一句 */
+  taskTokens: number
+  /** 工具证据 —— 已经被 `fitEvidence` 管住的那一块 */
+  evidenceTokens: number
+  /** 合计：我们发出去的部分 */
+  controlTokens: number
+}
+
+/**
+ * 给一次生成请求定价。
+ *
+ * ── 为什么只算「我们能控制的那部分」 ────────────────────────────
+ *
+ * `system prompt` 住在生成器内部（`HttpGenerator` 的 `DEFAULT_INSTRUCTION`），
+ * 外部看不见它 —— 硬要算就得把它复制出来，那份副本必然和真身漂移。
+ * 所以这里**只算我们发出去的东西**，system prompt 的代价留在差值里。
+ *
+ * ── 和真值怎么比 ────────────────────────────────────────────────
+ *
+ * `GenerateResult.inputTokens` 是 **provider 报的真值**，包含 system prompt。
+ * 两个数放在一起看：
+ *
+ *     provider 报的 inputTokens  −  这里的 controlTokens
+ *       ≈ system prompt + 启发式的偏差
+ *
+ * **不要把这个差值当成 system prompt 的大小** —— 它是两者的和，而启发式
+ * 的偏差是 ±30%（见 `estimate.ts`）。它的用途是**看趋势**：证据翻倍时
+ * provider 报的数是不是也跟着涨。涨不动，说明预算没起作用；涨得比估算快，
+ * 说明这条启发式在你的内容上偏了，该重新校准。
+ *
+ * 这比在注释里断言「中文 1 字 ≈ 1 token」强 —— 那句话在这里可以**被核对**。
+ */
+export function priceGenerateRequest(req: {
+  task: string
+  evidence: string
+  history?: readonly { task: string; answer: string }[]
+}): RequestEstimate {
+  const historyTokens = (req.history ?? []).reduce(
+    (n, t) => n + estimateTokens(t.task) + estimateTokens(t.answer),
+    0,
+  )
+  const taskTokens = estimateTokens(req.task)
+  const evidenceTokens = estimateTokens(req.evidence)
+  return {
+    historyTokens,
+    taskTokens,
+    evidenceTokens,
+    controlTokens: historyTokens + taskTokens + evidenceTokens,
   }
 }

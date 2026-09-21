@@ -20,6 +20,25 @@
 // DOM 小工具（不引框架：这个界面只有两种交互，画卡片和切视图）
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 一次生成调用的 token 账。
+ *
+ * 三个数回答不同的问题，所以**并排显示**：
+ *
+ *     估 N      我们按字符启发式估的「我们发出去的那部分」
+ *     入 M       provider 报的输入（含生成器内部的 system prompt）
+ *     出 K       provider 报的输出
+ *
+ * `入/出` 是 0 的时候**不说 0，说「未报」** —— 脚本生成器不报 usage，
+ * 那是「没量到」而不是「量到了 0」（§8.10）。把两者显示成同一个东西
+ * 会让人以为一次调用真的没花 token。
+ */
+function tokenText(e) {
+  const reported = e.inputTokens > 0 || e.outputTokens > 0
+  if (!reported) return `估 ${e.estimatedInputTokens} tok · 用量未报`
+  return `估 ${e.estimatedInputTokens} / 入 ${e.inputTokens} / 出 ${e.outputTokens} tok`
+}
+
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag)
   for (const [k, v] of Object.entries(attrs)) {
@@ -153,7 +172,7 @@ function processRow(e, dur) {
       detail.push(`${String(e.output ?? '').length} 字符`)
       break
     case 'generate':
-      detail.push(`${e.kind} · ${e.tokens} tokens · 唯一贵的一步`)
+      detail.push(`${e.kind} · ${tokenText(e)} · 唯一贵的一步`)
       break
     case 'authorize':
       detail.push(`${e.tool} · ${e.approved ? '已授权' : '已拒绝'} · ${e.reason ?? ''}`)
@@ -161,6 +180,15 @@ function processRow(e, dur) {
     case 'audit':
       detail.push(`${e.record?.tool ?? ''} · risk ${e.record?.risk ?? '?'}`)
       break
+    case 'context': {
+      // 压了什么必须写清楚 —— 否则「这次答得不全」会被归因到模型身上
+      const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
+      if (e.prunedCount > 0) bits.push(`剪中间 ${e.prunedCount} 条`)
+      if (e.droppedCount > 0) bits.push(`丢整条 ${e.droppedCount} 条`)
+      if (e.overRetain) bits.push('⚠ 压完仍超目标')
+      detail.push(bits.join(' · '))
+      break
+    }
     default:
       break
   }
@@ -283,6 +311,8 @@ const EVENT_META = {
   // 授权单独一类 —— 它是**停下来等人**，不是一次判定，也不该像出错
   authorize: { label: '授权', cls: 'authorize', lane: LANE.decide },
   audit: { label: '审计', cls: 'audit', lane: LANE.decide },
+  // 上下文账目是**代码做的决定**（预算是纯代码），所以归「规则」那一档的灰
+  context: { label: '预算', cls: 'audit', lane: LANE.decide },
   // 工具那两行用等宽字体：它们的内容是命令和输出，不是句子
   'tool:call': { label: '工具', cls: 'tool', lane: LANE.tool, mono: true },
   'tool:result': { label: '工具结果', cls: 'tool', lane: LANE.tool, mono: true },
@@ -340,12 +370,21 @@ function contentOf(e) {
     case 'generate':
       return [
         h('span', { class: 'warn' }, e.kind),
-        dim(` · ${ms(e.latencyMs)} · ${e.tokens} tokens · 整个 loop 里唯一贵的一步`),
+        dim(` · ${ms(e.latencyMs)} · ${tokenText(e)} · 整个 loop 里唯一贵的一步`),
       ]
     case 'authorize':
       return [e.approved ? '已授权' : '已拒绝', dim(` · ${e.tool} · ${e.reason}`)]
     case 'audit':
       return [mono(e.record?.tool ?? ''), dim(` 记了审计留痕 · risk ${e.record?.risk ?? '?'}`)]
+    case 'context': {
+      const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
+      if (e.prunedCount > 0) bits.push(`剪中间 ${e.prunedCount} 条`)
+      if (e.droppedCount > 0) bits.push(`丢整条 ${e.droppedCount} 条`)
+      if (e.overRetain) {
+        return [h('span', { class: 'warn' }, '⚠ 上下文压不到目标线'), dim(' · ' + bits.join(' · '))]
+      }
+      return [dim('工具证据被预算压过 · '), bits.join(' · ')]
+    }
     default:
       return [e.type]
   }
@@ -570,13 +609,40 @@ function renderDetail() {
   }
   if (e.type === 'generate') {
     kids.push(field('耗时', ms(e.latencyMs)))
-    kids.push(field('tokens', String(e.tokens)))
+    kids.push(field('我们估的输入', `${e.estimatedInputTokens} token（上文 + 当前任务 + 证据）`))
+    if (e.inputTokens > 0 || e.outputTokens > 0) {
+      kids.push(field('provider 报的输入', `${e.inputTokens} token（含生成器内部的 system prompt）`))
+      kids.push(field('provider 报的输出', `${e.outputTokens} token`))
+      // 差值是 system prompt + 启发式偏差的和 —— 分开说，别假装能算清
+      const gap = e.inputTokens - e.estimatedInputTokens
+      kids.push(
+        field(
+          '差值',
+          `${gap > 0 ? '+' : ''}${gap} token = system prompt + 启发式偏差（±30%），两者分不开`,
+        ),
+      )
+    } else {
+      kids.push(field('provider 用量', '未报 —— 这个后端不返回 usage，不是 0'))
+    }
   }
   if (e.type === 'audit') {
     kids.push(field('目标', h('pre', {}, e.record?.target ?? '')))
     kids.push(field('风险档位', String(e.record?.risk ?? '?')))
   }
   if (e.type === 'authorize') kids.push(field('结果', e.approved ? '已授权' : '已拒绝'))
+  if (e.type === 'context') {
+    kids.push(field('证据总量', `${e.rawChars} → ${e.keptChars} 字符`))
+    kids.push(field('剪了中间的', `${e.prunedCount} 条`))
+    kids.push(field('整条丢弃的', `${e.droppedCount} 条`))
+    if (e.overRetain) {
+      kids.push(
+        field(
+          '⚠ 压不到目标线',
+          '最后一条永远不会被丢，而它自己就超过目标 —— 这是如实报告，不是 bug',
+        ),
+      )
+    }
+  }
 
   detailBody.replaceChildren(...(kids.length ? kids : [h('div', { class: 'detail-empty' }, '没有更多内容')]))
 }

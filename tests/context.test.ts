@@ -24,6 +24,7 @@ import {
   fitEvidence,
   resolveEvidencePolicy,
   EVIDENCE_POLICY,
+  priceGenerateRequest,
 } from '../src/context.ts'
 
 const len = (s: string) => Array.from(s).length
@@ -248,4 +249,55 @@ test('N1: 只丢不剪的时候，acted 也必须是真的', () => {
   // `text` 那一面是对的（末尾说明了丢了几条），错的是 `report`，
   // 而 `ContextReport` 存在的意义正是让程序化消费方不必解析那句散文。
   assert.equal(report.acted, true, '丢了条目就是动过内容')
+})
+
+// ═══════════════════════════════════════════════════════════
+// 请求定价：我们估的 vs provider 数的
+//
+// 这一组测的是**可核对性**。以前「中文 1 字 ≈ 1 token」只是注释里的一句
+// 断言；现在它产出一个数，并且和 provider 报的真值并排出现。
+// ═══════════════════════════════════════════════════════════
+
+test('定价把三块分开算，合计等于它们之和', () => {
+  const e = priceGenerateRequest({
+    task: '读一下那个文件',
+    evidence: 'x'.repeat(400),
+    history: [
+      { task: '列目录', answer: 'a.ts b.ts' },
+      { task: '读 a.ts', answer: 'export const x = 1' },
+    ],
+  })
+  assert.equal(e.controlTokens, e.historyTokens + e.taskTokens + e.evidenceTokens)
+  assert.ok(e.historyTokens > 0, '两轮历史要有代价')
+  assert.ok(e.taskTokens > 0)
+  assert.equal(e.evidenceTokens, 100, '400 个英文 x ≈ 100 token')
+})
+
+test('没有上文时历史那项是 0，不是 NaN', () => {
+  const e = priceGenerateRequest({ task: 'T', evidence: '' })
+  assert.equal(e.historyTokens, 0)
+  assert.equal(e.evidenceTokens, 0)
+  assert.ok(Number.isFinite(e.controlTokens))
+})
+
+test('★ 中文比英文贵四倍 —— 这正是不能按英文字符估的原因', () => {
+  const zh = priceGenerateRequest({ task: '', evidence: '中'.repeat(400) })
+  const en = priceGenerateRequest({ task: '', evidence: 'x'.repeat(400) })
+  assert.equal(zh.evidenceTokens, 400, '中文 1 字 ≈ 1 token')
+  assert.equal(en.evidenceTokens, 100, '英文 4 字符 ≈ 1 token')
+  assert.equal(zh.evidenceTokens, en.evidenceTokens * 4)
+})
+
+test('★ 估算随证据单调增长 —— 这是它唯一能被核对的用法', () => {
+  // 差值（provider 报的 − 我们估的）里混着 system prompt 和启发式偏差，
+  // 两者分不开。所以这个数**不能**用来断言绝对准确度，只能看**趋势**：
+  // 证据变大时它必须跟着变大，否则说明预算根本没接上。
+  const hist = [{ task: '列目录', answer: 'a.ts' }]
+  const sizes = [0, 1000, 5000, 20000]
+  const est = sizes.map(
+    (n) => priceGenerateRequest({ task: 'T', evidence: 'x'.repeat(n), history: hist }).controlTokens,
+  )
+  for (let i = 1; i < est.length; i++) {
+    assert.ok(est[i]! > est[i - 1]!, `证据从 ${sizes[i - 1]} 涨到 ${sizes[i]} 时估算没跟着涨`)
+  }
 })

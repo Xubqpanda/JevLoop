@@ -11,6 +11,7 @@
  */
 
 import type { QuestionSet, ChoiceQuestion } from './vocab.ts'
+import { estimateTokens } from './estimate.ts'
 
 /** ` …[+N]` 这个提示本身占的字符预算 */
 const HINT_BUDGET = 12
@@ -37,20 +38,9 @@ export function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pi
   return out
 }
 
-/**
- * **字符启发式**，不是真 tokenizer。偏差约 ±30%，方向不可控。
- * 用途是「提前拦住明显超预算的帧」，不是精确计量 —— 名字里的 Rough 是刻意的。
- */
-export function estimateTokens(value: unknown): number {
-  const s = typeof value === 'string' ? value : JSON.stringify(value ?? '')
-  if (!s) return 0
-  let cjk = 0
-  for (const ch of s) {
-    const c = ch.codePointAt(0)!
-    if ((c >= 0x2e80 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0x3040 && c <= 0x30ff)) cjk++
-  }
-  return Math.ceil(cjk + (s.length - cjk) / 4)
-}
+// `estimateTokens` 搬去 `estimate.ts`（L0）了 —— 见那里的说明。
+// 这里再导出，消费方不用改。
+export { estimateTokens } from './estimate.ts'
 
 /** 各 checkpoint 的硬限制 */
 export const LIMITS = {
