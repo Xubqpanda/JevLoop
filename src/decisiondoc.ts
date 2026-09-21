@@ -70,7 +70,7 @@
  * 一个被悄悄忽略的判定块，比一个报错的块危险得多 —— 前者会让 agent
  * 安静地少问一个问题。
  *
- * @module jevloop/decisiondoc
+ * @module JevLoop/decisiondoc
  */
 
 import {

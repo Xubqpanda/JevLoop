@@ -10,6 +10,8 @@
  * 所以一个观察者出错不会影响 loop 本身（见 {@link fanOut}）。
  *
  * @module jevloop/events
+  *
+ * @module JevLoop/events
  */
 
 import type { DecisionResult, QuestionSet, AnswerSet } from './types.ts'

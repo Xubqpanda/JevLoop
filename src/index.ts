@@ -4,6 +4,8 @@
  *   import { Decider, runAgent, defineDecision, noul, choice, score } from 'jevloop';
  *
  * 概念只有三个：Question / Decision / Provider。
+  *
+ * @module JevLoop/index
  */
 
 // ── 概念 ─────────────────────────────────────────────────────

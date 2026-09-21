@@ -12,7 +12,8 @@
     "prepare": "npm run build",
     "demo": "node --experimental-strip-types examples/demo.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test \"tests/*.test.ts\""
+    "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
+    "check": "node --experimental-strip-types scripts/check.ts"
   },
   "keywords": [
     "agent",

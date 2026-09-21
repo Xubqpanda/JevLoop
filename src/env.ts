@@ -6,6 +6,8 @@
  *
  * 只做三件事：`KEY=VALUE`、`#` 注释、两端引号。
  * **不做变量插值、不做多行** —— 需要的自己去 dotenv。
+  *
+ * @module JevLoop/env
  */
 
 import { readFileSync } from 'node:fs'
@@ -35,7 +37,10 @@ export function loadEnv(opts: LoadEnvOptions = {}): string[] {
     const key = line.slice(0, eq).trim()
     let value = line.slice(eq + 1).trim()
     // 去掉两端成对的引号
-    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    const dq = '"'
+    const sq = '\''
+    const paired = (q: string) => value.startsWith(q) && value.endsWith(q)
+    if (value.length >= 2 && (paired(dq) || paired(sq))) {
       value = value.slice(1, -1)
     }
 

@@ -1,0 +1,30 @@
+# 每次 push / PR 跑一遍仓库自己声明的验证。
+#
+# 三件事按「快 → 慢」排：格式检查不需要装依赖之外的东西，
+# typecheck 和 test 依赖 devDependencies，所以 npm install 只做一次。
+#
+# **不跑真实后端。** 判定后端和生成后端都需要 key 或本地模型，
+# CI 里没有 —— 用 `--rule` + 空 DEEPSEEK_API_KEY 走离线路径，
+# 它覆盖的是「loop 能不能跑完」，不是「判定准不准」。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 类型剥离 v22.6 引入、v22.18 才默认开启。
+          # 命令里显式带 --experimental-strip-types，所以 22.6 起都能跑。
+          node-version: '22.18'
+      - run: npm install
+      - run: npm run check
+      - run: npm run typecheck
+      - run: npm test
+      - name: 离线冒烟（loop 能跑完）
+        run: DEEPSEEK_API_KEY= npm run demo -- --rule

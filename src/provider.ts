@@ -9,6 +9,8 @@
  *   MockProvider  → 保守占位答案                （零依赖，离线可跑）
  *
  * 后两个的存在是刻意的：**没有 API key 的人也必须能在 30 秒内跑起来。**
+  *
+ * @module JevLoop/provider
  */
 
 import type { Provider, DecideRequest, DecideResponse, Answer, AnswerSet, Question } from './types.ts'
@@ -160,7 +162,7 @@ export class MockProvider implements Provider {
     if (this.#latencyMs > 0) await new Promise((r) => setTimeout(r, this.#latencyMs))
 
     const answers: AnswerSet = {}
-    for (const [id, q] of Object.entries(req.questions)) answers[id] = conservative(q);
+    for (const [id, q] of Object.entries(req.questions)) answers[id] = conservative(q)
 
     return {
       answers,
@@ -188,7 +190,7 @@ function conservative(q: Question): Answer {
   }
   const ids = Object.keys(q.criteria)
   const probabilities: Record<string, number> = {}
-  for (const id of ids) probabilities[id] = 1 / Math.max(1, ids.length);
+  for (const id of ids) probabilities[id] = 1 / Math.max(1, ids.length)
   return { type: 'choice', choice: ids[0] ?? '', probabilities, confidence: 1 / Math.max(1, ids.length) }
 }
 
@@ -234,7 +236,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 
 function numMap(v: any): Record<string, number> {
   const out: Record<string, number> = {}
-  for (const [k, n] of Object.entries(v ?? {})) out[k] = Number(n) || 0;
+  for (const [k, n] of Object.entries(v ?? {})) out[k] = Number(n) || 0
   return out
 }
 

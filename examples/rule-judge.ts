@@ -14,6 +14,8 @@
  *   换成真实后端时，整个文件可以删掉，内核一行都不用改。
  *
  * 想跑真实判定：`--laya`（本地）或 `--jev`（官方，需 TYPESAFE_API_KEY）。
+  *
+ * @module JevLoop/rule-judge
  */
 
 import type { Provider, DecideRequest, DecideResponse, Answer, ChoiceQuestion, ScoreQuestion } from '../src/index.ts'
@@ -33,7 +35,7 @@ const choice = (pick: string, all: Record<string, string>): Answer => {
   const probabilities: Record<string, number> = {}
   // 选中的给高分，其余平分剩下的概率
   const rest = ids.length > 1 ? 0.3 / (ids.length - 1) : 0
-  for (const id of ids) probabilities[id] = id === pick ? 0.7 : rest;
+  for (const id of ids) probabilities[id] = id === pick ? 0.7 : rest
   if (!(pick in probabilities)) return { type: 'choice', choice: ids[0] ?? '', probabilities, confidence: 0 }
   return { type: 'choice', choice: pick, probabilities, confidence: 0.7 }
 }

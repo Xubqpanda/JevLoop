@@ -22,6 +22,8 @@
  *                        [ 模型生成 ]   ← 整个 loop 里唯一贵的一步
  *                             │
  *                        loop.canDeliver  ↗ 能交付吗？
+  *
+ * @module JevLoop/agent
  */
 
 import { Decider } from './decide.ts'

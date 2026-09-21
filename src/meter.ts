@@ -11,6 +11,8 @@
  *     **判定 : 模型 = ? : 1**
  *
  * 这个比值就是 JevLoop 的全部主张，它应该被打印在每一次运行的结尾。
+  *
+ * @module JevLoop/meter
  */
 
 import type { DecisionResult } from './types.ts'

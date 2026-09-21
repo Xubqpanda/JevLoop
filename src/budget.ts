@@ -6,6 +6,8 @@
  * 不可区分了。实测 77 个选项会掉到 0.425。
  *
  * 所以 State 投影必须**有界**。这里提供截断工具和发请求之前的预算校验。
+  *
+ * @module JevLoop/budget
  */
 
 import type { QuestionSet, ChoiceQuestion } from './types.ts'
@@ -31,7 +33,7 @@ export function clip(s: string, maxChars: number): string {
 /** 只挑需要的字段，防止整个 ctx 泄漏进决策帧 */
 export function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
   const out = {} as Pick<T, K>
-  for (const k of keys) if (obj?.[k] !== undefined) out[k] = obj[k];
+  for (const k of keys) if (obj?.[k] !== undefined) out[k] = obj[k]
   return out
 }
 

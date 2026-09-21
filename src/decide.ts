@@ -11,6 +11,8 @@
  *   ⑥ 记账            进 meter
  *
  * 后台挂了也不会崩：记一笔 degraded，然后交回上层，而不是瞎猜一个动作。
+  *
+ * @module JevLoop/decide
  */
 
 import type { Provider, DecisionSpec, DecisionResult, QuestionSet, AnswerMap, AnswerSet } from './types.ts'

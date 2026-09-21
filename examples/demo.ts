@@ -9,6 +9,8 @@
  * 零依赖、零 key、离线可跑 —— 默认用 Mock 后端把 loop 走通。
  *
  * 重点看最后那行汇总：**判定 : 模型** 的比值。
+  *
+ * @module JevLoop/demo
  */
 
 import { mkdir, writeFile, rm, mkdtemp } from 'node:fs/promises'

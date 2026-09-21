@@ -7,6 +7,8 @@
  *   · 调一个阈值不需要重跑任何判定
  *   · 同一次运行的答案可以拿去反复试不同的策略
  *   · 策略可以被单元测试覆盖（模型不能）
+  *
+ * @module JevLoop/policy
  */
 
 import type { AnswerSet, PolicyRule } from './types.ts'

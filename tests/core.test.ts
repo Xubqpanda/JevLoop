@@ -4,6 +4,8 @@
  *   node --experimental-strip-types --test "tests/*.test.ts"
  *
  * 这些逻辑**没有类型保护** —— 它们全是运行时行为，tsc 通过不代表行为正确。
+  *
+ * @module JevLoop/core.test
  */
 
 import { test } from 'node:test'
@@ -158,7 +160,7 @@ test('中文 1 字 ≈ 1 token，英文 4 字符 ≈ 1 token', () => {
 
 test('选项超过安全线时告警', () => {
   const many: Record<string, string> = {}
-  for (let i = 0; i < 30; i++) many[`opt${i}`] = `选项 ${i}`;
+  for (let i = 0; i < 30; i++) many[`opt${i}`] = `选项 ${i}`
   const ws = validate({ short: 'state' }, { pick: choice('which?', many) }, 'typed-decisions')
   assert.ok(ws.some((w) => /30 个选项/.test(w.message)))
 })

@@ -15,6 +15,8 @@
  *
  * 这六个判定一共 6 次前向传播，加起来通常不到 100ms，
  * 换来的是整个 loop 里只剩一次真正的大模型调用。
+  *
+ * @module JevLoop/decisions
  */
 
 import { defineDecision, noul, choice, score } from './types.ts'
@@ -207,7 +209,7 @@ function toolsFor(ctx: AgentCtx): Record<string, string> {
   }
 
   out.done =
-    'Everything the task asks for has already been done; calling any other tool would not add information.';
+    'Everything the task asks for has already been done; calling any other tool would not add information.'
 
   return out
 }
