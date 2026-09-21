@@ -122,6 +122,10 @@ const state = {
    * （见 `context.ts` 的 `priceGenerateRequest`）。
    */
   lastGenerate: null,
+  /** 登记过的工作区。空数组 = 一个都没登记，这时服务端用它自己的演示目录 */
+  workspaces: [],
+  /** 会话列表（摘要，不含正文 —— 见 `SessionStore` 的模块头） */
+  sessions: [],
 }
 
 /**
@@ -147,7 +151,7 @@ function updateTally() {
 // 视图切换
 // ═══════════════════════════════════════════════════════════
 
-const VIEWS = ['chat', 'trace']
+const VIEWS = ['chat', 'trace', 'spec']
 
 function selectView(id) {
   for (const v of VIEWS) {
@@ -1205,7 +1209,12 @@ function run(task) {
 
   startTicker()
 
-  const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}&session=${encodeURIComponent(sessionId)}`)
+  // ★ 带的是 **workspace id，不是路径** —— 客户端说不出一个服务端没登记过的
+  //   目录。没选工作区时不带这个参数，服务端退回它的演示目录。
+  const ws = workspaceId ? `&workspace=${encodeURIComponent(workspaceId)}` : ''
+  const es = new EventSource(
+    `/api/run?task=${encodeURIComponent(task)}&session=${encodeURIComponent(sessionId)}${ws}`,
+  )
 
   es.onmessage = (msg) => {
     // 防御性：服务端会先发一行 `: connected` 注释，但按 SSE 规范注释行
@@ -1379,7 +1388,17 @@ $('theme').addEventListener('click', () => applyTheme(!document.body.hasAttribut
  * 不是只把屏幕擦干净（那样等内核接上 history 之后就会变成一个谎：
  * 界面看着是新的，agent 却还记得）。
  */
-$('new-session').addEventListener('click', async () => {
+$('new-session').addEventListener('click', () => void newSession())
+
+/**
+ * 开一段新对话。
+ *
+ * **清空服务端的那一份，而不是只换一个 id。** 只换 id 的话服务端那边
+ * 对应的历史就断了（那也行），但这一段旧的会留在会话列表里 ——
+ * 而用户点的是「新对话」，不是「把这段扔掉」。所以这里是真的清，
+ * 要保留的走「新会话」那个 `+`（它只换 id，旧的留在列表里）。
+ */
+async function newSession() {
   if (state.running) return
   try {
     await fetch(`/api/session?id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
@@ -1389,6 +1408,11 @@ $('new-session').addEventListener('click', async () => {
     console.error('清空会话失败', err)
     return
   }
+  await startFreshSession()
+}
+
+/** 换一个 id 并清空两个视图。**旧的那些留在服务端**，列表里还看得见 */
+async function startFreshSession() {
   sessionId = newSessionId()
   remember('jl-session', sessionId)
 
@@ -1412,7 +1436,8 @@ $('new-session').addEventListener('click', async () => {
   detailTitle.textContent = '详情'
   detailLocation.textContent = ''
   detailTabs.replaceChildren()
-})
+  await loadSessions()
+}
 
 function restore(key) {
   try {
@@ -1432,13 +1457,16 @@ function remember(key, value) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 会话
+// 工作区与会话：左栏那一列
 //
-// 一个 id 代表一段对话。服务端按这个 id 记住每一轮的问答 ——
-// 现在**只记不读**（生成器还看不到上文，见 server.ts 的 MEMORY_WIRED）。
+// 两级，抄 DSH 的侧边栏（`ui-sidebar` + `ui-workspace`）：
 //
-// 界面这边先把它接上：「新对话」换一个 id，服务端那边对应的历史就断了。
-// 这样等内核接上 history，不需要再动这里。
+//     工作区   一个登记过的目录。跑任务时发的是它的 **id**，不是路径
+//     会话     一段对话。挂在哪个工作区下，看它自己的 `cwd`
+//
+// ★ **新建会话选哪个工作区**，抄的是 DSH 那个顺序：显式选中的 → 当前
+//   会话的 → 最近活动的。我们的实现只有「显式选中的」和「服务端演示
+//   目录」两种（会话的 cwd 没回传到界面），但那一条留给以后。
 // ═══════════════════════════════════════════════════════════
 
 function newSessionId() {
@@ -1449,6 +1477,447 @@ function newSessionId() {
 let sessionId = restore('jl-session') || newSessionId()
 remember('jl-session', sessionId)
 
+// ═══════════════════════════════════════════════════════════
+// 工作区：选一个目录，然后登记它
+// ═══════════════════════════════════════════════════════════
+
+/** 当前工作区 id。`null` = 没选，服务端用它自己的演示目录 */
+let workspaceId = restore('jl-workspace')
+/** 选目录对话框当前停在哪一层 */
+let browseAt = null
+
+/**
+ * 一次 API 调用。
+ *
+ * **错误一律是 JSON**（服务端那边统一过），所以这里能拿到 `error` 原文。
+ * 以前有的端点返纯文本、有的返 JSON，统一按 JSON 解析就会在出错时炸在
+ * 一个语法错误上，看不到真正的原因。
+ */
+async function api(path, opts) {
+  const res = await fetch(path, opts)
+  let body = {}
+  try {
+    body = await res.json()
+  } catch {
+    // 吞的是「响应体不是 JSON」。**不当成成功** —— 下面 `res.ok` 为假时
+    // 会带着状态码报出来，而不是把一个空对象当结果用
+  }
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+  return body
+}
+
+/** 「3 分钟前」这种。会话列表按时间排，读的人要能一眼比出来 */
+function ago(ms) {
+  if (!ms) return ''
+  const s = Math.max(0, (Date.now() - ms) / 1000)
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
+}
+
+async function loadWorkspaces() {
+  try {
+    const { workspaces } = await api('/api/workspaces')
+    state.workspaces = workspaces
+    // 记住的那个可能已经被删了 —— 那就退回「没选」，而不是拿着一个
+    // 服务端不认识的 id 一路 404
+    if (workspaceId && !workspaces.some((w) => w.id === workspaceId)) {
+      workspaceId = null
+      remember('jl-workspace', '')
+    }
+  } catch (err) {
+    console.error('读工作区失败', err)
+    state.workspaces = []
+  }
+  renderWorkspace()
+}
+
+function renderWorkspace() {
+  const cur = state.workspaces.find((w) => w.id === workspaceId)
+  $('ws-name').textContent = cur ? cur.title : '演示目录'
+  // 没选工作区时**不假装**它是一个工作区 —— 服务端自己造了个临时目录，
+  // 那不是用户选的，说清楚
+  $('ws-path').textContent = cur
+    ? `${cur.path}${cur.exists ? '' : '  ⚠ 目录不在了'}`
+    : '服务端自动创建，未登记'
+  renderWsMenu()
+}
+
+/**
+ * 从列表里移除一个工作区。
+ *
+ * **只从列表里去掉，不碰磁盘上的目录** —— 服务端那一侧的 `remove` 也是
+ * 这么做的，按钮的 title 写明了，免得有人以为它在删文件。
+ */
+async function forgetWorkspace(id) {
+  try {
+    await api(`/api/workspaces?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+  } catch (err) {
+    console.error('移除工作区失败', err)
+    return
+  }
+  if (workspaceId === id) {
+    workspaceId = null
+    remember('jl-workspace', '')
+  }
+  await loadWorkspaces()
+}
+
+function renderWsMenu() {
+  const menu = $('ws-menu')
+  if (menu.hidden) return
+  menu.replaceChildren(
+    ...(state.workspaces.length
+      ? state.workspaces.map((w) =>
+          h(
+            'div',
+            { class: `ws-item${w.id === workspaceId ? ' on' : ''}${w.exists ? '' : ' gone'}` },
+            h(
+              'button',
+              {
+                class: 'ws-item-main',
+                type: 'button',
+                onclick: () => {
+                  workspaceId = w.id
+                  remember('jl-workspace', w.id)
+                  menu.hidden = true
+                  $('ws-current').setAttribute('aria-expanded', 'false')
+                  renderWorkspace()
+                  void loadSessions()
+                },
+              },
+              h('span', { class: 'ws-item-name' }, w.title),
+              h('span', { class: 'ws-item-path' }, w.path),
+              // 目录不在了就**当场说**，不要等选中之后跑起来才报错
+              ...(w.exists ? [] : [h('span', { class: 'ws-item-gone' }, '⚠ 目录不在了')]),
+            ),
+            h('button', {
+              class: 'ws-item-del',
+              type: 'button',
+              title: '从列表里移除（不删目录）',
+              'aria-label': '从列表里移除',
+              onclick: (ev) => {
+                ev.stopPropagation()
+                void forgetWorkspace(w.id)
+              },
+            }, '×'),
+          ),
+        )
+      : [h('div', { class: 'ws-empty' }, '还没有登记过目录')]),
+  )
+}
+
+$('ws-current').addEventListener('click', () => {
+  const menu = $('ws-menu')
+  menu.hidden = !menu.hidden
+  $('ws-current').setAttribute('aria-expanded', String(!menu.hidden))
+  renderWsMenu()
+})
+
+$('ws-add').addEventListener('click', () => void openPicker())
+
+// ── 会话列表 ───────────────────────────────────────────────
+
+async function loadSessions() {
+  try {
+    const { sessions } = await api('/api/sessions')
+    state.sessions = sessions
+  } catch (err) {
+    console.error('读会话列表失败', err)
+    state.sessions = []
+  }
+  renderSessions()
+}
+
+function renderSessions() {
+  const box = $('sess-list')
+  if (!state.sessions.length) {
+    box.replaceChildren(h('div', { class: 'empty' }, '还没有会话'))
+    return
+  }
+  box.replaceChildren(
+    ...state.sessions.map((s) =>
+      h(
+        'div',
+        {
+          class: `sess-item${s.id === sessionId ? ' on' : ''}`,
+          role: 'button',
+          tabindex: '0',
+          onclick: () => void openSession(s.id),
+          onkeydown: (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') void openSession(s.id)
+          },
+        },
+        h(
+          'div',
+          { class: 'sess-body' },
+          h('span', { class: 'sess-title' }, s.firstPrompt || '（空会话）'),
+          h('span', { class: 'sess-meta' }, `${s.turns} 轮 · ${ago(s.updatedAt)}${s.skipped ? ' · ⚠ 有读不出的行' : ''}`),
+        ),
+        h('button', {
+          class: 'sess-del',
+          type: 'button',
+          title: '删除这个会话',
+          'aria-label': '删除这个会话',
+          onclick: (ev) => {
+            ev.stopPropagation()
+            void removeSession(s.id)
+          },
+        }, '×'),
+      ),
+    ),
+  )
+}
+
+/**
+ * 切到另一个会话。
+ *
+ * **连服务端的正文一起读回来** —— 会话是落盘的，刷新页面也该看得到。
+ * 以前这里只换 id，界面永远是空的，而服务端一直存着。
+ */
+async function openSession(id) {
+  if (state.running || id === sessionId) return
+  sessionId = id
+  remember('jl-session', id)
+  await restoreConversation()
+  renderSessions()
+}
+
+async function removeSession(id) {
+  if (state.running) return
+  try {
+    await api(`/api/sessions?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+  } catch (err) {
+    console.error('删会话失败', err)
+    return
+  }
+  // 删掉的正是当前这段 → 换一段新的，否则界面还显示着一段已经不存在的对话
+  if (id === sessionId) await startFreshSession()
+  else await loadSessions()
+}
+
+/**
+ * 把那一段对话读回来铺到屏幕上。
+ *
+ * ★ **只有问答，没有过程。** 过程（判定、工具调用、生成）是**这次运行**
+ *   的事件，从来没有落盘 —— `SessionStore` 存的就是问答。所以恢复出来
+ *   的每一轮只有正文，而轨迹是空的。这一点要说出来，不能让一个「看起来
+ *   完整、其实少了半截」的界面冒充完整（§8.10）。
+ */
+async function restoreConversation() {
+  turns.length = 0
+  current = null
+  chat.replaceChildren()
+  turnMarks.length = 0
+  railEls = []
+  syncTurnRail()
+
+  let restored = []
+  try {
+    const r = await api(`/api/session?id=${encodeURIComponent(sessionId)}`)
+    restored = r.turns ?? []
+  } catch (err) {
+    console.error('读会话失败', err)
+  }
+
+  if (!restored.length) {
+    chat.replaceChildren(h('div', { class: 'empty' }, '说点什么，它会边判定边做。'))
+    return
+  }
+  for (const t of restored) restoredTurn(t.task, t.answer)
+  chat.append(
+    h('div', { class: 'restored-note' }, `以上 ${restored.length} 轮是恢复出来的：只有问答，当时的过程没有落盘。`),
+  )
+  followTail()
+}
+
+/** 恢复出来的一轮。没有过程行，所以和实时那一轮长得不一样 —— 这是诚实的 */
+function restoredTurn(task, answer) {
+  chat.append(h('div', { class: 'msg-user' }, h('div', { class: 'bubble' }, task)))
+  chat.append(h('div', { class: 'msg-assistant restored' }, h('div', { class: 'answer' }, answer)))
+  turns.push({ task, answer })
+}
+
+$('sess-new').addEventListener('click', () => void startFreshSession())
+
+// ═══════════════════════════════════════════════════════════
+// 选目录
+//
+// 形状抄 DSH 的 browse 后端（`ui-directory-picker-browse`）：
+//
+//   · **只列目录** —— 这是选目录，不是文件浏览器
+//   · **面包屑每一节都可跳** —— 它是导航，不是装饰
+//   · **每个条目带绝对路径**，界面不自己拼 `../` —— 拼路径是路径穿越
+//     最容易发生的地方，把它全留在服务端
+//   · **可以就地新建子目录** —— 没有它，用户得切到终端建完再回来
+//
+// 服务端那边有一道守卫：绑到非回环地址时这些端点直接拒绝（能浏览本机
+// 文件系统 = 能在这台机器上跑命令）。所以这里要**如实显示**那条 403。
+// ═══════════════════════════════════════════════════════════
+
+async function openPicker() {
+  $('picker-mask').hidden = false
+  $('picker-note').textContent = ''
+  $('picker-note').className = 'picker-note'
+  $('picker-new').value = ''
+  await browseTo(null) // 不传路径 = 家目录，起点不该是服务端的 cwd
+}
+
+function closePicker() {
+  $('picker-mask').hidden = true
+  browseAt = null
+}
+
+$('picker-x').addEventListener('click', closePicker)
+// 点遮罩关掉。**只在点遮罩本身时** —— 点对话框内部不该关
+$('picker-mask').addEventListener('click', (ev) => {
+  if (ev.target === $('picker-mask')) closePicker()
+})
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !$('picker-mask').hidden) closePicker()
+})
+
+/** 跳到某一层。`path` 为 null 就是家目录 */
+async function browseTo(path) {
+  let d
+  try {
+    d = await api(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`)
+  } catch (err) {
+    // 403 是服务端绑到了非回环地址 —— 那条消息本身就是给用户看的，
+    // 原样显示，不要换一句「出错了」
+    $('picker-note').textContent = err.message
+    $('picker-note').className = 'picker-note err'
+    return
+  }
+  browseAt = d
+  renderPicker()
+}
+
+function renderPicker() {
+  if (!browseAt) return
+  const d = browseAt
+
+  // 面包屑：从根到当前，每一节都是跳转目标
+  const crumbs = []
+  for (const [i, c] of d.crumbs.entries()) {
+    if (i) crumbs.push(h('span', { class: 'crumb-sep' }, '/'))
+    crumbs.push(
+      h('button', {
+        class: `crumb${i === d.crumbs.length - 1 ? ' last' : ''}`,
+        type: 'button',
+        onclick: () => void browseTo(c.path),
+      }, c.name),
+    )
+  }
+  // 「家」是常用的落点，单独给一个 —— 从根一层层点回来太费事
+  if (d.path !== d.home) {
+    crumbs.unshift(
+      h('button', { class: 'crumb', type: 'button', onclick: () => void browseTo(d.home) }, '家'),
+      h('span', { class: 'crumb-sep' }, '·'),
+    )
+  }
+  $('picker-crumbs').replaceChildren(...crumbs)
+
+  $('picker-entries').replaceChildren(
+    ...(d.entries.length
+      ? d.entries.map((e) =>
+          h(
+            'button',
+            {
+              class: `entry${e.hidden ? ' hidden-dir' : ''}`,
+              type: 'button',
+              // 双击进目录太隐蔽，单击就进 —— 选是底部那个按钮的事
+              onclick: () => void browseTo(e.path),
+            },
+            h('span', { class: 'entry-icon' }, e.hidden ? '·' : '▸'),
+            h('span', { class: 'entry-name' }, e.name),
+          ),
+        )
+      : [h('div', { class: 'ws-empty' }, '这一层没有子目录')]),
+  )
+
+  /*
+    ★ **路径永远显示，截断警告是加在它后面的第二句。**
+
+    以前这两件事是二选一：截断了就只显示警告，于是**你在哪一层看不见了**
+    —— 而 `/tmp` 刚好就有 500 多个子目录（实测），也就是说这个「少见情形」
+    在最常见的一个目录上就会发生。两个都该说的时候，一个不能挤掉另一个。
+  */
+  const note = $('picker-note')
+  note.replaceChildren(
+    h('span', {}, d.path),
+    ...(d.truncated
+      ? [h('span', { class: 'warn' }, '　子目录太多，只列了前 500 个（按名字排序）—— 里面没有就往下新建')]
+      : []),
+  )
+  note.className = 'picker-note'
+}
+
+async function mkDir() {
+  const name = $('picker-new').value.trim()
+  if (!name || !browseAt) return
+  let created
+  try {
+    const r = await api('/api/workspaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: browseAt.path, newDir: name }),
+    })
+    created = r.newDirPath
+  } catch (err) {
+    $('picker-note').textContent = err.message
+    $('picker-note').className = 'picker-note err'
+    return
+  }
+  $('picker-new').value = ''
+  /*
+    ★ **新建之后直接进那一层。**
+
+    这一步和 DSH 不一样，是**有意的**。它有两栏（列表 + 选中项），所以
+    新建之后停在父目录、把新目录当成**选中项**是对的 —— 列表和选中是
+    两件事。我们只有一栏，「列出的那一层就是你要选的那一层」是唯一的
+    规则；照搬 DSH 会造出一个「选中了但没进去」的状态，而那个状态在这
+    一栏里没法表达。
+
+    进入之后「新建 → 用这个目录」是两步；停在父目录的话要三步。
+    建一个目录的意图，绝大多数时候就是「我要用它」。
+  */
+  await browseTo(created ?? browseAt.path)
+}
+
+$('picker-mk').addEventListener('click', () => void mkDir())
+$('picker-new').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault()
+    void mkDir()
+  }
+})
+
+/** 用当前这一层。登记是**幂等**的，所以同一个目录再登记一次不会出问题 */
+async function useCurrentDir() {
+  if (!browseAt) return
+  let r
+  try {
+    r = await api('/api/workspaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: browseAt.path }),
+    })
+  } catch (err) {
+    $('picker-note').textContent = err.message
+    $('picker-note').className = 'picker-note err'
+    return
+  }
+  workspaceId = r.workspace.id
+  remember('jl-workspace', workspaceId)
+  closePicker()
+  await loadWorkspaces()
+  await loadSessions()
+}
+
+$('picker-pick').addEventListener('click', () => void useCurrentDir())
+
 // 跟随系统，除非用户手动选过
 const saved = restore('jl-theme')
 applyTheme(saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches)
@@ -1457,3 +1926,8 @@ selectView(VIEWS.includes(savedView) ? savedView : 'chat')
 loadSpec()
 renderLegend()
 syncToBottom()
+// 工作区和会话都要**从服务端读回来**。以前这两样刷新就没了 ——
+// 会话一直在盘上，只是界面从来没去读
+void loadWorkspaces()
+void loadSessions()
+void restoreConversation()

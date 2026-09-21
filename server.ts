@@ -24,7 +24,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFile, mkdtemp, writeFile } from 'node:fs/promises'
+import { readFile, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -435,6 +435,21 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 /**
+ * 这个路径现在还是个目录吗。
+ *
+ * 空 catch 说明：吞的是「stat 失败」= 不存在或读不到 —— 对这个调用方
+ * 来说两者是同一件事（**不能在这儿跑**），而具体原因由运行失败时的
+ * 工具错误去说。
+ */
+async function isDir(p: string): Promise<boolean> {
+  try {
+    return (await stat(p)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
  * 这次跑在哪个目录。
  *
  * `?workspace=<id>` 优先；没有就退回启动参数那条路（`CWD_ROOT`，或者
@@ -451,6 +466,11 @@ async function resolveRunCwd(url: URL): Promise<string> {
       id,
       `没有 id 为 ${id} 的工作区 —— 界面可能还拿着一个已经被移除的，刷新即可`,
     )
+  }
+  // 登记过不等于还在。**当场拒绝，不要进去再让工具层报「读不到 .」** ——
+  // 那条消息和真正的原因（这个目录被删了）差着好几层
+  if (!(await isDir(ws.path))) {
+    throw new WorkspaceError('unreadable', ws.path, `工作区「${ws.title}」的目录不在了：${ws.path}`)
   }
   return ws.path
 }
@@ -537,18 +557,34 @@ async function handleWorkspaces(req: IncomingMessage, res: ServerResponse, url: 
   if (refusal) return sendJson(res, 403, { error: refusal })
 
   try {
-    if (req.method === 'GET') return sendJson(res, 200, { workspaces: await workspaces.list() })
+    if (req.method === 'GET') {
+      /*
+        每条带上**目录还在不在**。
+
+        ★ 这是实测撞出来的：登记过的目录会被删掉（用户自己删、临时目录被
+          系统清），而列表照旧显示它们 —— 选中之后在一个不存在的地方跑
+          任务，报出来的是工具层的「读不到 .」，看不出真正的原因。
+
+        代价是每条一次 `stat`。几十条的量级无所谓。
+      */
+      const all = await workspaces.list()
+      const withExists = await Promise.all(
+        all.map(async (w) => ({ ...w, exists: await isDir(w.path) })),
+      )
+      return sendJson(res, 200, { workspaces: withExists })
+    }
 
     if (req.method === 'POST') {
       const body = await readJsonBody(req)
       const path = typeof body.path === 'string' ? body.path : ''
       // `mkdir` 让界面能在浏览到的目录下就地新建一个 —— 没有它，用户
-      // 得先切到终端建目录再回来
-      if (typeof body.newDir === 'string' && body.newDir) {
-        await createDir(path, body.newDir)
-      }
+      // 得先切到终端建目录再回来。
+      // 把**建出来的路径**回给界面：界面据此进入那一层（见 `mkDir()`）
+      const newDirPath =
+        typeof body.newDir === 'string' && body.newDir ? await createDir(path, body.newDir) : undefined
       const title = typeof body.title === 'string' ? body.title : undefined
-      return sendJson(res, 200, await workspaces.create(path, title))
+      const out = await workspaces.create(path, title)
+      return sendJson(res, 200, newDirPath ? { ...out, newDirPath } : out)
     }
 
     if (req.method === 'PATCH') {

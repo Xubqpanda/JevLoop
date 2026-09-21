@@ -11,10 +11,39 @@
   </head>
   <body>
     <div class="frame">
-      <!-- ── 左：这份 agent 的判定规格 ────────────────────── -->
+      <!--
+        ── 左：导航 ────────────────────────────────────────
+
+        工作区 → 会话两级，抄 DSH 的侧边栏（`ui-sidebar` + `ui-workspace`）。
+        判定规格原来在这一栏，搬去了中栏的「规格」页 —— 侧边栏是**导航**，
+        把一份要读的文档混在导航里，两件事都做不好。
+      -->
       <aside class="pane side">
-        <h2 class="section-title">DECISION.md</h2>
-        <div id="spec"><div class="empty">读取中…</div></div>
+        <!--
+          工作区：当前那个 + 一个切换菜单。没有工作区时显示「演示目录」——
+          服务端没设 CWD_ROOT 时它自己造一个临时目录，那不是用户选的，
+          所以不假装它是。
+        -->
+        <div class="ws-bar">
+          <button class="ws-current" id="ws-current" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ws-dot" aria-hidden="true"></span>
+            <span class="ws-text">
+              <span class="ws-name" id="ws-name">读取中…</span>
+              <span class="ws-path" id="ws-path"></span>
+            </span>
+            <span class="ws-caret" aria-hidden="true">▾</span>
+          </button>
+          <button class="ws-add" id="ws-add" title="添加工作区（选一个目录）" aria-label="添加工作区">+</button>
+        </div>
+        <div class="ws-menu" id="ws-menu" role="listbox" hidden></div>
+
+        <div class="sess-head">
+          <h2 class="section-title">会话</h2>
+          <button class="sess-new" id="sess-new" title="新会话" aria-label="新会话">+</button>
+        </div>
+        <div class="sess-list" id="sess-list">
+          <div class="empty">还没有会话</div>
+        </div>
 
         <!--
           图例的行不写死在这里 —— 由 app.js 的 renderLegend() 按 EVENT_META 生成。
@@ -30,6 +59,28 @@
           <h2 class="section-title">图例</h2>
           <div id="legend-rows"></div>
         </div>
+
+        <!--
+          选目录的对话框。**形状抄 DSH 的 browse 后端**（
+          `ui-directory-picker-browse`）：面包屑每一节可跳、只列目录、
+          每个条目带绝对路径、可以就地新建子目录。
+        -->
+        <div class="picker-mask" id="picker-mask" hidden>
+          <div class="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+            <div class="picker-head">
+              <span id="picker-title">选一个目录</span>
+              <button class="picker-x" id="picker-x" aria-label="关闭">×</button>
+            </div>
+            <div class="picker-crumbs" id="picker-crumbs"></div>
+            <div class="picker-entries" id="picker-entries"></div>
+            <div class="picker-note" id="picker-note"></div>
+            <div class="picker-foot">
+              <input class="picker-new" id="picker-new" placeholder="在这里新建子目录…" spellcheck="false" />
+              <button class="picker-mk" id="picker-mk">新建</button>
+              <button class="picker-pick" id="picker-pick">用这个目录</button>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <!-- ── 中：对话 / 轨迹 ──────────────────────────────── -->
@@ -39,6 +90,7 @@
           <div class="tabs" role="tablist" aria-label="视图">
             <button class="tab" role="tab" id="tab-chat" data-view="chat" aria-selected="true">对话</button>
             <button class="tab" role="tab" id="tab-trace" data-view="trace" aria-selected="false">轨迹</button>
+            <button class="tab" role="tab" id="tab-spec" data-view="spec" aria-selected="false">规格</button>
           </div>
           <div class="header-right">
             <!-- 四个计数就是全部主张：判定很多次，模型很少次 -->
@@ -94,6 +146,17 @@
               </div>
             </div>
           </form>
+        </section>
+
+        <!--
+          规格：这份 agent 会问哪些问题。**从服务端读 DECISION.md 的解析结果**
+          —— 它和 `src/decisions.ts` 是同一份东西的两面，测试盯着它们不许分叉。
+        -->
+        <section class="view" id="view-spec" role="tabpanel" aria-labelledby="tab-spec" hidden>
+          <div class="spec-pane">
+            <h2 class="section-title">DECISION.md</h2>
+            <div id="spec"><div class="empty">读取中…</div></div>
+          </div>
         </section>
 
         <!-- 轨迹：和对话看的是同一串事件，只是不折叠 -->

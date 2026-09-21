@@ -86,10 +86,529 @@ body {
 }
 
 .pane.side {
-  overflow: hidden auto;
+  /*
+    三段的列：工作区（固定）→ 会话列表（滚动）→ 图例（固定底部）。
+    以前这里是整栏一起滚，加了会话列表之后那样不行 —— 列表长起来会把
+    图例顶出屏幕，而图例是**钥匙**，读轨迹时要一直在。
+  */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 14px 12px;
   background: var(--jl-specific-sidebar-fill);
   border-right: 0.5px solid var(--jl-alias-border-l3);
+}
+
+/* ── 工作区 ───────────────────────────────────────────────── */
+
+.ws-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: none;
+}
+
+.ws-current {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.ws-current:hover,
+.ws-current[aria-expanded='true'] {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+/* 圆点只是个「已选」的记号，不用颜色编码状态 */
+.ws-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--jl-kind-decide-fg);
+}
+
+.ws-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ws-name {
+  font-size: var(--jl-font-size-sm);
+  font-weight: 600;
+  color: var(--jl-alias-label-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 路径要能看清尾段 —— 头和尾都有信息，所以中间截断 */
+.ws-path {
+  font-family: var(--jl-font-mono);
+  font-size: 10px;
+  line-height: 13px;
+  color: var(--jl-alias-label-caption);
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-caret {
+  flex: none;
+  font-size: 9px;
+  color: var(--jl-alias-label-caption);
+}
+
+.ws-add,
+.sess-new {
+  flex: none;
+  width: 26px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  background: none;
+  color: var(--jl-alias-label-tertiary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ws-add:hover,
+.sess-new:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+  color: var(--jl-alias-label-primary);
+}
+
+/* 工作区切换菜单 */
+.ws-menu {
+  flex: none;
+  margin-top: 4px;
+  padding: 4px;
+  border-radius: var(--jl-radius);
+  background: var(--jl-alias-bg-layer-1);
+  box-shadow: var(--jl-elevation-panel);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ws-menu[hidden] {
+  display: none;
+}
+
+.ws-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--jl-radius-sm);
+}
+
+.ws-item:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+.ws-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 4px 6px 8px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 目录不在了 —— 灰掉并挂一句，不要等选中跑起来才报错 */
+.ws-item.gone .ws-item-name,
+.ws-item.gone .ws-item-path {
+  color: var(--jl-alias-label-caption);
+}
+
+.ws-item-gone {
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--jl-alias-state-warn-label);
+}
+
+.ws-item-del {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--jl-alias-label-caption);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.ws-item:hover .ws-item-del,
+.ws-item-del:focus-visible {
+  opacity: 1;
+}
+
+.ws-item-del:hover {
+  background: var(--jl-alias-interactive-bg-hover-danger);
+  color: var(--jl-alias-state-error-primary);
+}
+
+.ws-item.on .ws-item-name {
+  color: var(--jl-kind-decide-fg);
+}
+
+.ws-item-name {
+  font-size: var(--jl-font-size-caption);
+  font-weight: 600;
+  color: var(--jl-alias-label-secondary);
+}
+
+.ws-item-path {
+  font-family: var(--jl-font-mono);
+  font-size: 10px;
+  color: var(--jl-alias-label-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-empty {
+  padding: 8px;
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-alias-label-caption);
+}
+
+/* ── 会话列表 ─────────────────────────────────────────────── */
+
+.sess-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.sess-head .section-title {
+  flex: 1;
+  margin: 0;
+}
+
+.sess-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.sess-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--jl-radius-sm);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sess-item:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+.sess-item.on {
+  background: var(--jl-alias-state-business-tertiary);
+}
+
+.sess-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sess-title {
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sess-item.on .sess-title {
+  color: var(--jl-alias-state-business-primary);
+  font-weight: 600;
+}
+
+.sess-meta {
+  font-family: var(--jl-font-mono);
+  font-size: 10px;
+  color: var(--jl-alias-label-caption);
+}
+
+/* 删除按钮平时不出现 —— 列表是拿来点的，不是拿来删的 */
+.sess-del {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--jl-alias-label-caption);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.sess-item:hover .sess-del,
+.sess-del:focus-visible {
+  opacity: 1;
+}
+
+.sess-del:hover {
+  background: var(--jl-alias-interactive-bg-hover-danger);
+  color: var(--jl-alias-state-error-primary);
+}
+
+/* ── 规格页 ───────────────────────────────────────────────── */
+
+.spec-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px calc(var(--jl-composer-side-clearance) + 16px);
+}
+
+/*
+  恢复出来的一轮：**只有正文，没有过程行**。
+  和实时那一轮长得不一样是刻意的 —— 当时的判定和工具调用没有落盘，
+  画一个「看起来完整」的壳会让少掉的那半截无从察觉。
+*/
+.msg-assistant.restored {
+  padding-left: 12px;
+  border-left: 2px solid var(--jl-alias-border-l3);
+}
+
+.restored-note {
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-alias-bg-module-platform);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--jl-alias-label-caption);
+}
+
+/* ── 选目录对话框 ─────────────────────────────────────────── */
+
+.picker-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--jl-alias-bg-mask-1);
+}
+
+.picker-mask[hidden] {
+  display: none;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(560px, calc(100vh - 96px));
+  border-radius: var(--jl-radius);
+  background: var(--jl-alias-bg-layer-1);
+  box-shadow: var(--jl-elevation-prominent);
+  overflow: hidden;
+}
+
+.picker-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 0.5px solid var(--jl-alias-border-l1);
+  font-size: var(--jl-font-size);
+  font-weight: 600;
+  color: var(--jl-alias-label-primary);
+}
+
+.picker-x {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  background: none;
+  color: var(--jl-alias-label-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.picker-x:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+/* 面包屑：每一节都是跳转目标 —— 它是导航，不是装饰 */
+.picker-crumbs {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 14px;
+  border-bottom: 0.5px solid var(--jl-alias-border-l1);
+}
+
+.crumb {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--jl-alias-label-tertiary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.crumb:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+  color: var(--jl-alias-label-primary);
+}
+
+.crumb.last {
+  color: var(--jl-alias-label-primary);
+  font-weight: 600;
+}
+
+.crumb-sep {
+  color: var(--jl-alias-label-caption);
+  font-size: 10px;
+}
+
+.picker-entries {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry:hover {
+  background: var(--jl-alias-interactive-bg-hover);
+}
+
+.entry-icon {
+  flex: none;
+  color: var(--jl-alias-label-caption);
+  font-size: 12px;
+}
+
+.entry-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entry.hidden-dir .entry-name {
+  color: var(--jl-alias-label-caption);
+}
+
+.picker-note {
+  flex: none;
+  padding: 0 14px 8px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--jl-alias-label-caption);
+}
+
+/* 警告是接在路径后面的第二句，不是一个替代它的东西 */
+.picker-note .warn {
+  color: var(--jl-alias-state-warn-label);
+}
+
+.picker-note.err {
+  color: var(--jl-alias-state-error-primary);
+}
+
+.picker-foot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 0.5px solid var(--jl-alias-border-l1);
+}
+
+.picker-new {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--jl-alias-border-l3);
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-alias-bg-base);
+  color: var(--jl-alias-label-primary);
+  font-family: inherit;
+  font-size: var(--jl-font-size-caption);
+}
+
+.picker-mk,
+.picker-pick {
+  flex: none;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--jl-radius-sm);
+  font-size: var(--jl-font-size-caption);
+  cursor: pointer;
+}
+
+.picker-mk {
+  background: var(--jl-alias-interactive-bg-hover);
+  color: var(--jl-alias-label-secondary);
+}
+
+.picker-pick {
+  background: var(--jl-alias-state-business-primary);
+  color: var(--jl-alias-label-primary-inverted);
+  font-weight: 600;
 }
 
 .pane.aside {
