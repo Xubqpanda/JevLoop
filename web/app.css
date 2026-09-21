@@ -72,10 +72,47 @@ body {
   background: var(--jl-alias-bg-base);
 }
 
+/*
+  窄屏：三栏竖排，页面滚动，轨迹的详情面板收起来。
+
+  ★ **`grid-template-rows` 必须跟着改。**
+
+  上面 `.frame` 是「三列 × 一行」，行高 `100%`。这里只改列不改行的话，
+  变成「一列 × 三行」之后 **第一行仍然吃掉 100% 的高度**，后面两行塌成
+  **0**。
+
+  实测（2026-09-21，1024px）：
+
+      side    top=0    bottom=800   高=800   ← 左栏独占整个高度
+      center  top=800  bottom=800   高=0     ← ★ 对话区完全看不见
+      aside   top=800  bottom=828   高=28
+
+  也就是说**窗口窄于 1080px 时，这个界面用不了** —— 连标签都点不到
+  （它在一个高度为 0 的面板里）。修的时候顺带发现，不是用户报的那个，
+  但比那个严重。
+*/
 @media (max-width: 1080px) {
   .frame {
     grid-template-columns: minmax(0, 1fr);
-    overflow: auto;
+    /* 每行按内容，帧本身让页面滚 */
+    grid-template-rows: auto;
+    height: auto;
+    min-height: 100%;
+  }
+
+  /* 竖排之后每一栏要自己带高度 —— 否则对话栏会被内容撑成任意高 */
+  .pane.side {
+    max-height: 55vh;
+  }
+  .pane.center {
+    min-height: 85vh;
+  }
+  .pane.aside {
+    max-height: 55vh;
+  }
+
+  .details {
+    display: none;
   }
 }
 
@@ -1303,10 +1340,29 @@ body {
   white-space: nowrap;
 }
 
-/* 事件列窄而右对齐，内容列吃掉剩下的 —— DSH 的 122px */
-/* 事件列：36px 左留白（给步骤徽章和竖线）+ 76px 右对齐的徽章槽 —— DSH 的几何 */
+/*
+  ══════════════════════════════════════════════════════════════
+  事件列：36px 左留白（给步骤徽章和竖线）+ 76px 右对齐的徽章槽。
+
+  ★ **宽度 122px 是照抄 DSH 的，而 DSH 的节点名比我们的短得多。**
+
+  实测（2026-09-21，用户报的「轨迹里文字重叠」）：
+
+      122 − 36 − 4 = 82px 可用，而徽章槽**自己就占 76px**
+      → 只剩 6px 给节点 id，而 `loop.needsTool` 要 92px
+
+  溢出**不裁**（`table-layout: fixed` 只是不让列变宽，不会裁内容），于是
+  节点 id 直接压到内容列的文字上。量出来 **24/25 行重叠 40–86px**。
+
+  我们的列宽要按**我们的 id** 算：
+
+      36(左留白) + 76(徽章槽) + 5(间距) + 100(最长的 loop.canDeliver) + 4 = 221
+
+  取 224 留一点余量。内容列不写宽度，自动吃掉剩下的。
+  ══════════════════════════════════════════════════════════════
+*/
 .traj .col-event {
-  width: 122px;
+  width: 224px;
   padding-right: 4px;
   padding-left: 36px;
 }
@@ -1340,6 +1396,8 @@ body {
   justify-content: flex-start;
   min-width: 0;
   height: 100%;
+  /* 兜底：万一有个比 100px 还长的 id，**可见地截断**，不要压到隔壁列上 */
+  overflow: hidden;
 }
 
 .kind-slot {
@@ -1394,11 +1452,20 @@ body {
 }
 
 .event-id {
-  flex: none;
+  /*
+    `flex: 0 1 auto` 而不是 `none`：徽章槽是 `flex: none`（定宽 76px），
+    id 是那个**可以收缩**的部分。收缩时要能出省略号 —— 这是兜底，
+    200px 的列宽本来就装得下现在最长的 id（`loop.canDeliver`，99px）。
+  */
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: 5px;
+  overflow: hidden;
   color: var(--jl-alias-label-tertiary);
   font-family: var(--jl-font-mono);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 内容列 */
