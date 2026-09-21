@@ -16,7 +16,11 @@
  * SSE 是浏览器原生的、会自动重连的、用 GET 就能开的单向通道。
  * 双向通信在这个界面里没有任何用途。
  *
- * @module jevloop/server
+ * 会话落盘在 `JEVLOOP_HOME/sessions/`（默认 `~/.jevloop/`），规则见
+ * `src/session-store.ts`。**盘上全留，只在读给 agent 用时截到 `MAX_TURNS` 轮** ——
+ * 以前是内存里的一个 Map，重启就没了，而且界面上看不出来。
+ *
+ * @module JevLoop/server
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -24,7 +28,7 @@ import { readFile, mkdtemp, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 import { Decider } from './src/decide.ts'
 import { Meter } from './src/meter.ts'
@@ -34,6 +38,7 @@ import { loadEnv } from './src/env.ts'
 import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc.ts'
 import { compilePredicate } from './src/decision-compile.ts'
 import type { AgentEvent } from './src/events.ts'
+import { SessionStore, assertSessionId } from './src/session-store.ts'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = join(ROOT, 'web')
@@ -80,22 +85,26 @@ const DEFAULT_TASK = '列出工作目录里的文件，读取其中的 TypeScrip
 // 等内核收这个字段，接上只要一行。
 // ═══════════════════════════════════════════════════════════
 
-interface Turn {
-  task: string
-  answer: string
-}
 
 /** 每个会话保留的轮数。再多没有意义 —— 生成器的上下文不是无限的 */
 const MAX_TURNS = 12
 
 /**
- * 最多保留几个会话。
+ * 会话存在哪。
  *
- * 不设上限的话，每刷新一次页面就会留下一个永不释放的数组 ——
- * 一个演示服务不该能被这样撑爆。超出时丢**最久没动过**的那个
- * （Map 的迭代顺序就是插入顺序，删第一个即可）。
+ *     JEVLOOP_HOME/sessions/<id>.jsonl      默认 ~/.jevloop/sessions/
+ *
+ * 放**用户目录**而不是仓库里：会话是 agent 的状态，不是被分析的那个
+ * 工作区的状态。放进工作区的话，`list_dir` 会把它们列出来、`read_file`
+ * 能读到别的会话的对话。
+ *
+ * 上限**不再是「最多几个」**。以前是内存里的 LRU（`MAX_SESSIONS = 64`），
+ * 因为不设上限的话每刷新一次页面就多一个永不释放的数组。落了盘之后，
+ * 多出来的代价是磁盘而不是内存，而**悄悄删用户的会话**比占点磁盘糟 ——
+ * 所以改成看得见、删得掉（界面上有列表，`DELETE /api/sessions?id=`）。
  */
-const MAX_SESSIONS = 64
+const JEVLOOP_HOME = process.env.JEVLOOP_HOME ?? join(homedir(), '.jevloop')
+const store = new SessionStore(join(JEVLOOP_HOME, 'sessions'))
 
 /**
  * 生成器**现在能不能看到上文**，如实报给界面。
@@ -111,30 +120,16 @@ const MAX_SESSIONS = 64
  */
 const MEMORY_WIRED = true
 
-const SESSIONS = new Map<string, Turn[]>()
-
-function sessionOf(id: string): Turn[] {
-  const key = id || 'default'
-  const existing = SESSIONS.get(key)
-  if (existing) {
-    // 重新插入 = 移到队尾，这样它不会是下一个被丢掉的
-    SESSIONS.delete(key)
-    SESSIONS.set(key, existing)
-    return existing
-  }
-  const fresh: Turn[] = []
-  SESSIONS.set(key, fresh)
-  if (SESSIONS.size > MAX_SESSIONS) {
-    const oldest = SESSIONS.keys().next().value
-    if (oldest !== undefined) SESSIONS.delete(oldest)
-  }
-  return fresh
-}
-
-function recordTurn(id: string, task: string, answer: string): void {
-  const turns = sessionOf(id)
-  turns.push({ task, answer })
-  if (turns.length > MAX_TURNS) turns.splice(0, turns.length - MAX_TURNS)
+/**
+ * 会话 id 来自 query，会变成文件名 —— 不合法就拒绝，**不静默换一个**。
+ *
+ * 抛出去会被下面的 `handleRun` 兜住（它已经有 try/catch），报成一条
+ * `halt: 'error'` 的 `run:end` —— 而不是拿一个别的会话跑一轮。
+ */
+function resolveSessionId(raw: string | null): string {
+  const id = raw?.trim() || 'default'
+  assertSessionId(id)
+  return id
 }
 
 /**
@@ -269,7 +264,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   const task = url.searchParams.get('task')?.trim() || DEFAULT_TASK
   const maxSteps = parseMaxSteps(url.searchParams.get('maxSteps'))
-  const session = url.searchParams.get('session') ?? 'default'
+  const session = resolveSessionId(url.searchParams.get('session'))
   const cwd = await workspaceRoot()
 
   const send = openStream(res)
@@ -285,14 +280,26 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   // 建在 try 外面：异常路径要报出**真实的**部分统计
   const meter = new Meter()
+  /**
+   * `run:end` 到了才会有 `answer` —— 它是「这一轮算数」的唯一信号。
+   *
+   * ★ 装在一个对象里而不是 `let finished: X | null`：TS 的控制流分析
+   *   看不见回调里的赋值，把 `finished` 一路收窄成 `null`，于是
+   *   `if (finished)` 之后的类型是 `never`。属性访问不受这个收窄影响。
+   */
+  const done: { answer?: string } = {}
 
   try {
     const provider = resolveProvider()
     const generator = resolveGenerator()
 
     // 会话就是上文。**在 runAgent 之前读** —— 这一轮自己的问答
-    // 要等跑完才记进去（见 `run:end` 那里），不该混进它自己的上文。
-    const history = sessionOf(session)
+    // 要等跑完才写进去（见下面那段），不该混进它自己的上文。
+    //
+    // ★ 只取最近 `MAX_TURNS` 轮，但**盘上一条都不少**：截断发生在读的这一侧，
+    //   不在写入那一侧。以前是 `turns.splice(0, ...)`，也就是把旧对话**销毁**，
+    //   而且没有任何地方记着丢过东西 —— 翻不回三天前那个会话里它答了什么。
+    const history = await store.load(session, MAX_TURNS)
     await runAgent({
       task,
       cwd,
@@ -319,11 +326,17 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       onAskHuman: async () => true,
       onEvent: (e) => {
         if (!clientGone) send(e)
-        // 只记真正跑完的那一轮。`run:end` 是唯一的完成信号，
-        // 中途断开时没有它 —— 那样这一轮不算数，免得存进一个空回答
-        if (e.type === 'run:end') recordTurn(session, task, e.answer)
+        // **不在这里写盘** —— `onEvent` 是同步的，而落盘是异步的。
+        // 先记下完成信号，等 `runAgent` 返回之后再写（见下面）。
+        if (e.type === 'run:end') done.answer = e.answer
       },
     })
+
+    // 只记真正跑完的那一轮。`run:end` 是唯一的完成信号 —— 中途断开、
+    // 或者生成后端抛异常时都没有它，那样这一轮不算数，免得存进一个空回答。
+    if (done.answer !== undefined) {
+      await store.append(session, { task, answer: done.answer, at: Date.now() }, { cwd })
+    }
   } catch (err) {
     if (!clientGone) {
       send({
@@ -347,27 +360,41 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 }
 
+/** 统一的 JSON 出口。`cache-control: no-store` —— 这些是**状态**，缓存没意义 */
+function sendJson(res: ServerResponse, code: number, body: unknown): void {
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(body))
+}
+
 /**
  * 会话的历史：GET 读，POST 清空。
  *
- * 界面刷新后能用它把对话恢复出来 —— 会话在服务端，不在浏览器里。
- *
- * 这里返回的 `turns` 现在**只用于显示**：生成器还看不到它（见「会话」一节）。
- * 所以别把它当成「agent 记得上文」的证据。
+ * 界面刷新后能用它把对话恢复出来 —— 会话落盘，不在浏览器里，也不在
+ * 服务进程的内存里（以前是后者，重启就没了）。
  */
-function handleSession(req: IncomingMessage, res: ServerResponse, url: URL): void {
-  const id = url.searchParams.get('id') ?? 'default'
-  const json = (code: number, body: unknown): void => {
-    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-    res.end(JSON.stringify(body))
-  }
-
+async function handleSession(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const id = resolveSessionId(url.searchParams.get('id'))
   if (req.method === 'POST') {
-    SESSIONS.delete(id)
-    json(200, { turns: [], memory: MEMORY_WIRED })
+    await store.remove(id)
+    sendJson(res, 200, { turns: [], memory: MEMORY_WIRED })
     return
   }
-  json(200, { turns: sessionOf(id), memory: MEMORY_WIRED })
+  sendJson(res, 200, { turns: await store.load(id), memory: MEMORY_WIRED })
+}
+
+/**
+ * 会话列表。**只回摘要，不回正文** —— 见 `SessionStore` 的模块头。
+ *
+ * `DELETE` 删一个会话。删是**看得见**的动作：界面上有列表，所以删掉
+ * 什么用户是知道的（对比以前那个悄悄丢最老会话的 LRU）。
+ */
+async function handleSessions(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (req.method === 'DELETE') {
+    const id = resolveSessionId(url.searchParams.get('id'))
+    sendJson(res, 200, { removed: await store.remove(id) })
+    return
+  }
+  sendJson(res, 200, { sessions: await store.list(), home: JEVLOOP_HOME })
 }
 
 /**
@@ -448,7 +475,11 @@ const server = createServer(async (req, res) => {
       return
     }
     if (url.pathname === '/api/session') {
-      handleSession(req, res, url)
+      await handleSession(req, res, url)
+      return
+    }
+    if (url.pathname === '/api/sessions') {
+      await handleSessions(req, res, url)
       return
     }
     await serveStatic(res, url.pathname)

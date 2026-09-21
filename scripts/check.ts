@@ -47,7 +47,7 @@ interface Violation {
   detail: string
 }
 
-const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts']
+const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts', 'server.ts']
 
 /**
  * `dir` 下的全部 TS 文件，**含子目录**。
@@ -212,6 +212,10 @@ const LAYER: Record<string, number> = {
   decide: 2,
   llm: 2,
   tools: 2,
+  // `session-store` 有 IO（读写盘），所以是 L2 而不是 L1。
+  // 它只认「一轮问答」这个形状，不认识 agent、不认识判定 —— 所以放在
+  // 接缝那一层，和 `llm` / `tools` 同级。
+  'session-store': 2,
   // L3 —— 编译器
   frame: 3,
   // 层号按**拆出来那半的依赖面有多小**定（同 context-prune 的先例）：

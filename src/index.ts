@@ -68,6 +68,8 @@ export { hasFileOptions, unreadFiles } from './frame.ts'
 export type { AgentCtx, StepRecord } from './frame.ts'
 
 // ── 环境 ─────────────────────────────────────────────────────
+export { SessionStore, assertSessionId, SESSION_FORMAT_VERSION } from './session-store.ts'
+export type { StoredTurn, SessionSummary } from './session-store.ts'
 export { loadEnv } from './env.ts'
 export type { LoadEnvOptions, LoadEnvResult } from './env.ts'
 
