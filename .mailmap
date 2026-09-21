@@ -1,0 +1,16 @@
+# 把 agent 提交身份和你的两个 GitHub 身份统一到一个作者名下。
+#
+# git log / git blame / git shortlog 会按这里显示作者；
+# GitHub 的 contributors 列表也认这个文件。
+# **不重写历史** —— commit SHA 一个都不变。
+#
+# 左边 = 显示用的身份，右边 = 被映射掉的。
+
+# agent 提交（提交时误传了 -c user.email 覆盖掉仓库配置）
+Xubqpanda <1227972384@qq.com> nanojev <dev@jev.local>
+Xubqpanda <1227972384@qq.com> jevos <dev@jevos.local>
+Xubqpanda <1227972384@qq.com> <dev@jev.local>
+Xubqpanda <1227972384@qq.com> <dev@jevos.local>
+
+# 你自己的 GitHub noreply 身份（GitHub 建仓库时的 Initial commit 用的）
+Xubqpanda <1227972384@qq.com> Genius_XBQ <113497109+Xubqpanda@users.noreply.github.com>
