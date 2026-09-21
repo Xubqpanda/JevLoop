@@ -17,7 +17,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -26,12 +26,20 @@ import { createDir, listDirs } from '../src/dir-browse.ts'
 import { WorkspaceStore } from '../src/workspace.ts'
 import { WorkspaceError, assertAbsolute } from '../src/vocab-workspace.ts'
 
-/** 造一个临时目录树，用完删掉 */
+/**
+ * 造一个临时目录树，用完删掉。
+ *
+ * 夹具先自己 `realpath`：被测代码会把传入路径规范化之后再返回
+ * （`dir-browse.ts` 和 `workspace.ts` 都如此 —— 符号链接必须解开），
+ * 而 macOS 的 `tmpdir()` 是 `/var → /private/var` 的软链，
+ * 夹具不规范化的话，「期望值和返回值相等」这类断言在 mac 上全挂。
+ * Linux 上 `/tmp` 不是软链，这里是空操作。要对齐的是测试，不是被测代码。
+ */
 async function withTree(
   build: (root: string) => Promise<void>,
   fn: (root: string) => Promise<void>,
 ): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'jevws-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'jevws-')))
   try {
     await build(root)
     await fn(root)
@@ -224,7 +232,9 @@ test('createDir 的父目录必须是绝对路径', async () => {
 // ═══════════════════════════════════════════════════════════
 
 async function withStore(fn: (store: WorkspaceStore, root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'jevws-store-'))
+  // 夹具先 `realpath` —— 理由同 `withTree`：macOS 的 tmpdir 是软链，
+  // 被测代码登记的是规范化后的路径
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'jevws-store-')))
   try {
     await fn(new WorkspaceStore(join(root, 'workspaces.json')), root)
   } finally {
