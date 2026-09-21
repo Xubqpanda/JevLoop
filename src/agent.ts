@@ -49,8 +49,14 @@ import {
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
-import { foldEvidence, priceGenerateRequest, EVIDENCE_POLICY, type ContextReport } from './context.ts'
-import { decisionEvent, type AgentObserver } from './events.ts'
+import {
+  foldEvidence,
+  priceGenerateRequest,
+  EVIDENCE_POLICY,
+  type ContextReport,
+  type RequestEstimate,
+} from './context.ts'
+import { decisionEvent, type AgentObserver, type BudgetLine, type RunBudget } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
 import { foldConversation, type ConversationReport } from './conversation.ts'
@@ -105,20 +111,32 @@ export interface AgentResult {
   ctx: AgentCtx
   meter: Meter
   /**
-   * 生成请求的上下文账目。**可能没有** —— 证据没超触发线时不做任何压缩，
-   * 那也是一种结果，但没什么可报的。
+   * 工具证据那块预算的账目。**总是有** —— 没超触发线时是一份
+   * 「什么都没做」的账（`acted: false`），那也是一条信息：
+   * 它告诉你**离触发线还有多远**。
    *
-   * 放在返回值里而不是只打日志：调用方（界面、测试）要能拿到
-   * 「这次压掉了什么」，而不是只能去解析 evidence 末尾那句散文。
+   * ★ 以前这里写的是「可能没有」，而代码从来都给它赋值（`evidence()`
+   *   无条件被调用）—— 文档和代码对不上。现在按代码的事实写，并且让
+   *   两份账目**统一**：`context` 和 `conversation` 都总是有。
+   *   界面要能回答「离触发线还剩多少」，而那要求没动手时也有账。
    */
-  context?: ContextReport
+  context: ContextReport
   /**
-   * 上文的折叠账目。和 `context` 是**两块独立的预算**（步 vs 轮），
-   * 所以各报各的 —— 合在一起就说不清是哪个超了。
+   * 上文那块预算的账目（单位是**轮**，不是步）。同样**总是有**。
    *
-   * 同样**可能没有**：没超触发线时不做任何折叠，那也是一种结果。
+   * 和 `context` 各报各的：两块是独立预算，合成一个数就说不清是哪个超了。
    */
-  conversation?: ConversationReport
+  conversation: ConversationReport
+  /**
+   * 这次生成请求的 token 构成 —— 证据 / 上文 / 本句各占多少。
+   *
+   * ★ **它一直算着，只是以前算完就扔了。** `priceGenerateRequest`
+   *   每次都返回四个数，而这里只用了合计（`controlTokens`）去填
+   *   `generate` 事件的 `estimatedInputTokens`，另外三个从未离开这个文件。
+   *   后果是界面上看得见「这次花了 5440 token（估）」，看不见
+   *   「这 5440 是什么构成的」—— 而后者才是能拿来调预算的那一半。
+   */
+  request: RequestEstimate
 }
 
 /**
@@ -365,17 +383,25 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
    * §8.10：被丢掉的东西要报出来，否则读起来就像"本来就这些"。
    */
   const EVIDENCE_INPUT_CHARS = 120
-  let lastEvidence: ContextReport | undefined
 
-  const evidence = (): string => {
+  /**
+   * 备好证据，并把账目**一起返回**。
+   *
+   * ★ 以前它只返回文本，账目写进一个外层的 `let lastEvidence`。那是
+   *   「调用多次、只留最后一次」的写法 —— 而它**只被调一次**（下面那段
+   *   注释解释了为什么必须只调一次）。副作用改成返回值之后，类型是确定的
+   *   （不再是 `ContextReport | undefined`），也不用再断言「它一定有值」。
+   */
+  const buildEvidence = (): { text: string; report: ContextReport } => {
     // `label` 是给折叠摘要用的短名字 —— `context.ts` 不认识工具，所以由这里给
     const parts = (ctx.history ?? []).map((x) => ({
       text: `${x.tool}(${clip(x.input, EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
       label: x.input ? `${x.tool}(${clip(x.input, 60)})` : x.tool,
     }))
     const { text, folds, report } = foldEvidence(parts, EVIDENCE_POLICY)
-    lastEvidence = report
-    // 只有真的动了才发 —— 没超触发线时什么都不做，那没什么可报的
+    // `context` 事件**仍然只在真的动手时发** —— 它是轨迹里的一条记录，
+    // 「什么都没做」不该占一行。而「没动手时也要看得见预算」由 `run:end`
+    // 上那份**每轮都发**的 `budget` 负责，两者分工不同。
     if (report.acted) {
       emit({
         type: 'context',
@@ -392,7 +418,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         })),
       })
     }
-    return text
+    return { text, report }
   }
 
   // ★ 证据**只算一次**。
@@ -403,7 +429,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   //   出现 4 条一模一样的账目。
   //
   //   循环已经结束，`ctx.history` 在两次生成之间不会变，所以一次就够。
-  const evidenceText = evidence()
+  const { text: evidenceText, report: evidenceReport } = buildEvidence()
   const evidenceEstimate = priceGenerateRequest({
     task: ctx.task,
     evidence: evidenceText,
@@ -477,18 +503,114 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     halt = `${halt}+${deliver.action}`
   }
 
-  emit({ type: 'run:end', halt, steps: step, answer: ctx.draft, stats: meter.stats })
+  emit({
+    type: 'run:end',
+    halt,
+    steps: step,
+    answer: ctx.draft,
+    stats: meter.stats,
+    budget: runBudget(evidenceReport, folded.report, evidenceEstimate),
+  })
   return {
     answer: ctx.draft,
     halt,
     steps: step,
     ctx,
     meter,
-    context: lastEvidence,
-    // 没折过就给 undefined，而不是一份「什么都没做」的账 ——
-    // 两者的区别是「不需要压」和「压了但压不动」，读的人要能分开（§8.10）。
-    conversation: folded.report.acted ? folded.report : undefined,
+    // 两份账目**都给**，不管有没有动手 —— 「没动手」本身是一条信息
+    // （离触发线还有多远），而「只报出事的那种」让正常运行里看不见预算。
+    context: evidenceReport,
+    conversation: folded.report,
+    request: evidenceEstimate,
   }
+}
+
+/**
+ * 把两块预算的报告 + 这次请求的 token 构成，压成事件和界面要的那一个形状。
+ *
+ * ── 为什么在这里映射，而不是让界面认两种报告 ────────────────────
+ *
+ * 两块报告的形状不同：一块数**步**（`ContextReport`，有 `prunedCount` /
+ * `foldedCount`），一块数**轮**（`ConversationReport`，有 `foldedTurns`）。
+ * 但界面要回答的是**同一组问题**：用了多少、线在哪、动手没有、动的是什么。
+ *
+ * 让界面去认两种形状，等于以后加第三块预算（比如决策帧）时还要改界面。
+ * 所以在这一层一次性映射：**新增一块预算，界面不用动**。
+ *
+ * @param evidence 工具证据那块（单位：步）
+ * @param conversation 上文那块（单位：轮）
+ * @param request 这次请求的 token 构成
+ */
+function runBudget(
+  evidence: ContextReport | undefined,
+  conversation: ConversationReport,
+  request: RequestEstimate,
+): RunBudget {
+  return {
+    // `evidence` 理论上有值（`evidence()` 无条件被调用），但这个函数是
+    // 纯映射、不该假设调用顺序，所以缺了就给一份全 0 的账而不是抛。
+    evidence: budgetLine(
+      evidence ?? {
+        rawChars: 0,
+        keptChars: 0,
+        prunedCount: 0,
+        foldedCount: 0,
+        triggerChars: 0,
+        retainChars: 0,
+        acted: false,
+        overRetain: false,
+      },
+      evidence ? noteForEvidence(evidence) : '',
+    ),
+    conversation: budgetLine(conversation, noteForConversation(conversation)),
+    request: {
+      evidence: request.evidenceTokens,
+      history: request.historyTokens,
+      task: request.taskTokens,
+      total: request.controlTokens,
+    },
+  }
+}
+
+/** 报告 → 事件形状。两块报告都有的那七个字段逐个搬 */
+function budgetLine(
+  r: {
+    rawChars: number
+    keptChars: number
+    triggerChars: number
+    retainChars: number
+    acted: boolean
+    overRetain: boolean
+  },
+  note: string,
+): BudgetLine {
+  return {
+    rawChars: r.rawChars,
+    keptChars: r.keptChars,
+    triggerChars: r.triggerChars,
+    retainChars: r.retainChars,
+    acted: r.acted,
+    overRetain: r.overRetain,
+    note,
+  }
+}
+
+/**
+ * 证据那一块动了什么。
+ *
+ * **没动手时返回 `''`**，而不是「未压缩」之类的字眼 —— 界面靠 `acted`
+ * 判断该说什么，再给一句同义的话只会多一处会漂移的地方。
+ */
+function noteForEvidence(r: ContextReport): string {
+  const bits: string[] = []
+  if (r.prunedCount > 0) bits.push(`剪了中间 ${r.prunedCount} 条`)
+  if (r.foldedCount > 0) bits.push(`折成摘要 ${r.foldedCount} 步`)
+  return bits.join(' · ')
+}
+
+/** 上文那一块动了什么。同样没动手就是 `''` */
+function noteForConversation(r: ConversationReport): string {
+  return r.foldedTurns > 0 ? `折成摘要 ${r.foldedTurns} 轮` : ''
 }
 
 /**

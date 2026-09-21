@@ -1263,6 +1263,121 @@ body {
   color: var(--jl-alias-label-tertiary);
 }
 
+/* ── 上下文账 ─────────────────────────────────────────────── */
+
+/*
+  两块**独立**预算的用法条（证据按步、上文按轮），条上那道刻度是目标线。
+
+  这一块存在的理由是「**离触发线还有多远**」：轨迹里那两个折叠事件
+  只在真的动手时才发，所以正常运行的预算感知本来是个零 —— 分不清
+  「证据 500 字符，离得很远」和「23000，就差一点」。
+*/
+.budget-block {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--jl-alias-border-l2);
+}
+
+.budget-title {
+  margin-bottom: 4px;
+  font-size: var(--jl-font-size-caption);
+  font-weight: 600;
+  color: var(--jl-alias-label-secondary);
+}
+
+.budget-hint {
+  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--jl-alias-label-tertiary);
+}
+
+.budget-row {
+  padding: 6px 0;
+}
+
+.budget-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--jl-font-size-caption);
+}
+
+.budget-k {
+  color: var(--jl-alias-label-secondary);
+}
+
+.budget-v {
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 用量条：底槽 + 已用 + 目标线刻度 */
+.budget-track {
+  position: relative;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--jl-alias-bg-module-platform);
+}
+
+.budget-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--jl-alias-border-l4);
+  transition: width 200ms ease;
+}
+
+/* 动过手就用审计那一档的灰 —— 和轨迹里「预算」徽章同一个色 */
+.budget-fill.acted {
+  background: var(--jl-kind-rule-fg);
+}
+
+/* 目标线的刻度，画在已用之上 */
+.budget-mark {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--jl-alias-label-secondary);
+}
+
+.budget-note {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--jl-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.budget-note.warn {
+  color: var(--jl-alias-state-warn-label);
+}
+
+/* 这次请求的 token 构成 */
+.budget-compose {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--jl-alias-border-l1);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--jl-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.budget-compose b {
+  font-weight: 600;
+  color: var(--jl-alias-label-primary);
+}
+
+.budget-compose .dim {
+  color: var(--jl-alias-label-caption);
+}
+
 /* ═══════════════════════════════════════════════════════════
    通用
    ═══════════════════════════════════════════════════════════ */

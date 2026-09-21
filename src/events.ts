@@ -117,7 +117,84 @@ export type AgentEvent =
       /** 折到只剩留尾那几轮仍然超线吗（留尾是故意的，所以超线可能是正确的） */
       overRetain: boolean
     }
-  | { type: 'run:end'; halt: string; steps: number; answer: string; stats: MeterStats }
+  /**
+   * 一次运行结束。
+   *
+   * ★ `budget` 是**每轮都发**的，不管预算有没有真的动手。
+   *
+   *   以前两块预算只在折叠真的发生时报（`context` / `conversation` 事件），
+   *   于是**正常运行里界面对预算的感知是零** —— 分不清「证据 500 字符，
+   *   离触发线远得很」和「23000，就差一点」。而这两者对「下一次会不会
+   *   突然开始折叠」的含义完全不同：前者什么都不用管，后者说明你离
+   *   一个会改变回答质量的行为只差一步。
+   *
+   * ★ 字段**就地写开**，不 import `ContextReport` / `ConversationReport` ——
+   *   它们和 `events.ts` 同在 L1，同层不能互相依赖（§11）。这和上面
+   *   `context` 事件的做法一致：事件的形状是**契约**，不是别人内部结构的转发。
+   *
+   * ★ **可选**，因为服务端异常那条路径发不出它（那份合成的事件是在
+   *   `runAgent` 外面造的）。界面对缺失必须明说「这次没跑到生成，
+   *   没有账目」，而不是画一堆 0（§8.10）。
+   */
+  | {
+      type: 'run:end'
+      halt: string
+      steps: number
+      answer: string
+      stats: MeterStats
+      budget?: RunBudget
+    }
+
+/**
+ * 一块预算的用量。**事件和界面用的形状**，不是哪份内部报告的转发。
+ *
+ * 两块预算（工具证据按**步**、上文按**轮**）都用它 —— 它们量的东西不同，
+ * 但「用了多少 / 线在哪 / 动手没有」这三个问题是同一个。
+ */
+export interface BudgetLine {
+  /** 动手前用了多少。**触发线比的就是它** */
+  rawChars: number
+  /** 动手后实际发出去多少；没动手时等于 `rawChars` */
+  keptChars: number
+  /** 超过它才会动手 */
+  triggerChars: number
+  /** 动手就压到它以下 */
+  retainChars: number
+  /** 真的动手了吗 */
+  acted: boolean
+  /** 压完仍然超目标线吗。**留尾是故意的，所以超线可能是正确行为** */
+  overRetain: boolean
+  /** 一句话说明动了什么（「剪了 3 条 · 折了 6 步」）。没动手是 `''` */
+  note: string
+}
+
+/** 一次运行的上下文账：两块预算 + 这次请求的 token 构成 */
+export interface RunBudget {
+  /** 工具证据那一块（单位：步） */
+  evidence: BudgetLine
+  /** 上文那一块（单位：轮） */
+  conversation: BudgetLine
+  /**
+   * 这次生成请求的 token 构成，**我们估的**。
+   *
+   * 和 `generate` 事件上 provider 报的 `inputTokens` 放在一起看才有意义：
+   *
+   *     报的 − 这里的 total ≈ system prompt + 启发式的偏差
+   *
+   * 实测那条启发式在**代码**上偏低约 25%（英文代码不是 4 字符 1 token），
+   * 所以这个差值不能当成 system prompt 的大小 —— 它的用途是看趋势。
+   */
+  request: {
+    /** 工具证据 */
+    evidence: number
+    /** 逐字那几轮 + 更早那些轮的摘要 */
+    history: number
+    /** 当前这一句 */
+    task: number
+    /** 三者之和 = 我们能控制的那部分 */
+    total: number
+  }
+}
 
 /** 观察者。返回值被忽略，抛出的异常被隔离。 */
 export type AgentObserver = (event: AgentEvent) => void

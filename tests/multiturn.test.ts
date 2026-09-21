@@ -383,8 +383,76 @@ test('上文没超线时一个字节都不动，也不发事件', async () => {
   })
 
   assert.deepEqual(seenHistory, TURNS, '没超线就该原样传下去')
-  assert.equal(events.some((e) => e.type === 'conversation'), false, '没动手就别发事件')
-  assert.equal(result.conversation, undefined, '没动手就没有账 —— 不是一份「什么都没做」的账')
+  // 轨迹里的 `conversation` 事件仍然只在动手时发 —— 它是记录，
+  //「什么都没做」不该占一行
+  assert.equal(events.some((e) => e.type === 'conversation'), false, '没动手就别发轨迹事件')
+  // ★ 但 `AgentResult` 里的账**总是有**，`acted: false` 表达「没动手」。
+  //   以前靠**缺席**表达，于是界面分不清「没超线」和「拿不到账」——
+  //   而「离触发线还有多远」正是要在这时候才看得见。
+  assert.ok(result.conversation, '没动手也要有账')
+  assert.equal(result.conversation.acted, false)
+  assert.equal(result.conversation.rawChars, result.conversation.keptChars, '没动手就该一字节没变')
+  assert.equal(result.conversation.triggerChars > 0, true, '账里必须带上线在哪，否则「离触发线多远」算不出来')
+})
+
+test('run:end 上带着预算账 —— 没动手时也要发，这是「离触发线多远」的唯一来源', async () => {
+  const events: { type: string }[] = []
+  await runAgent({
+    task: 'T',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: TURNS,
+    generator: {
+      name: 'capture',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }),
+    },
+    onEvent: (e) => events.push(e as { type: string }),
+    maxSteps: 1,
+  })
+
+  const end = events.find((e) => e.type === 'run:end') as never as {
+    budget?: {
+      evidence: { rawChars: number; triggerChars: number; retainChars: number; acted: boolean; note: string }
+      conversation: { rawChars: number; triggerChars: number; acted: boolean; note: string }
+      request: { evidence: number; history: number; task: number; total: number }
+    }
+  }
+  assert.ok(end?.budget, 'run:end 必须带 budget')
+
+  // 两块预算各自带线 —— 界面靠它算「还剩多少」
+  assert.equal(end.budget.evidence.triggerChars > 0, true)
+  assert.equal(end.budget.conversation.triggerChars > 0, true)
+  // 没动手时 note 是空的（界面靠 acted 判断说什么，不是靠一串同义文字）
+  assert.equal(end.budget.conversation.acted, false)
+  assert.equal(end.budget.conversation.note, '')
+})
+
+test('预算账里的 token 构成必须自洽，而且合计就是 generate 事件上那个估算值', async () => {
+  const events: { type: string; estimatedInputTokens?: number; budget?: unknown }[] = []
+  await runAgent({
+    task: '说明这个项目',
+    cwd: '/tmp',
+    decider: quietDecider(),
+    history: TURNS,
+    generator: {
+      name: 'capture',
+      generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }),
+    },
+    onEvent: (e) => events.push(e as never),
+    maxSteps: 1,
+  })
+
+  const end = events.find((e) => e.type === 'run:end') as never as {
+    budget: { request: { evidence: number; history: number; task: number; total: number } }
+  }
+  const gen = events.find((e) => e.type === 'generate')
+  const r = end.budget.request
+
+  assert.equal(r.evidence + r.history + r.task, r.total, '三个分量必须加起来等于合计')
+  // ★ 这两处以前是**各算各的**：generate 事件拿的是合计，而三个分量被丢掉。
+  //   现在它们是同一个数的两种看法，所以必须对得上。
+  assert.equal(gen?.estimatedInputTokens, r.total, 'generate 上的估算值就是这份构成的合计')
+  assert.equal(r.task > 0, true, '当前这一句总得占点')
 })
 
 test('判定帧和生成请求看到的是**同一份**上文', async () => {

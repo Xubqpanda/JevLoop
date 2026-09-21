@@ -108,7 +108,21 @@ const ms = (n) => `${Math.round(n)}ms`
 // 状态
 // ═══════════════════════════════════════════════════════════
 
-const state = { decisions: 0, models: 0, tools: 0, rules: 0, running: false }
+const state = {
+  decisions: 0,
+  models: 0,
+  tools: 0,
+  rules: 0,
+  running: false,
+  /**
+   * 最后一次 `generate` 事件。
+   *
+   * 留着它是因为 **provider 报的 token 真值只在那上面**，而记账面板要
+   * 把它和我们估的构成并排显示 —— 那个差值是校准启发式的唯一依据
+   * （见 `context.ts` 的 `priceGenerateRequest`）。
+   */
+  lastGenerate: null,
+}
 
 /**
  * 对话记录。
@@ -924,6 +938,104 @@ function renderDetail() {
   detailBody.replaceChildren(...(kids.length ? kids : [h('div', { class: 'detail-empty' }, '没有更多内容')]))
 }
 
+/** 百分比，夹在 0–100 —— 用量条不该溢出，也不该因为除零变成 NaN */
+function pctOf(n, total) {
+  return Math.min(100, Math.max(0, (n / Math.max(1, total)) * 100))
+}
+
+/**
+ * 一块预算的用法条。
+ *
+ * 条上那道刻度是**目标线**（越过去就会动手，动手就压到它以下）。
+ * 刻度画在已用之上，所以「还要涨多少才越线」是看得见的长度差 ——
+ * 而这个差值正是这一块存在的理由。
+ */
+function budgetRow(label, line) {
+  /*
+    三件事**互相独立**，所以一条条加上去，**不写成互斥分支**。
+
+    以前这里是 `overRetain ? A : acted ? B : C` —— 而 `overRetain` 为真时
+    会把「折前折后各多少字符」整句吞掉，偏偏那几个数正是理解「为什么压不
+    下去」要看的（轨迹账本里有，这里没有，两处就对不上了）。互斥的写法
+    让两个同时成立的事实只能显示一个。
+  */
+  const parts = []
+  if (line.acted) {
+    parts.push(`${line.note || '压过'} · ${line.rawChars} → ${line.keptChars} 字符`)
+  } else {
+    // 没动手时说「离触发线还有多远」—— 这句话以前在界面上根本不存在
+    parts.push(`距触发线 ${line.triggerChars - line.rawChars} 字符`)
+  }
+  // 留尾是**故意的**，所以超线可能是正确行为而不是失败 —— 这句要说出来
+  if (line.overRetain) parts.push(`⚠ 压完仍超目标线 ${line.retainChars}`)
+
+  const note = h('div', { class: `budget-note${line.overRetain ? ' warn' : ''}` }, parts.join(' · '))
+
+  return h(
+    'div',
+    { class: 'budget-row' },
+    h(
+      'div',
+      { class: 'budget-head' },
+      h('span', { class: 'budget-k' }, label),
+      h('span', { class: 'budget-v' }, `${line.rawChars} / ${line.triggerChars} 字符`),
+    ),
+    h(
+      'div',
+      { class: 'budget-track' },
+      h('div', {
+        class: `budget-fill${line.acted ? ' acted' : ''}`,
+        style: `width: ${pctOf(line.rawChars, line.triggerChars).toFixed(1)}%`,
+      }),
+      h('div', { class: 'budget-mark', style: `left: ${pctOf(line.retainChars, line.triggerChars).toFixed(1)}%` }),
+    ),
+    note,
+  )
+}
+
+/**
+ * 上下文账：两块预算 + 这次请求的 token 构成。
+ *
+ * **每轮都画，不管预算有没有动手。** 轨迹里那两个折叠事件只在真的折了
+ * 才发，所以正常运行时这一块是唯一的预算视图 —— 它回答的是
+ * 「离下一次折叠还有多远」。
+ */
+function budgetBlock(b, lastGen) {
+  if (!b) {
+    // 服务端异常那条路径发不出账目。**明说没有**，而不是画一堆 0 ——
+    // 一堆 0 读起来像「什么都没用」，那是两回事（§8.10）。
+    return h(
+      'div',
+      { class: 'budget-block' },
+      h('div', { class: 'budget-title' }, '上下文账'),
+      h('div', { class: 'budget-hint' }, '这次没跑到生成那一步，没有账目。'),
+    )
+  }
+
+  const r = b.request
+  const reported = lastGen && lastGen.inputTokens > 0 ? lastGen.inputTokens : 0
+
+  return h(
+    'div',
+    { class: 'budget-block' },
+    h('div', { class: 'budget-title' }, '上下文账'),
+    h('div', { class: 'budget-hint' }, '两块独立预算（步 / 轮）。刻度是目标线，越过去就会折叠。'),
+    budgetRow('证据 / 步', b.evidence),
+    budgetRow('上文 / 轮', b.conversation),
+    h(
+      'div',
+      {
+        class: 'budget-compose',
+        title:
+          '差值 = 生成器内部的 system prompt + 启发式的偏差（实测那条启发式在代码上偏低约 25%）。' +
+          '它的用途是看趋势，不要当成 system prompt 的大小。',
+      },
+      h('div', {}, '估 ', h('b', {}, String(r.total)), ` = 证据 ${r.evidence} + 上文 ${r.history} + 本句 ${r.task}`),
+      h('div', { class: 'dim' }, reported > 0 ? `报 ${reported} · 差 ${reported - r.total}` : 'provider 用量未报'),
+    ),
+  )
+}
+
 // ═══════════════════════════════════════════════════════════
 // 右栏：记账
 //
@@ -957,6 +1069,7 @@ function renderEndStats(e) {
       h('div', { class: 'ratio-v' }, ratio),
       h('div', { class: 'ratio-k' }, '判定 : 模型'),
     ),
+    budgetBlock(e.budget, state.lastGenerate),
   )
 }
 
@@ -1006,6 +1119,7 @@ function onEvent(e) {
     updateTally()
   } else if (e.type === 'generate') {
     state.models++
+    state.lastGenerate = e
     updateTally()
   } else if (e.type === 'audit') {
     // 审计留痕也是「代码做的决定」，要进计数
@@ -1253,6 +1367,7 @@ $('new-session').addEventListener('click', async () => {
   selected = null
   detailEvent = null
   renderPlot()
+  state.lastGenerate = null
   state.decisions = state.models = state.tools = state.rules = 0
   updateTally()
   $('side-stats').replaceChildren(h('div', { class: 'empty' }, '运行结束后显示'))
