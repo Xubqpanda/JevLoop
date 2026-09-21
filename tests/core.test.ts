@@ -4,7 +4,7 @@
  *   node --experimental-strip-types --test "tests/*.test.ts"
  *
  * 这些逻辑**没有类型保护** —— 它们全是运行时行为，tsc 通过不代表行为正确。
-  *
+ *
  * @module JevLoop/core.test
  */
 
@@ -15,8 +15,9 @@ import { resolvePolicy, gte, probGte, scoreGte, picked } from '../src/policy.ts'
 import { Meter } from '../src/meter.ts'
 import { normalizeAnswers, MockProvider } from '../src/provider.ts'
 import { validate, clip, estimateTokens } from '../src/budget.ts'
-import { defineDecision, isDecision, noul, choice } from '../src/types.ts'
-import type { AnswerSet } from '../src/types.ts'
+import { defineDecision, isDecision } from '../src/vocab-decision.ts'
+import { noul, choice } from '../src/vocab.ts'
+import type { AnswerSet } from '../src/vocab.ts'
 
 const ans = (o: Record<string, unknown>): AnswerSet => o as AnswerSet
 

@@ -4,7 +4,7 @@
  *   import { Decider, runAgent, defineDecision, noul, choice, score } from 'jevloop';
  *
  * 概念只有三个：Question / Decision / Provider。
-  *
+ *
  * @module JevLoop/index
  */
 
@@ -22,14 +22,11 @@ export type {
   Answer,
   AnswerSet,
   AnswerMap,
-  PolicyRule,
-  DecisionSpec,
-  DecisionResult,
-  Provider,
-  DecideRequest,
-  DecideResponse,
-} from './types.ts'
-export { noul, choice, score, defineDecision, isDecision, confidenceOf } from './types.ts'
+} from './vocab.ts'
+export type { PolicyRule, DecisionSpec, DecisionResult } from './vocab-decision.ts'
+export type { Provider, DecideRequest, DecideResponse } from './seam-provider.ts'
+export { noul, choice, score, confidenceOf } from './vocab.ts'
+export { defineDecision, isDecision } from './vocab-decision.ts'
 
 // ── 判定 ─────────────────────────────────────────────────────
 export { Decider } from './decide.ts'

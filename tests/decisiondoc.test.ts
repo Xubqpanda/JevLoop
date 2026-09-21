@@ -27,7 +27,8 @@ import {
   isGate,
   type DocBlock,
 } from '../src/decisiondoc.ts'
-import type { DecisionSpec, QuestionSet, AnswerSet } from '../src/types.ts'
+import type { DecisionSpec } from '../src/vocab-decision.ts'
+import type { QuestionSet, AnswerSet } from '../src/vocab.ts'
 import {
   needsTool,
   pickTool,

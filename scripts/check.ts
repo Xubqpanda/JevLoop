@@ -29,8 +29,6 @@
  *   · 缩进是不是恰好 2 空格 —— 续行、模板字符串、对齐注释都会让逐行判定失真
  *   · 注释措辞、命名、类型设计 —— 那些靠 review，不靠脚本
  *
- * @module JevLoop/scripts/check
-  *
  * @module JevLoop/check
  */
 

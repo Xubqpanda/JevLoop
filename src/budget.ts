@@ -6,11 +6,11 @@
  * 不可区分了。实测 77 个选项会掉到 0.425。
  *
  * 所以 State 投影必须**有界**。这里提供截断工具和发请求之前的预算校验。
-  *
+ *
  * @module JevLoop/budget
  */
 
-import type { QuestionSet, ChoiceQuestion } from './types.ts'
+import type { QuestionSet, ChoiceQuestion } from './vocab.ts'
 
 /** ` …[+N]` 这个提示本身占的字符预算 */
 const HINT_BUDGET = 12
@@ -102,6 +102,28 @@ export function validate(
           level: n > 50 ? 'error' : 'warn',
           message: `问题 '${id}' 有 ${n} 个选项（安全线 ${lim.maxOptions}）`,
           hint: '改成两段式：先选类别，再在类别内选具体项',
+        })
+      }
+
+      // ★ headBudget 以前在 LIMITS 里声明了（三处），但**没有任何读取方** ——
+      //   一个没人读的限制等于没有限制。
+      //
+      //   它和 context 是**两个独立**的约束：context 管整个决策帧，
+      //   headBudget 管「指令 + 全部选项文本」这一块共享的预算。选项一多，
+      //   每个分到的 token 就少到文本互相不可区分 —— 实测 77 个选项时
+      //   选中项概率掉到 0.425，也就是基本在瞎猜。任务照样"成功"返回，
+      //   所以不主动查就永远发现不了。
+      //
+      //   严重超（> 2 倍）记 error，配合 `strict: true` 可以在发请求之前直接拦住。
+      const head = estimateTokens(
+        [q.instructions, ...Object.keys(q.criteria), ...Object.values(q.criteria)].join(' '),
+      )
+      if (head > lim.headBudget) {
+        const over = head > lim.headBudget * 2
+        out.push({
+          level: over ? 'error' : 'warn',
+          message: `问题 '${id}' 的选项头部约 ${head} token，${over ? '远超' : '超过'} ${checkpoint} 的 ${lim.headBudget} 共享预算`,
+          hint: '选项共享一个固定 head 预算：选项越多、每条判据越长，每个分到的 token 越少，文本就越不可区分。缩短判据，或改成两段式。',
         })
       }
     }

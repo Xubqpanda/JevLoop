@@ -16,7 +16,7 @@
 
 import { HttpProvider, MockProvider, FallbackProvider } from './provider.ts'
 import { HttpGenerator, ScriptedGenerator } from './llm.ts'
-import type { Provider } from './types.ts'
+import type { Provider } from './seam-provider.ts'
 import type { Generator } from './llm.ts'
 
 /** 降级回调。每次从一层掉到下一层时调用一次，不是每次请求都调。 */

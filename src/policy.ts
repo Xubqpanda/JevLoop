@@ -7,12 +7,13 @@
  *   · 调一个阈值不需要重跑任何判定
  *   · 同一次运行的答案可以拿去反复试不同的策略
  *   · 策略可以被单元测试覆盖（模型不能）
-  *
+ *
  * @module JevLoop/policy
  */
 
-import type { AnswerSet, PolicyRule } from './types.ts'
-import { confidenceOf } from './types.ts'
+import type { AnswerSet } from './vocab.ts'
+import type { PolicyRule } from './vocab-decision.ts'
+import { confidenceOf } from './vocab.ts'
 
 export interface PolicyOutcome {
   action: string
@@ -52,6 +53,21 @@ export function resolvePolicy<A extends AnswerSet>(
       level: 'warn',
       code: 'catch_all_not_last',
       message: `第 ${firstCatchAll + 1} 条是无条件兜底，后面还有 ${rules.length - firstCatchAll - 1} 条规则 —— 那些永远不会被求值`,
+    })
+  }
+
+  // ★ 静态检查：**兜底缺失同样是静默的**。
+  //
+  //   没有兜底时函数返回 escalate，但调用方从返回值上分不清
+  //   「这组策略压根没打算兜底」和「兜底写了、条件没命中」——
+  //   两者的排查方向完全相反。所以这里要主动报一句。
+  //
+  //   （这条在移植进 JevLoop 时掉过一次，见 REVIEWS 记录。）
+  if (firstCatchAll < 0) {
+    emit({
+      level: 'warn',
+      code: 'policy_no_catch_all',
+      message: `这组策略（${rules.length} 条）没有无条件兜底规则。一条都没命中时会返回 escalate —— 没有调用方处理 escalate 的话，这一步就静默消失了`,
     })
   }
 

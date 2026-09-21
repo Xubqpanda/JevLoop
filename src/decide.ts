@@ -11,11 +11,13 @@
  *   ⑥ 记账            进 meter
  *
  * 后台挂了也不会崩：记一笔 degraded，然后交回上层，而不是瞎猜一个动作。
-  *
+ *
  * @module JevLoop/decide
  */
 
-import type { Provider, DecisionSpec, DecisionResult, QuestionSet, AnswerMap, AnswerSet } from './types.ts'
+import type { Provider } from './seam-provider.ts'
+import type { DecisionSpec, DecisionResult } from './vocab-decision.ts'
+import type { QuestionSet, AnswerMap, AnswerSet } from './vocab.ts'
 import { resolvePolicy, type PolicyWarning } from './policy.ts'
 import { validate, type BudgetWarning, type Checkpoint } from './budget.ts'
 import { Meter } from './meter.ts'

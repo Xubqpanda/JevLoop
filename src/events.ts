@@ -9,12 +9,11 @@
  * 这一层是只读的观察面：观察者拿不到取消、改写的句柄，
  * 所以一个观察者出错不会影响 loop 本身（见 {@link fanOut}）。
  *
- * @module jevloop/events
-  *
  * @module JevLoop/events
  */
 
-import type { DecisionResult, QuestionSet, AnswerSet } from './types.ts'
+import type { DecisionResult } from './vocab-decision.ts'
+import type { QuestionSet, AnswerSet } from './vocab.ts'
 import type { MeterStats, AuditRecord } from './meter.ts'
 
 /** 每一步里发生的一件事。判别式联合，新增成员时编译器会逼消费者处理。 */

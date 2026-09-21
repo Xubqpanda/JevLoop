@@ -9,11 +9,12 @@
  *   MockProvider  → 保守占位答案                （零依赖，离线可跑）
  *
  * 后两个的存在是刻意的：**没有 API key 的人也必须能在 30 秒内跑起来。**
-  *
+ *
  * @module JevLoop/provider
  */
 
-import type { Provider, DecideRequest, DecideResponse, Answer, AnswerSet, Question } from './types.ts'
+import type { Provider, DecideRequest, DecideResponse } from './seam-provider.ts'
+import type { Answer, AnswerSet, Question } from './vocab.ts'
 
 // ═══════════════════════════════════════════════════════════
 // HTTP —— 说 Jev 线格式（官方 API 和本地 Laya 共用这一个）

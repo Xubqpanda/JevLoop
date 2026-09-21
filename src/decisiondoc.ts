@@ -73,15 +73,8 @@
  * @module JevLoop/decisiondoc
  */
 
-import {
-  choice,
-  noul,
-  score,
-  type AnswerSet,
-  type PolicyRule,
-  type Question,
-  type QuestionSet,
-} from './types.ts'
+import { choice, noul, score, type AnswerSet, type Question, type QuestionSet } from './vocab.ts'
+import type { PolicyRule } from './vocab-decision.ts'
 import { picked, probGte, probLt, scoreGte, topGte } from './policy.ts'
 import { assertNever } from './util.ts'
 
@@ -400,7 +393,7 @@ function interpretQuestions(
     let type: Primitive
     const names = d.options.map((o) => o.name)
     if (names.length === 2 && names.includes('true') && names.includes('false')) {
-      // true/false 是 noul 的写法，`types.ts` 的 criteria 就是 { true, false }
+      // true/false 是 noul 的写法，`vocab.ts` 的 criteria 就是 { true, false }
       type = 'noul'
     } else if (d.named === d.options.length) {
       type = 'choice'

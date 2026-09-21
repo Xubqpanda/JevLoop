@@ -9,7 +9,7 @@
  * 接口故意做得很窄：输入是一段 state，输出是一段文本。
  * 想接 OpenAI / Anthropic / 本地模型都随意 —— 换的是这个文件，
  * 内核和判定一行都不用动。
-  *
+ *
  * @module JevLoop/llm
  */
 

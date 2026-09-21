@@ -22,12 +22,12 @@
  *                        [ 模型生成 ]   ← 整个 loop 里唯一贵的一步
  *                             │
  *                        loop.canDeliver  ↗ 能交付吗？
-  *
+ *
  * @module JevLoop/agent
  */
 
 import { Decider } from './decide.ts'
-import type { DecisionResult } from './types.ts'
+import type { DecisionResult } from './vocab-decision.ts'
 import { Meter } from './meter.ts'
 import {
   needsTool,
@@ -57,6 +57,22 @@ export interface AgentOptions {
   onAskHuman?: (reason: string, tool: string) => Promise<boolean>
   onTrace?: (line: string) => void
   /**
+   * `write_file` 的内容来源。**不提供时 `write_file` 根本不会进候选**，
+   * 于是判定模型没有机会去选一个 loop 兑现不了的动作。
+   *
+   * 「写什么内容」是**生成**，按三分法不属于判定模型（AGENTS.md §8.1）——
+   * 判定只负责挑「写哪个文件」。以前这里没有这个钩子，`resolveInput`
+   * 只能返回一句占位符 `（内容由调用方提供）`，而它是**真的会被写到盘上的**：
+   * 实测一次运行把目标文件的全部内容替换成了这句话，然后因为
+   * `write_file` 仍在候选里而连续重写了 5 次，最后 `halt: max_steps`。
+   *
+   * 返回 `undefined` 表示这次写不了 → loop 停机，而不是写个占位符交差。
+   */
+  provideWriteContent?: (
+    file: string,
+    ctx: AgentCtx,
+  ) => string | undefined | Promise<string | undefined>
+  /**
    * 观察者。每次判定、每次工具调用、每次生成都会发一个事件。
    *
    * 和 `onTrace` 的分工：`onTrace` 是给人读的一行字，`onEvent` 是**结构化的**，
@@ -78,14 +94,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const { decider, generator } = opts
   // Decider 的 meter 是必填的（见 decide.ts 的说明）—— 这里不再自建。
   // 自建会导致：判定记进 decider 的那个，返回给调用方的是另一个空的。
-  // Decider 的 meter 是必填的（见 decide.ts 的说明）—— 这里不再自建。
-  // 自建会导致：判定记进 decider 的那个，返回给调用方的是另一个空的。
   const meter = decider.meter
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
   const emit: AgentObserver = opts.onEvent ?? (() => {})
 
-  const ctx: AgentCtx = { task: opts.task, cwd: opts.cwd, files: [], history: [] }
+  const ctx: AgentCtx = {
+    task: opts.task,
+    cwd: opts.cwd,
+    files: [],
+    history: [],
+    // 没有内容来源时 `write_file` 不进候选（见 AgentOptions.provideWriteContent）
+    canWrite: typeof opts.provideWriteContent === 'function',
+  }
   let step = 0
   let halt = 'max_steps'
 
@@ -144,7 +165,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // 工具参数是一次**判定**，不是写死的代码（审计 N3）
-    const input = await resolveInput(tool, ctx, decider, record)
+    const input = await resolveInput(tool, ctx, decider, record, opts.provideWriteContent)
     if (input === undefined) {
       halt = 'input_unclear'
       trace(`  选不出 ${tool} 的输入 → 停下`)
@@ -289,6 +310,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
  * @param tool 已经过 `isToolName` 校验的工具名
  * @param ctx 当前上下文，`pickInput` 的候选从这里构造
  * @param decider 判定器
+ * @param writeContent `write_file` 的内容来源，见 `AgentOptions.provideWriteContent`
  * @returns 工具的输入字符串；无法确定时返回 `undefined`（调用方应停机，不要猜）
  */
 async function resolveInput(
@@ -296,6 +318,7 @@ async function resolveInput(
   ctx: AgentCtx,
   decider: Decider,
   record: <A>(d: DecisionResult<A>) => DecisionResult<A>,
+  writeContent?: AgentOptions['provideWriteContent'],
 ): Promise<string | undefined> {
   switch (tool) {
     case 'list_dir':
@@ -310,7 +333,16 @@ async function resolveInput(
       const d = record(await decider.decide(pickInput, ctx))
       if (d.escalate || d.action !== 'use') return undefined
       const file = d.answers.file.choice
-      return tool === 'write_file' ? `${file}\n（内容由调用方提供）` : file
+      if (tool === 'read_file') return file
+
+      // ★ 内容必须由调用方提供。拿不到就**停机**，绝不退化成占位符：
+      //   这里以前返回的是 `${file}\n（内容由调用方提供）`，而 `write_file`
+      //   会把第二行起的内容原样写进目标文件 —— 一次调用就把文件替换成了
+      //   那句说明，且循环会继续选中 `write_file` 反复重写（实测 5 次）。
+      //   「写不了」是一个诚实的结果；写一句假内容不是。
+      const content = await writeContent?.(file, ctx)
+      if (content === undefined) return undefined
+      return `${file}\n${content}`
     }
     default:
       return assertNever(tool)

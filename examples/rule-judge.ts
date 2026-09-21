@@ -14,7 +14,7 @@
  *   换成真实后端时，整个文件可以删掉，内核一行都不用改。
  *
  * 想跑真实判定：`--laya`（本地）或 `--jev`（官方，需 TYPESAFE_API_KEY）。
-  *
+ *
  * @module JevLoop/rule-judge
  */
 
