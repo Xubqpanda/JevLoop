@@ -342,32 +342,37 @@ So we measured it. `npm run compare` runs the same seven tasks twice: once throu
 
 *Hosted Jev for decisions, `deepseek-flash` for generation, 7 tasks × 1 run each.*
 
-### Is Jev fast? Yes per call, and no per task — and the two are worth keeping apart
+### Is Jev fast? The compute is; the round trips are not
 
-Measured directly, one call at a time (no loop around it):
+"One decision takes 330 ms" says nothing on its own — it does not say how much of that is *thinking* and how much is *waiting for a reply*. Those two have opposite fixes: slow thinking means a different model, slow waiting means a different deployment.
 
-| | median |
-|---|---:|
-| one decision, hosted Jev | **329 ms** |
-| one generation, a one-line answer | 2036 ms |
-| one generation, ~300 words | 4371 ms |
+`npm run latency` separates them by sending, to the same URL with the same auth, a request the server rejects during validation — same path, same edge, same auth, no model. The first call is dropped, so TCP and TLS (684 ms cold) are not in the number.
 
-So a decision really is **3–6× faster than a generation call**, which is where the "5–8× faster" in the backend table comes from. But that is a *per-call* number, and the loop does not make one call:
+| | handshake + validation | total | **of which compute** | compute share |
+|---|---:|---:|---:|---:|
+| one decision, Jev | 254 ms | 332 ms | **78 ms** | 23 % |
+| one generation, one line | 90 ms | 2114 ms | **2024 ms** | 96 % |
+| one generation, ~300 words | 90 ms | 4281 ms | **4191 ms** | 98 % |
 
-- **JevLoop: 12 decisions × ~330 ms ≈ 4 s, plus one generation ≈ 1.5 s → 5.9 s.**
-- **ReAct: 3 generations × ~1.1 s → 3.4 s.**
+**A decision costs 78 ms of compute against 2000+ ms for a generation — 26 to 54 times less — and then spends 254 ms waiting.** The frame it sends is about a kilobyte, so it is not bandwidth: it is round-trip latency, and the Jev host's round trip is 3× the generation host's.
 
-Fewer, cheaper calls lose to more, dearer ones when there are four times as many of them. **Per call Jev wins; per task it currently loses on wall clock**, and saying only the first would be the same sleight of hand as reading `13 : 1` as "thirteen LLM calls saved".
+Putting that back into the comparison, with the handshake subtracted per call:
 
-Where it flips is the decision backend, not the loop. At the 30–85 ms per decision a locally-served model gives, the same 12 decisions cost ~0.6 s instead of ~4 s and the whole thing lands around 2 s against ReAct's 3.4 s. That is the configuration the design is actually for; the hosted API is the one that makes round-trips the bottleneck.
+| | decisions / task | LLM calls / task | pure calls | **pure compute** | wall clock | output tokens / task | accepted |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| JevLoop | 12 | **1** | 5.2 s | **1.3 s** | 5.2 s | **95** | 6 / 7 |
+| ReAct | 0 | **3** | 2.8 s | **2.6 s** | 2.8 s | 226 | 7 / 7 |
 
-The rest of the comparison, including what does not flatter the project:
+*Hosted Jev, `deepseek-flash`, 7 tasks × 1 run each. `pure calls` is the sum of successful call latencies; `pure compute` subtracts the measured handshake per call.*
 
-- **Three times fewer model calls, three times fewer output tokens.** This is where the claim lands on its own terms: picking a tool is a closed question, and a closed question does not need tokens generated one at a time. On the write task it is **1 call against 6**.
-- **The gate is real work.** On the `direct` task this loop made **2** generation calls because the delivery gate rejected the first answer, and the revision still missed what the task asked for. ReAct answers in one call and got it. Counted here rather than averaged away.
-- **One sample per task.** An acceptance failure of 1 in 7 is not a quality claim in either direction. `--repeat` exists; the medians above are one run each.
+**On compute, this loop wins: 1.3 s against 2.6 s, and it wins six of the seven tasks** — on `write`, 8.1 s against 52.8 s. What it loses is the handshake: twelve decisions × 254 ms is **3.0 s of waiting, more than twice its own compute**, while ReAct's three calls pay 0.2 s. That is the whole of the wall-clock gap.
 
-The ReAct side is not a straw man: it is given the JSON protocol in its system prompt, it may recover from a malformed reply (and that costs it a call), and it works in the same fixture with the same tools. `npm run compare` prints its system prompt verbatim so you can judge that rather than take our word for it.
+Two things are worth saying plainly, because the same table would support a lazier conclusion:
+
+- **Per call Jev wins; per task on the hosted API it loses on wall clock.** Saying only the first would be the same sleight of hand as reading `13 : 1` as "thirteen LLM calls saved".
+- **The loss is the deployment, not the design.** Twelve round trips only hurt because each one leaves the machine. At the 30–85 ms a locally-served decision model gives (§8.11), the handshake disappears and the 3.0 s becomes roughly the 0.9 s of compute it actually is — the same comparison then reads 2.2 s against 2.8 s in this loop's favour.
+
+And the honest counter-example, kept in rather than averaged away: on `direct` — a task answerable in one line — this loop made **two** generation calls because the delivery gate rejected the first, emitted 1319 output tokens against ReAct's 117, missed what the task asked for, and lost by 8× on compute. Deciding not to act is cheap; deciding *wrongly* and regenerating is not.
 
 ### Two gotchas we hit so you don't have to
 

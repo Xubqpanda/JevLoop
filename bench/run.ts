@@ -59,14 +59,7 @@ import {
 import { RuleJudge } from '../examples/rule-judge.ts'
 import { TASKS, type BenchTask } from './tasks.ts'
 import { Oracle, answerOk, missing, checkArtifacts, type Judgement } from './oracle.ts'
-
-const C = {
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-}
+import { C, withRetry } from './util.ts'
 
 const argv = process.argv.slice(2)
 const only = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : undefined
@@ -128,23 +121,6 @@ interface TaskRun {
  * 是**常态**不是异常（这台机器上 github 和 api 都时常连不上）。没有重试
  * 的话，一轮十分钟的测量会被一次抖动清零。
  */
-async function withRetry<T>(what: string, fn: () => Promise<T>, tries = 3): Promise<T> {
-  let last: unknown
-  for (let i = 1; i <= tries; i++) {
-    try {
-      return await fn()
-    } catch (err) {
-      last = err
-      if (i < tries) {
-        const wait = i * 2000
-        process.stdout.write(C.yellow(`      ${what} 第 ${i} 次失败（${(err as Error).message.slice(0, 50)}），${wait / 1000}s 后重试\n`))
-        await new Promise((r) => setTimeout(r, wait))
-      }
-    }
-  }
-  throw last
-}
-
 async function runTask(task: BenchTask): Promise<TaskRun> {
   const cwd = await mkdtemp(join(tmpdir(), `jevbench-${task.id}-`))
   try {

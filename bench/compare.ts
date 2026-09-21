@@ -42,14 +42,8 @@ import { RuleJudge } from '../examples/rule-judge.ts'
 import { TASKS, type BenchTask } from './tasks.ts'
 import { answerOk, missing, checkArtifacts, matchesCall } from './oracle.ts'
 import { runReact, REACT_SYSTEM } from './react.ts'
-
-const C = {
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-}
+import { C, withRetry } from './util.ts'
+import { decisionEndpoint, generationEndpoint, measureFloor, type Floor } from './transport.ts'
 
 const argv = process.argv.slice(2)
 const only = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : undefined
@@ -75,6 +69,26 @@ interface Sample {
   inputTokens: number
   outputTokens: number
   latencyMs: number
+  /**
+   * **纯调用耗时** = 成功那几次调用的 latency 之和（判定 + 生成）。
+   *
+   * ★ 它**不含重试**：`retryCall` 把内层结果原样返回，所以
+   *   `DecisionResult.latencyMs` / `GenerateResult.latencyMs` 量的都是
+   *   **成功那一次**。失败的尝试和退避等待不在里面。
+   *
+   *   这就是「把重试这些原因导致的时延去掉之后」的数 —— 和 `latencyMs`
+   *   的差就是重试与框架开销。
+   */
+  pureMs: number
+  /** 工具执行花了多少 */
+  toolMs: number
+  /**
+   * **纯计算时间** = `pureMs` 减去每次调用都要付的那笔「握手/校验」。
+   *
+   * 减法用的两个数由 `bench/transport.ts` 现量（同路径、同鉴权、不做推理），
+   * 而且**基线不成立时这里是 `NaN`** —— 那时表里印 `—`，不印一个硬算出来的数。
+   */
+  computeMs: number
   /**
    * 墙钟花在哪。**没有这个分解，`40.7s` 那样的数字是不可解释的** ——
    * 而不可解释的数字对读的人只是一句「好慢」，指不出该改哪里。
@@ -113,6 +127,22 @@ const provider = useRule
     })
 const generator = resolveGenerator()
 
+/**
+ * 两个后端「每次调用都要付一遍」的那笔钱 —— 现量。
+ *
+ * 基线 = 同一条路径、同样的鉴权、body 缺字段 → 服务端校验层拒掉、走不到模型。
+ * 拿不到成立的基线时 `ok` 为 false，下面所有 `computeMs` 就是 `NaN`，
+ * 表里印 `—` —— **宁可不给数，也不给一个假的**（第一版在这里算出过 -3268ms）。
+ */
+const decFloor: Floor = await measureFloor({ who: provider.name, ...decisionEndpoint('https://api.typesafe.ai') })
+const genFloor: Floor = await measureFloor({ who: generator.name, ...generationEndpoint('https://api.deepseek.com') })
+
+/** 一次调用要付的往返；基线不成立就没有这个数 */
+function computeOf(pureMs: number, decisions: number, modelCalls: number): number {
+  if (!decFloor.ok || !genFloor.ok) return NaN
+  return Math.max(0, pureMs - decisions * decFloor.medianMs - modelCalls * genFloor.medianMs)
+}
+
 /** 铺夹具，跑，然后把目录删掉。两条路**用同一个函数**铺，免得夹具分叉 */
 async function inFixture<T>(task: BenchTask, fn: (cwd: string) => Promise<T>): Promise<T> {
   const cwd = await mkdtemp(join(tmpdir(), `jevcompare-${task.id}-`))
@@ -140,6 +170,41 @@ function callsOk(calls: { tool: string; input?: string }[], task: BenchTask): st
 }
 
 async function runJev(task: BenchTask): Promise<Sample> {
+  try {
+    return await withRetry(`JevLoop/${task.id}`, () => runJevOnce(task))
+  } catch (err) {
+    return failedSample('JevLoop', task.id, err)
+  }
+}
+
+/**
+ * 这一轮跑不起来（网络、后端）→ 记一条失败样本，**不要**把整场对比带走。
+ *
+ * ★ 实测（2026-09-21）：一次 `api.deepseek.com` 连接超时让整场 7 任务的
+ *   对比崩掉，前面已经跑出来的样本全部作废 —— 而那几分钟是真的花掉了。
+ *   网络失败不是循环形状的差别，把它记成一条「跑不起来」比丢掉整场诚实得多。
+ */
+function failedSample(shape: 'JevLoop' | 'ReAct', task: string, err: unknown): Sample {
+  return {
+    shape,
+    task,
+    decisions: 0,
+    modelCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    latencyMs: 0,
+    pureMs: 0,
+    toolMs: 0,
+    computeMs: 0,
+    decisionMs: 0,
+    modelMs: 0,
+    modelWallMs: 0,
+    passed: false,
+    why: [`跑不起来：${(err as Error).message.slice(0, 60)}`],
+  }
+}
+
+async function runJevOnce(task: BenchTask): Promise<Sample> {
   return inFixture(task, async (cwd) => {
     const meter = new Meter()
     const decider = new Decider({ provider, meter })
@@ -157,6 +222,7 @@ async function runJev(task: BenchTask): Promise<Sample> {
     let lastAt = t0
     let modelWallMs = 0
     let sawGenerate = false
+    let toolMs = 0
 
     const result = await runAgent({
       task: task.task,
@@ -174,8 +240,19 @@ async function runJev(task: BenchTask): Promise<Sample> {
         }
         lastAt = now
         if (e.type === 'tool:call') calls.push({ tool: e.tool, input: e.input })
+        if (e.type === 'tool:result') toolMs += e.ms
       },
     })
+
+    /*
+      ★ **停表就在这里** —— `runAgent` 一返回，验收之前。
+
+      以前这个数是在下面的返回对象里取的，而那已经在 `await checkArtifacts`
+      **之后**了 —— 于是 JevLoop 那边多算了读盘的时间，而 ReAct 那边
+      （`runReact` 内部停表）没有。差的是零点几毫秒，但口径不一致就是不一致：
+      同一张表里的两个数必须用同一把尺子量，否则哪天它长大了也没人发现。
+    */
+    const wallMs = performance.now() - t0
 
     const why = [
       ...callsOk(calls, task),
@@ -194,7 +271,10 @@ async function runJev(task: BenchTask): Promise<Sample> {
       // token，但走的是另一个后端、另一个价目表，不计在这一列里）
       inputTokens: s.inputTokens,
       outputTokens: s.outputTokens,
-      latencyMs: performance.now() - t0,
+      latencyMs: wallMs,
+      pureMs: s.decisionMs + s.modelMs,
+      toolMs,
+      computeMs: computeOf(s.decisionMs + s.modelMs, s.decisions, s.modelCalls),
       decisionMs: s.decisionMs,
       modelMs: s.modelMs,
       modelWallMs: sawGenerate ? modelWallMs : s.modelMs,
@@ -205,6 +285,14 @@ async function runJev(task: BenchTask): Promise<Sample> {
 }
 
 async function runReAct(task: BenchTask): Promise<Sample> {
+  try {
+    return await withRetry(`ReAct/${task.id}`, () => runReActOnce(task))
+  } catch (err) {
+    return failedSample('ReAct', task.id, err)
+  }
+}
+
+async function runReActOnce(task: BenchTask): Promise<Sample> {
   return inFixture(task, async (cwd) => {
     const r = await runReact({ task: task.task, cwd, generator, maxSteps: MAX_STEPS })
     if (r.failed) {
@@ -216,6 +304,9 @@ async function runReAct(task: BenchTask): Promise<Sample> {
         inputTokens: r.inputTokens,
         outputTokens: r.outputTokens,
         latencyMs: r.latencyMs,
+        pureMs: r.modelMs,
+        toolMs: r.toolMs,
+        computeMs: computeOf(r.modelMs, 0, r.modelCalls),
         decisionMs: 0,
         modelMs: r.modelMs,
         modelWallMs: r.modelMs,
@@ -232,6 +323,9 @@ async function runReAct(task: BenchTask): Promise<Sample> {
       inputTokens: r.inputTokens,
       outputTokens: r.outputTokens,
       latencyMs: r.latencyMs,
+      pureMs: r.modelMs,
+      toolMs: r.toolMs,
+      computeMs: computeOf(r.modelMs, 0, r.modelCalls),
       decisionMs: 0,
       modelMs: r.modelMs,
       modelWallMs: r.modelMs,
@@ -275,12 +369,23 @@ async function main(): Promise<void> {
   }
   process.stdout.write('\r'.padEnd(62) + '\r')
 
+  // 基线的证据 —— 没有它，读的人分不清「服务端拒了」和「连接超时了」
+  for (const f of [decFloor, genFloor]) {
+    console.log(
+      C.dim(`  ${f.ok ? C.green('✓') : C.red('✗')} 握手基线 ${f.who} · HTTP ${f.status || '—'} · ${Math.round(f.medianMs)}ms (n=${f.samples})`),
+    )
+    if (!f.ok) {
+      console.log(C.red(`      ✗ ${f.problem}`))
+      console.log(C.dim('      → 「纯计算」那一列会是空的：减法需要一个成立的基线，宁可不给数'))
+    }
+  }
+
   // ── 逐任务 ──
   console.log('')
   console.log(C.bold('  ── 逐任务 ──────────────────────────────────────────────'))
   console.log(
     C.dim(
-      `  ${pad('任务', 22)}${pad('形状', 9)}${pad('判定', 6)}${pad('大模型调用', 11)}${pad('墙钟', 8)}${pad('输出token', 10)}验收`,
+      `  ${pad('任务', 22)}${pad('形状', 9)}${pad('判定', 6)}${pad('大模型调用', 11)}${pad('纯调用', 9)}${pad('纯计算', 9)}${pad('墙钟', 8)}${pad('输出token', 10)}验收`,
     ),
   )
   for (const task of tasks) {
@@ -291,6 +396,8 @@ async function main(): Promise<void> {
         `  ${pad(shape === 'JevLoop' ? task.id : '', 22)}${pad(shape, 9)}` +
           pad(median(xs.map((s) => s.decisions)), 6) +
           pad(median(xs.map((s) => s.modelCalls)), 11) +
+          pad(secs(median(xs.map((s) => s.pureMs))), 9) +
+          pad(Number.isFinite(median(xs.map((s) => s.computeMs))) ? secs(median(xs.map((s) => s.computeMs))) : '—', 9) +
           pad(secs(median(xs.map((s) => s.latencyMs))), 8) +
           pad(Math.round(median(xs.map((s) => s.outputTokens))), 10) +
           (xs.every((s) => s.passed) ? C.green('✓') : C.red(`✗ ${xs.find((s) => !s.passed)?.why.join('；').slice(0, 40)}`)),
@@ -302,14 +409,16 @@ async function main(): Promise<void> {
     const parts = (xs: Sample[], label: string) => {
       if (!xs.length) return ''
       const wall = median(xs.map((s) => s.latencyMs))
-      const dec = median(xs.map((s) => s.decisionMs))
-      const gen = median(xs.map((s) => s.modelWallMs))
-      // 余项（工具 + 框架本身）。**它就是减出来的**，因为前两项是量出来的、
-      // 这一项是剩下的 —— 三者必须加起来等于整轮，否则账本身就不成立
-      const other = Math.max(0, wall - dec - gen)
-      // 生成的重试要标出来：它让墙钟变长，而那不是循环形状的差别
-      const retried = xs.some((s) => s.modelWallMs - s.modelMs > 1000)
-      return `${label} 判定 ${secs(dec)} · 生成 ${secs(gen)}${retried ? '(含重试)' : ''} · 其他 ${secs(other)}`
+      const pure = median(xs.map((s) => s.pureMs))
+      const tool = median(xs.map((s) => s.toolMs))
+      // 余项 = 墙钟 − 纯调用 − 工具。**重试和框架开销都在这里**，
+      // 而它是减出来的：前两项是量出来的，这一项是剩下的。
+      const rest = Math.max(0, wall - pure - tool)
+      return (
+        `${label} 纯调用 ${secs(pure)}（判定 ${secs(median(xs.map((s) => s.decisionMs)))}` +
+        ` + 生成 ${secs(median(xs.map((s) => s.modelMs)))}）· 工具 ${secs(tool)}` +
+        ` · 重试/框架 ${secs(rest)}`
+      )
     }
     console.log(
       C.dim(`  ${' '.repeat(22)}${parts(jx, 'JevLoop')}`) +
@@ -321,7 +430,9 @@ async function main(): Promise<void> {
   // ── 汇总 ──
   console.log(C.bold('  ── 汇总 ────────────────────────────────────────────────'))
   console.log(
-    C.dim(`  ${pad('形状', 10)}${pad('判定/任务', 10)}${pad('大模型调用/任务', 16)}${pad('墙钟/任务', 12)}${pad('输出token/任务', 16)}验收`),
+    C.dim(
+      `  ${pad('形状', 10)}${pad('判定/任务', 10)}${pad('大模型调用/任务', 16)}${pad('纯调用/任务', 14)}${pad('纯计算/任务', 14)}${pad('墙钟/任务', 12)}${pad('输出token/任务', 16)}验收`,
+    ),
   )
   for (const shape of ['JevLoop', 'ReAct'] as const) {
     const xs = all.filter((s) => s.shape === shape)
@@ -331,6 +442,8 @@ async function main(): Promise<void> {
       `  ${pad(shape, 10)}` +
         pad(median(xs.map((s) => s.decisions)).toFixed(1), 10) +
         pad(median(xs.map((s) => s.modelCalls)).toFixed(1), 16) +
+        pad(secs(median(xs.map((s) => s.pureMs))), 14) +
+        pad(Number.isFinite(median(xs.map((s) => s.computeMs))) ? secs(median(xs.map((s) => s.computeMs))) : '—', 14) +
         pad(secs(median(xs.map((s) => s.latencyMs))), 12) +
         pad(Math.round(median(xs.map((s) => s.outputTokens))), 16) +
         `${okCount}/${xs.length}`,

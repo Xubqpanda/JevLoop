@@ -55,8 +55,10 @@ export interface ReactRun {
   modelCalls: number
   inputTokens: number
   outputTokens: number
-  /** 这些调用一共花了多少墙钟 */
+  /** 成功那几次调用的耗时之和（**不含重试** —— `latencyMs` 是内层的） */
   modelMs: number
+  /** 工具执行一共花了多少 */
+  toolMs: number
   /** 整轮墙钟（含工具执行） */
   latencyMs: number
   /** 怎么停的：`answered` / `max_steps` / `unparsable` */
@@ -127,6 +129,7 @@ export async function runReact(opts: {
   let inputTokens = 0
   let outputTokens = 0
   let modelMs = 0
+  let toolMs = 0
   let answer = ''
   let stop = 'max_steps'
 
@@ -183,7 +186,9 @@ export async function runReact(opts: {
       }
 
       calls.push({ tool: act.action, input: act.input })
+      const toolAt = performance.now()
       const observation = await callTool(act.action, act.input, opts.cwd)
+      toolMs += performance.now() - toolAt
       transcript.push(`Action: ${act.action}(${act.input.split('\n')[0]})\nObservation: ${observation}`)
     }
   } catch (err) {
@@ -197,6 +202,7 @@ export async function runReact(opts: {
       outputTokens,
       modelMs,
       latencyMs: performance.now() - t0,
+      toolMs,
       stop: 'failed',
       failed: (err as Error).message,
     }
@@ -210,6 +216,7 @@ export async function runReact(opts: {
     outputTokens,
     modelMs,
     latencyMs: performance.now() - t0,
+    toolMs,
     stop,
   }
 }
