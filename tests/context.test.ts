@@ -21,7 +21,7 @@ import {
   PRUNE_MARKER_PREFIX,
   resolvePruneBudget,
   pruneToolResult,
-  fitEvidence,
+  foldEvidence,
   resolveEvidencePolicy,
   EVIDENCE_POLICY,
   priceGenerateRequest,
@@ -151,9 +151,10 @@ test('★ 目标线必须容得下单条结果裁剪后的最大体积', () => {
   const mismatch = EVIDENCE_POLICY.retainChars < PRUNE_DEFAULTS.headChars + 58 + PRUNE_DEFAULTS.tailChars
   assert.equal(mismatch, false, '默认的 retainChars 容不下单条，目标线是个摆设')
 
-  // 显式构造一组不容得下的，必须抛（在 fitEvidence 里 —— 那里两样都知道）
+  // 显式构造一组不容得下的，必须抛 —— 校验在 `foldEvidence` 里，
+  // 因为只有那里**策略和裁剪预算两样都知道**
   assert.throws(
-    () => fitEvidence(['x'.repeat(100)], policy(100_000, 1_000)),
+    () => foldEvidence(ev('x'.repeat(100)), policy(100_000, 1_000)),
     /小于单条结果裁剪后的最大体积/,
   )
 })
@@ -164,91 +165,91 @@ test('策略的两个数都必须是整数', () => {
 })
 
 // ═══════════════════════════════════════════════════════════
-// 整段 evidence
+// 整段证据：折叠，不是丢弃
 // ═══════════════════════════════════════════════════════════
 
 const policy = (triggerChars: number, retainChars: number) => resolveEvidencePolicy({ triggerChars, retainChars })
 
+/** 造几条证据。`label` 模拟调用方给的工具名 —— `context.ts` 不认识工具 */
+const ev = (...texts: string[]) => texts.map((text, i) => ({ text, label: `tool${i}(target${i})` }))
+
 test('没到触发线时**什么都不做**，一个字都不动', () => {
-  const parts = ['a'.repeat(100), 'b'.repeat(100)]
-  const { text, report } = fitEvidence(parts, policy(20_000, 6_000))
+  const parts = ev('a'.repeat(100), 'b'.repeat(100))
+  const { text, report, folds } = foldEvidence(parts, policy(20_000, 6_000))
   assert.equal(report.acted, false)
-  assert.equal(report.prunedCount, 0)
-  assert.equal(report.droppedCount, 0)
-  assert.equal(text, parts.join('\n'))
+  assert.equal(folds.length, 0)
+  assert.equal(text, parts.map((p) => p.text).join('\n'))
 })
 
-test('刚过触发线只做逐条剪中间，不丢整条', () => {
+test('刚过触发线只做逐条剪中间，不折整段', () => {
   const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
-  const parts = ['A'.repeat(500), 'B'.repeat(500)]
-  // 触发 900（1000 > 900，会动手）；目标 500（剪完约 404，落得进去，所以不丢整条）
-  const { text, report } = fitEvidence(parts, policy(900, 500), pruneBud)
+  const { text, report, folds } = foldEvidence(
+    ev('A'.repeat(500), 'B'.repeat(500)),
+    policy(900, 500),
+    pruneBud,
+  )
   assert.equal(report.prunedCount, 2)
-  assert.equal(report.droppedCount, 0)
-  assert.ok(text.includes('A'), '整条不该被丢')
-  assert.ok(text.includes('B'))
+  assert.equal(folds.length, 0, '剪中间就够了，不该折')
+  assert.ok(text.includes('A') && text.includes('B'), '两条都还在')
 })
 
-test('剪完还超目标线，就从**最老的整条**丢', () => {
+test('★ 剪完还超就**折成一个摘要**，而不是丢掉', () => {
   const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
-  const parts = ['OLD'.repeat(200), 'MID'.repeat(200), 'NEW'.repeat(200)]
-  const { text, report } = fitEvidence(parts, policy(1000, 400), pruneBud)
-
-  assert.ok(report.droppedCount > 0, '应当丢了整条')
-  assert.ok(!text.includes('OLD'), '最老的应当先被丢')
-  assert.ok(text.includes('NEW'), '最新的必须留下')
+  const { text, report, folds } = foldEvidence(
+    ev('OLD'.repeat(200), 'MID'.repeat(200), 'NEW'.repeat(200)),
+    policy(1000, 400),
+    pruneBud,
+  )
+  assert.equal(folds.length, 1, '应当恰好折一段')
+  assert.ok(folds[0]!.foldedNodes >= 1)
+  assert.equal(report.foldedCount, folds[0]!.foldedNodes)
+  assert.ok(text.includes('已折叠'), '摘要里要写明折了几步')
+  assert.ok(text.includes('NEW'), '最新的那条必须留下')
+  assert.match(text, /原文在轨迹里/, '要说清原文没丢，只是没进请求')
 })
 
-test('★ 最新的一条永远不会被丢空', () => {
-  const { text } = fitEvidence(['X'.repeat(50_000)], policy(20_000, 6_000))
-  assert.ok(text.includes('X'), '唯一一条被丢空了')
-  assert.ok(len(text) < 50_000, '但它应当被剪过')
+test('★ 摘要里带上了「碰过哪些目标」—— 指代要靠它落地', () => {
+  const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
+  const parts = [
+    { text: 'x'.repeat(500), label: 'list_dir(.)' },
+    { text: 'y'.repeat(500), label: 'read_file(invoice.ts)' },
+    { text: 'z'.repeat(500), label: 'read_file(retry.ts)' },
+    { text: 'w'.repeat(100), label: 'read_file(notes.md)' },
+  ]
+  const { text } = foldEvidence(parts, policy(800, 300), pruneBud)
+  assert.match(text, /已折叠/)
+  assert.match(text, /read_file×2|read_file/, '要按工具计数')
+  assert.match(text, /invoice\.ts/, '碰过的目标要列出来，否则「那个文件」无处可指')
+})
+
+test('★ 最新的一条永远不会被折掉', () => {
+  const { text } = foldEvidence(ev('X'.repeat(50_000)), policy(20_000, 6_000))
+  assert.ok(text.includes('X'), '唯一一条被折空了')
 })
 
 test('★ 压不到目标线时如实报 overRetain，不假装压过了', () => {
-  // 单条 7000 字符：**在裁剪阈值（8192）之下**，所以不会被剪；
-  // 但**在目标线（6000）之上**，而最后一条又不会被丢 —— 于是压不下去。
-  //
-  // 这不是 bug，是如实报告。它同时也是「裁剪阈值 > 目标线」的必然结果，
-  // 所以这个字段不是摆设，它会在真实数据上出现。
-  const { report, text } = fitEvidence(['Y'.repeat(7000)], policy(6_000, 5_200))
+  const { report, text } = foldEvidence(ev('Y'.repeat(7000)), policy(6_000, 5_200))
   assert.equal(report.prunedCount, 0, '7000 < 8192，不该被剪')
-  assert.equal(report.droppedCount, 0, '只有一条，不该被丢')
+  assert.equal(report.foldedCount, 0, '只有一条，不该被折')
   assert.equal(report.overRetain, true, '压不下去就必须说')
   assert.match(text, /超过目标/, '账目里要写明')
 })
 
-test('丢了东西就必须写进账目（§8.10）', () => {
+test('动了就要写账（§8.10）', () => {
   const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
-  const { text, report } = fitEvidence(['A'.repeat(500), 'B'.repeat(500)], policy(400, 250), pruneBud)
+  const { text, report } = foldEvidence(ev('A'.repeat(500), 'B'.repeat(500)), policy(400, 250), pruneBud)
   assert.equal(report.acted, true)
-  assert.match(text, /context budget/, '丢了东西却不写账目')
+  assert.match(text, /context budget/, '动了却不写账')
 })
 
 test('账目里的数对得上', () => {
   const pruneBud = resolvePruneBudget({ thresholdChars: 300, headChars: 100, tailChars: 50 })
-  const parts = ['A'.repeat(500), 'B'.repeat(500)]
-  const { text, report } = fitEvidence(parts, policy(900, 500), pruneBud)
+  const { text, report } = foldEvidence(ev('A'.repeat(500), 'B'.repeat(500)), policy(900, 500), pruneBud)
   assert.equal(report.rawChars, 1000)
   assert.equal(report.prunedCount, 2)
-  assert.equal(report.keptChars, len(text))
+  assert.equal(report.keptChars, text.length)
   assert.equal(report.triggerChars, 900)
   assert.equal(report.retainChars, 500)
-})
-
-test('N1: 只丢不剪的时候，acted 也必须是真的', () => {
-  // 每条都**短于剪枝阈值**（不会被剪中间），但总和远超触发线 → 只会走「整条丢」。
-  // 上面那些测试全都构造了会被剪中间的长条目，所以它们**碰不到**这条路径。
-  const parts = Array.from({ length: 40 }, () => 'x'.repeat(PRUNE_DEFAULTS.thresholdChars - 100))
-  const { report } = fitEvidence(parts)
-
-  assert.equal(report.prunedCount, 0, '每条都短于阈值，不该有任何一条被剪中间')
-  assert.ok(report.droppedCount > 0, '总和远超触发线，必须丢掉整条')
-
-  // 修之前：`acted: prunedCount > 0` —— 丢了 39 条却报 `false`（没动过）。
-  // `text` 那一面是对的（末尾说明了丢了几条），错的是 `report`，
-  // 而 `ContextReport` 存在的意义正是让程序化消费方不必解析那句散文。
-  assert.equal(report.acted, true, '丢了条目就是动过内容')
 })
 
 // ═══════════════════════════════════════════════════════════

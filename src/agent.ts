@@ -42,7 +42,7 @@ import {
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
-import { fitEvidence, priceGenerateRequest, EVIDENCE_POLICY, type ContextReport } from './context.ts'
+import { foldEvidence, priceGenerateRequest, EVIDENCE_POLICY, type ContextReport } from './context.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
@@ -308,10 +308,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   let lastEvidence: ContextReport | undefined
 
   const evidence = (): string => {
-    const parts = (ctx.history ?? []).map(
-      (x) => `${x.tool}(${clip(x.input, EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
-    )
-    const { text, report } = fitEvidence(parts, EVIDENCE_POLICY)
+    // `label` 是给折叠摘要用的短名字 —— `context.ts` 不认识工具，所以由这里给
+    const parts = (ctx.history ?? []).map((x) => ({
+      text: `${x.tool}(${clip(x.input, EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
+      label: x.input ? `${x.tool}(${clip(x.input, 60)})` : x.tool,
+    }))
+    const { text, folds, report } = foldEvidence(parts, EVIDENCE_POLICY)
     lastEvidence = report
     // 只有真的动了才发 —— 没超触发线时什么都不做，那没什么可报的
     if (report.acted) {
@@ -321,16 +323,40 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         rawChars: report.rawChars,
         keptChars: report.keptChars,
         prunedCount: report.prunedCount,
-        droppedCount: report.droppedCount,
+        foldedCount: report.foldedCount,
         overRetain: report.overRetain,
+        folds: folds.map((f) => ({
+          toSeq: f.toSeq,
+          foldedNodes: f.foldedNodes,
+          removedChars: f.removedChars,
+        })),
       })
     }
     return text
   }
 
+  // ★ 证据**只算一次**。
+  //
+  //   `evidence()` 里有一次折叠（重活），而它原本被调了两遍 ——
+  //   一遍给生成、一遍给定价 —— 加上 revise 那一轮一共 4 遍。
+  //   后果不只是白算：每算一遍就发一个 `context` 事件，于是界面和轨迹里
+  //   出现 4 条一模一样的账目。
+  //
+  //   循环已经结束，`ctx.history` 在两次生成之间不会变，所以一次就够。
+  const evidenceText = evidence()
+  const evidenceEstimate = priceGenerateRequest({
+    task: ctx.task,
+    evidence: evidenceText,
+    history: opts.history,
+  })
+
   let genStep = step + 1
   decider.setStep(genStep)
-  const gen = await generator.generate({ task: ctx.task, evidence: evidence(), history: opts.history })
+  const gen = await generator.generate({
+    task: ctx.task,
+    evidence: evidenceText,
+    history: opts.history,
+  })
   meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,
     latencyMs: gen.latencyMs,
@@ -344,11 +370,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     latencyMs: gen.latencyMs,
     inputTokens: gen.inputTokens,
     outputTokens: gen.outputTokens,
-    estimatedInputTokens: priceGenerateRequest({
-      task: ctx.task,
-      evidence: evidence(),
-      history: opts.history,
-    }).controlTokens,
+    estimatedInputTokens: evidenceEstimate.controlTokens,
   })
   ctx.draft = gen.text
 
@@ -364,7 +386,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     decider.setStep(genStep)
     const retry = await generator.generate({
       task: ctx.task,
-      evidence: evidence(),
+      // 同一份证据 —— 循环早就结束了，history 没变过
+      evidence: evidenceText,
       history: opts.history,
       instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
     })
@@ -381,11 +404,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       latencyMs: retry.latencyMs,
       inputTokens: retry.inputTokens,
       outputTokens: retry.outputTokens,
-      estimatedInputTokens: priceGenerateRequest({
-        task: ctx.task,
-        evidence: evidence(),
-        history: opts.history,
-      }).controlTokens,
+      estimatedInputTokens: evidenceEstimate.controlTokens,
     })
     ctx.draft = retry.text
     deliver = record(await decider.decide(canDeliver, ctx))

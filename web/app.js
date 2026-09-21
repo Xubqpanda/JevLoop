@@ -33,6 +33,15 @@
  * 那是「没量到」而不是「量到了 0」（§8.10）。把两者显示成同一个东西
  * 会让人以为一次调用真的没花 token。
  */
+/** 上下文账目的一句话。两个调用点共用 —— 分两处写必然分叉 */
+function contextBits(e) {
+  const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
+  if (e.prunedCount > 0) bits.push(`剪中间 ${e.prunedCount} 条`)
+  if (e.foldedCount > 0) bits.push(`折叠 ${e.foldedCount} 条`)
+  if (e.overRetain) bits.push('⚠ 压完仍超目标')
+  return bits
+}
+
 function tokenText(e) {
   const reported = e.inputTokens > 0 || e.outputTokens > 0
   if (!reported) return `估 ${e.estimatedInputTokens} tok · 用量未报`
@@ -182,11 +191,7 @@ function processRow(e, dur) {
       break
     case 'context': {
       // 压了什么必须写清楚 —— 否则「这次答得不全」会被归因到模型身上
-      const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
-      if (e.prunedCount > 0) bits.push(`剪中间 ${e.prunedCount} 条`)
-      if (e.droppedCount > 0) bits.push(`丢整条 ${e.droppedCount} 条`)
-      if (e.overRetain) bits.push('⚠ 压完仍超目标')
-      detail.push(bits.join(' · '))
+      detail.push(contextBits(e).join(' · '))
       break
     }
     default:
@@ -377,9 +382,7 @@ function contentOf(e) {
     case 'audit':
       return [mono(e.record?.tool ?? ''), dim(` 记了审计留痕 · risk ${e.record?.risk ?? '?'}`)]
     case 'context': {
-      const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
-      if (e.prunedCount > 0) bits.push(`剪中间 ${e.prunedCount} 条`)
-      if (e.droppedCount > 0) bits.push(`丢整条 ${e.droppedCount} 条`)
+      const bits = contextBits(e)
       if (e.overRetain) {
         return [h('span', { class: 'warn' }, '⚠ 上下文压不到目标线'), dim(' · ' + bits.join(' · '))]
       }
@@ -633,7 +636,12 @@ function renderDetail() {
   if (e.type === 'context') {
     kids.push(field('证据总量', `${e.rawChars} → ${e.keptChars} 字符`))
     kids.push(field('剪了中间的', `${e.prunedCount} 条`))
-    kids.push(field('整条丢弃的', `${e.droppedCount} 条`))
+    // **不是「丢弃」** —— 原文还在轨迹里，只是没进这次生成请求。
+    // 这两个词的区别就是 surface 折叠存在的理由，界面上不能混。
+    kids.push(field('折叠成摘要的', `${e.foldedCount ?? 0} 条（原文在轨迹里，一条不少）`))
+    for (const f of e.folds ?? []) {
+      kids.push(field(`折叠段 seq 0–${f.toSeq}`, `${f.foldedNodes} 条，省下 ${f.removedChars} 字符`))
+    }
     if (e.overRetain) {
       kids.push(
         field(

@@ -51,6 +51,14 @@
 
 import { estimateTokens } from './estimate.ts'
 import {
+  commitSurface,
+  foldSeq,
+  planReplace,
+  surfaceChars,
+  type FoldRecord,
+  type SurfaceNode,
+} from './surface.ts'
+import {
   PRUNE_DEFAULTS,
   PRUNE_MARKER_MAX_CHARS,
   assertInt,
@@ -176,8 +184,13 @@ export interface ContextReport {
   keptChars: number
   /** 有多少个工具结果被剪了中间 */
   prunedCount: number
-  /** 有多少条结果被整条丢了 */
-  droppedCount: number
+  /**
+   * 有多少条被**折进了摘要**。
+   *
+   * 注意不是「丢了」—— 它们的内容还在日志里、轨迹里照样一条不少，
+   * 只是不再逐条进生成请求。这个区别是 `surface.ts` 存在的全部理由。
+   */
+  foldedCount: number
   /** 触发线 */
   triggerChars: number
   /** 目标线 */
@@ -196,36 +209,55 @@ export interface ContextReport {
 }
 
 /**
- * 把整段 evidence 压进策略。
+ * 交给生成器的一条证据。
+ *
+ * `label` 由**调用方**提供，因为 `context.ts` 不认识工具 —— 它只做预算。
+ * 折叠时需要一个能代表这条的短名字，而只有调用方知道那是什么。
+ */
+export interface EvidencePart {
+  /** 完整内容。会被逐条剪中间（`context-prune.ts`） */
+  text: string
+  /** 极短的名字，折叠成摘要时用。例如 `read_file(a.ts)` */
+  label: string
+}
+
+/**
+ * 把整段证据压进策略。
  *
  * 三档，按代价从低到高：
  *
  *   ① 没到触发线        → **什么都不做**（压缩本身有成本）
  *   ② 逐条剪中间        → 不去掉任何信息，只去掉冗余的中间段
- *   ③ 从最老的整条丢    → 真的丢东西，所以丢最老的
+ *   ③ 把最老的一段**折成一个摘要** → 细节看不到，但「做过什么」还在
  *
- * DSH 的顺序也是这样：先做不需要模型的那一步，**重新量**，还超才动摘要。
- * 这里没有摘要那一档（原型不做，见文件头）。
+ * ── 第三档为什么不直接丢 ────────────────────────────────────────
  *
- * @returns 压缩后的文本 + 一份账。账要显示给用户（§8.10：丢了什么必须说）
+ * 直接丢会**永久抹掉「它做过那一步」**。模型于是不知道自己已经列过目录、
+ * 读过哪些文件，就会重做一遍 —— 而重做要花钱。折叠保留的是这件事的**形状**：
+ *
+ *     [折叠 6 步：list_dir×1、read_file×5 —— a.ts、b.ts、c.ts、d.ts、e.ts]
+ *
+ * 日志（`ctx.history`）一个字节没动，所以轨迹视图里那 6 步照样一条不少。
+ * 这就是 DSH 那个形状：**日志只追加，模型看的是一层折出来的表面**
+ * （机制在 `surface.ts`）。
+ *
+ * @returns 折叠后的文本 + 折叠记录 + 一份账
  */
-export function fitEvidence(
-  parts: readonly string[],
+export function foldEvidence(
+  parts: readonly EvidencePart[],
   policy: EvidencePolicy = EVIDENCE_POLICY,
   budget: PruneBudget = PRUNE_DEFAULTS,
-): { text: string; report: ContextReport } {
-  // 两样都在手上时才校验得动：目标线要容得下单条裁剪后的最大体积，
-  // 否则「压到只剩一条」时永远报 overRetain，而那是**不可能满足**的
+): { text: string; folds: FoldRecord[]; report: ContextReport } {
   assertCompatible(policy, budget)
 
-  const size = (xs: readonly string[]) => xs.reduce((n, x) => n + Array.from(x).length, 0)
-  const rawChars = size(parts)
+  const nodes: SurfaceNode[] = parts.map((p, i) => ({ seq: i, text: p.text }))
+  const rawChars = surfaceChars(nodes)
 
   const base: ContextReport = {
     rawChars,
     keptChars: rawChars,
     prunedCount: 0,
-    droppedCount: 0,
+    foldedCount: 0,
     triggerChars: policy.triggerChars,
     retainChars: policy.retainChars,
     acted: false,
@@ -233,54 +265,112 @@ export function fitEvidence(
   }
 
   // ① 没到触发线就原样返回
-  if (rawChars <= policy.triggerChars) return { text: parts.join('\n'), report: base }
-
-  // ② 每条先剪中间
-  let prunedCount = 0
-  const trimmed = parts.map((p) => {
-    const r = pruneToolResult(p, budget)
-    if (r.pruned) prunedCount++
-    return r.text
-  })
-
-  // ③ 还超目标线就从最老的整条丢。丢最老的，因为最近的结果才是回答要用的
-  let kept = trimmed
-  let droppedCount = 0
-  while (kept.length > 1 && size(kept) > policy.retainChars) {
-    kept = kept.slice(1)
-    droppedCount++
+  if (rawChars <= policy.triggerChars) {
+    return { text: parts.map((p) => p.text).join('\n'), folds: [], report: base }
   }
 
-  const overRetain = size(kept) > policy.retainChars
-  // 措辞沿用 `agent.ts` 原来那份内联实现的两句话：它们更准
-  // （「被截断」说的是单条被剪中间，「因为预算被省略」说的是整条没进来），
-  // 而且已经有一条测试把它当契约钉住了（A3）。合并时保留它们，
-  // 既不用去改那条测试，也不用碰别人正在编辑的文件。
+  // ② 每条先剪中间：不去掉信息，只去掉冗余
+  let prunedCount = 0
+  for (let i = 0; i < nodes.length; i++) {
+    const r = pruneToolResult(nodes[i]!.text, budget)
+    if (r.pruned) {
+      prunedCount++
+      nodes[i] = { seq: i, text: r.text }
+    }
+  }
+
+  // ③ 还超就从最老的开始**折**。吃多少取决于要压到多低，
+  //    但**永远留最后一条** —— 最新的结果才是回答要用的（同 DSH 的
+  //    「tail-most node is always retained」）。
+  const folds: FoldRecord[] = []
+  const afterPrune = surfaceChars(nodes)
+  if (afterPrune > policy.retainChars && nodes.length > 1) {
+    const digestOf = (end: number): string => digestFor(parts.slice(0, end + 1))
+    let end = 0
+    let digest = digestOf(0)
+    while (end < nodes.length - 2) {
+      const projected = afterPrune - removedChars(nodes, 0, end) + digest.length
+      if (projected <= policy.retainChars) break
+      end++
+      digest = digestOf(end)
+    }
+
+    const removed = removedChars(nodes, 0, end)
+    const seq = foldSeq(nodes, 0)
+    const plan = planReplace(
+      nodes,
+      0,
+      end,
+      { seq, text: digest },
+    )
+    // 替换必须真的变小，否则那不是折叠（模块头第 3 条不变量）
+    if (plan.deltaChars < 0) {
+      folds.push({
+        fromSeq: parts[0]!.label ? 0 : 0,
+        toSeq: end,
+        foldedNodes: end + 1,
+        removedChars: removed,
+        digestChars: digest.length,
+      })
+      commitSurface(nodes, plan)
+    }
+  }
+
+  const keptChars = surfaceChars(nodes)
+  const overRetain = keptChars > policy.retainChars
   const notes: string[] = []
   if (prunedCount > 0) notes.push(`其中 ${prunedCount} 步的工具输出被截断`)
-  if (droppedCount > 0) notes.push(`更早的 ${droppedCount} 步因为预算被省略`)
-  if (overRetain) notes.push(`压完仍有 ${size(kept)} 字符，超过目标 ${policy.retainChars}`)
-
-  const text = kept.join('\n') + (notes.length ? `\n\n[... context budget: ${notes.join('，')} ...]` : '')
+  if (folds.length > 0) {
+    notes.push(`更早的 ${folds[0]!.foldedNodes} 步已折叠成摘要（原文在轨迹里）`)
+  } else if (overRetain) {
+    // 折到只剩最后一条（或者本来就只有一条）还是超 —— 必须说出来。
+    // 以前这里多一个 `&& nodes.length > 1`，于是「单条压不下去」这条
+    // **最该被看见**的情形反而不写账：读的人以为没有预算问题。
+    notes.push(`压完仍有 ${keptChars} 字符，超过目标 ${policy.retainChars}`)
+  }
+  const text = nodes.map((n) => n.text).join('\n') + (notes.length ? `\n\n[... context budget: ${notes.join('，')} ...]` : '')
 
   return {
     text,
+    folds,
     report: {
       ...base,
-      keptChars: Array.from(text).length,
+      keptChars: text.length,
       prunedCount,
-      droppedCount,
-      // ★ 两种动作都算「动过」。以前只写了 `prunedCount > 0` ——
-      //   于是「一条都没剪中间、但整条丢了 39 条」时 `acted` 是 `false`：
-      //   丢了条目却说没动过。
-      //
-      //   `text` 那一面是对的（末尾有「…条最早的结果被整条丢弃…」），
-      //   错的是 `report` —— 而 `ContextReport` 存在的意义正是让**程序化消费方**
-      //   不必去解析那句散文。谁读 `acted` 谁就得到相反的答案。
-      acted: prunedCount > 0 || droppedCount > 0,
+      foldedCount: folds.reduce((n, f) => n + f.foldedNodes, 0),
+      acted: prunedCount > 0 || folds.length > 0,
       overRetain,
     },
   }
+}
+
+function removedChars(nodes: readonly SurfaceNode[], startIdx: number, endIdx: number): number {
+  let n = 0
+  for (let i = startIdx; i <= endIdx; i++) n += nodes[i]!.text.length
+  return n
+}
+
+/**
+ * 折叠摘要。
+ *
+ * 说清**几步**、**都是什么工具**、以及**碰过哪些目标** —— 前两个让模型
+ * 知道自己做到哪儿了，第三个让「再读一遍那个文件」这种指代还能落地。
+ *
+ * 刻意**不**把内容摘要进来：那需要一次模型调用，而这一档存在的意义正是
+ * 「先做不需要模型的那一步」（同 DSH：prune 在 summarise 之前）。
+ */
+function digestFor(parts: readonly EvidencePart[]): string {
+  const byTool = new Map<string, number>()
+  const targets: string[] = []
+  for (const p of parts) {
+    const tool = p.label.split('(')[0] ?? p.label
+    byTool.set(tool, (byTool.get(tool) ?? 0) + 1)
+    const m = /\(([^)]*)\)/.exec(p.label)
+    if (m && m[1]) targets.push(m[1])
+  }
+  const counts = [...byTool].map(([t, n]) => (n > 1 ? `${t}×${n}` : t)).join('、')
+  const seen = targets.slice(0, 20).join('、')
+  return `[更早的 ${parts.length} 步已折叠：${counts}${seen ? ` —— 碰过 ${seen}` : ''}]`
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -288,7 +378,7 @@ export function fitEvidence(
 //
 // 上面那套预算管的是**工具证据**。但一次生成请求里还有别的：
 // 上文、当前这一句，以及生成器自己那段 system prompt。
-// 证据被压到 6000 字符，可不等于整个请求就只有那么大 ——
+// 证据被折到 6000 字符，可不等于整个请求就只有那么大 ——
 // 所以「总共多大」必须**量出来**，不能只看被管住的那一块。
 // ═══════════════════════════════════════════════════════════
 
@@ -298,7 +388,7 @@ export interface RequestEstimate {
   historyTokens: number
   /** 当前这一句 */
   taskTokens: number
-  /** 工具证据 —— 已经被 `fitEvidence` 管住的那一块 */
+  /** 工具证据 —— 已经被 `foldEvidence` 管住的那一块 */
   evidenceTokens: number
   /** 合计：我们发出去的部分 */
   controlTokens: number
@@ -322,11 +412,14 @@ export interface RequestEstimate {
  *       ≈ system prompt + 启发式的偏差
  *
  * **不要把这个差值当成 system prompt 的大小** —— 它是两者的和，而启发式
- * 的偏差是 ±30%（见 `estimate.ts`）。它的用途是**看趋势**：证据翻倍时
+ * 的偏差是 ±30%（见 `estimate.ts`）。它的用途是**看趋势**：证据变大时
  * provider 报的数是不是也跟着涨。涨不动，说明预算没起作用；涨得比估算快，
  * 说明这条启发式在你的内容上偏了，该重新校准。
  *
- * 这比在注释里断言「中文 1 字 ≈ 1 token」强 —— 那句话在这里可以**被核对**。
+ * 实测（2026-09-21，deepseek-flash，中文注释 + 英文代码）：
+ * 3 文件时 估 37 / 报 103（差 +66，主要是 system prompt 约 60）；
+ * 6 文件时 估 1606 / 报 2075（差 +469）—— 差值随规模涨，说明启发式
+ * 在**代码**上偏低约 25%（英文代码不是 4 字符 1 token）。
  */
 export function priceGenerateRequest(req: {
   task: string

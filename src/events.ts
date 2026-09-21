@@ -83,8 +83,15 @@ export type AgentEvent =
       keptChars: number
       /** 有多少条结果被剪了中间 */
       prunedCount: number
-      /** 有多少条结果被整条丢弃 */
-      droppedCount: number
+      /**
+       * 有多少条被**折进了摘要**（不是丢了 —— 原文还在轨迹里）。
+       *
+       * 这个区别是 `surface.ts` 存在的理由：直接丢会让模型不知道
+       * 「它已经做过那一步」，于是重做一遍，而重做要花钱。
+       */
+      foldedCount: number
+      /** 折了哪几段。轨迹视图据此标出「这几步被折过」 */
+      folds: { toSeq: number; foldedNodes: number; removedChars: number }[]
       /** 压完仍然超过目标线吗 */
       overRetain: boolean
     }

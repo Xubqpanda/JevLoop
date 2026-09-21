@@ -182,6 +182,9 @@ const LAYER: Record<string, number> = {
   'context-prune': 0,
   // `estimate` 同 `context-prune`：零依赖纯函数，谁都能用，放最底下
   estimate: 0,
+  // `surface` 零 import：表面机制（追加 / 替换一段）不认识任何领域概念。
+  // 同 context-prune / estimate 的先例 —— 依赖面为零就放最底下。
+  surface: 0,
   // L2 —— 接缝
   'seam-provider': 2,
   // 按 §12 拆成三件事，各自 L2（都只依赖 seam-provider / vocab）：
