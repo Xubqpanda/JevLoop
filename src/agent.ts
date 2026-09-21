@@ -37,10 +37,8 @@ import {
   stepOk,
   isDone,
   canDeliver,
-  hasFileOptions,
-  type AgentCtx,
-  type StepRecord,
 } from './decisions.ts'
+import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'

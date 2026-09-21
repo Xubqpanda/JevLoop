@@ -58,8 +58,9 @@ export { ScriptedGenerator, HttpGenerator } from './llm.ts'
 export type { Generator, GenerateRequest, GenerateResult } from './llm.ts'
 
 // ── 预设的判定节点 ───────────────────────────────────────────
-export { needsTool, pickTool, pickInput, gradeRisk, stepOk, isDone, canDeliver, hasFileOptions, unreadFiles } from './decisions.ts'
-export type { AgentCtx, StepRecord } from './decisions.ts'
+export { needsTool, pickTool, pickInput, gradeRisk, stepOk, isDone, canDeliver } from './decisions.ts'
+export { hasFileOptions, unreadFiles } from './frame.ts'
+export type { AgentCtx, StepRecord } from './frame.ts'
 
 // ── 环境 ─────────────────────────────────────────────────────
 export { loadEnv } from './env.ts'
