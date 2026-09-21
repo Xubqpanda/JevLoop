@@ -7,24 +7,11 @@
  *  贵的一步，却成了唯一没有预算的一步。这个文件补的就是这个不对称。
  * ══════════════════════════════════════════════════════════════
  *
- * 机制照抄 DeepSeek Harness 的 `compaction-tool-result-pruner`
- * （MIT，Copyright © 2026 DeepSeek；见 web/LICENSE-DSH）。
- * 它的做法是**留头留尾、换掉中间**：
+ * 「一条结果怎么裁」在 `context-prune.ts`；这个文件管**整段**：
+ * 到什么时候动手、压完留多少、丢了什么要怎么说出来。
  *
- *     超过 thresholdChars 的结果
- *       → 保留前 headChars + 后 tailChars，中间换成 PRUNE_MARKER
- *
- * 为什么是头尾而不是只留头：工具输出里**最有用的两端**是开头（它是什么）
- * 和结尾（错误、汇总、最后的匹配）。砍中间比砍尾巴留下的信息多得多。
- *
- * ── 从 DSH 抄来的那条硬校验 ────────────────────────────────────
- *
- * `headChars + PRUNE_MARKER + tailChars` **必须 ≤ `thresholdChars`**，
- * 否则配置期直接抛。理由：裁剪必须**保证真的变小**。不校验的话，
- * 一组「阈值 100、头 80、尾 40」的配置会让裁剪后的文本比原来还长 ——
- * 而那不会报错，只会让上下文越裁越大。
- *
- * 同一个道理还有第二条：裁剪后如果没变小，就当没裁（见 `pruneToolResult`）。
+ * 分开的理由是两者的输入输出形状不同 —— 那边收一个字符串出一个字符串，
+ * 对上下文一无所知；这边收一个数组出一份账。
  *
 
  * ── ⚠️ 状态：**和 `agent.ts` 里的一份实现重叠，待裁定** ──────────
@@ -56,139 +43,21 @@
  * @module JevLoop/context
  */
 
-// ═══════════════════════════════════════════════════════════
-// 单位：字符，不是 token
-//
-// DSH 也用字符。理由是这个数只需要**可比**：我们要判断的是
-// 「这一个结果比那一个大一个量级」，而不是精确计量。真 tokenizer
-// 要带一份词表，而零依赖是这个仓库的对外承诺。
-//
-// `budget.ts` 的 `estimateTokens` 负责把字符折算成 token 做上限判断，
-// 那里已经处理了 CJK（中文 1 字 ≈ 1 token）；这里只管字符。
-// ═══════════════════════════════════════════════════════════
+import {
+  PRUNE_DEFAULTS,
+  PRUNE_MARKER_MAX_CHARS,
+  assertInt,
+  pruneToolResult,
+  type PruneBudget,
+} from './context-prune.ts'
 
-/**
- * 被剪掉的那段用什么代替。
- *
- * 要能被一眼认出来，且**写明剪了多少** —— 只说「省略」的标记会让
- * 模型以为自己看到的是全部（§8.10 不假装成功）。
- */
-export const PRUNE_MARKER_PREFIX = '\n\n[... tool result middle pruned: '
-
-/** 标记的后缀，接在剪掉的字符数后面 */
-const PRUNE_MARKER_SUFFIX = ' chars]\n\n'
-
-/**
- * 标记的**最大**长度。
- *
- * 预留 15 位数字 —— 上限是 `Number.MAX_SAFE_INTEGER`（16 位），
- * 而一个字符串不可能有那么多字符。这个数是**上界**，不是估计：
- * 校验要么保证裁剪一定变小，要么就是假的。
- *
- * （第一版这里拍了 24 位，结果一组本来合法的预算被判非法。
- *   预留量拍大了不是「更安全」，是让校验误报。）
- */
-const PRUNE_MARKER_MAX_CHARS =
-  PRUNE_MARKER_PREFIX.length + 15 + PRUNE_MARKER_SUFFIX.length
-
-export interface PruneBudget {
-  /** 超过这个字符数就剪 */
-  thresholdChars: number
-  /** 保留开头多少字符 */
-  headChars: number
-  /** 保留结尾多少字符 */
-  tailChars: number
-}
-
-/**
- * 默认预算。
- *
- * 和 DSH 的默认值一致（8192 / 4096 / 1024）—— 那是给 coding agent 的
- * 工具输出调的，而这里的工具也是读文件和列目录，形状相同。
- *
- * 为什么 head 是 tail 的四倍：开头决定「这是什么」，通常不可压缩；
- * 结尾给的是错误信息和汇总，几句话就够。
- */
-export const PRUNE_DEFAULTS: PruneBudget = {
-  thresholdChars: 8192,
-  headChars: 4096,
-  tailChars: 1024,
-}
-
-/**
- * 校验一组预算是否自洽。
- *
- * **这条是 DSH 教我抄的。** 没有它，`{threshold: 100, head: 80, tail: 40}`
- * 会让裁剪后的文本（80 + 标记 + 40 > 100）比原来还长 —— 而且不报错，
- * 只是上下文越裁越大。
- *
- * @throws 预算不自洽时
- */
-export function resolvePruneBudget(budget: Partial<PruneBudget> = {}): PruneBudget {
-  const resolved: PruneBudget = {
-    thresholdChars: budget.thresholdChars ?? PRUNE_DEFAULTS.thresholdChars,
-    headChars: budget.headChars ?? PRUNE_DEFAULTS.headChars,
-    tailChars: budget.tailChars ?? PRUNE_DEFAULTS.tailChars,
-  }
-  assertInt('thresholdChars', resolved.thresholdChars, 1)
-  assertInt('headChars', resolved.headChars, 0)
-  assertInt('tailChars', resolved.tailChars, 0)
-
-  const emitted = resolved.headChars + PRUNE_MARKER_MAX_CHARS + resolved.tailChars
-  if (emitted > resolved.thresholdChars) {
-    throw new Error(
-      `PruneBudget: headChars + marker + tailChars (${emitted}) 必须 ≤ thresholdChars (${resolved.thresholdChars})。` +
-        `否则「裁剪」会让文本变长 —— 上下文会越裁越大，而且不会报错。`,
-    )
-  }
-  return resolved
-}
-
-function assertInt(name: string, value: number, min: number): void {
-  if (!Number.isInteger(value) || value < min) {
-    throw new Error(`PruneBudget: ${name} (${value}) 必须是 ≥ ${min} 的整数`)
-  }
-}
-
-export interface PruneResult {
-  text: string
-  /** 真的剪了吗 */
-  pruned: boolean
-  removedChars: number
-}
-
-/**
- * 一个工具结果进上下文之前过这里。
- *
- * @param text 工具返回的原文
- * @param budget 省略时用 `PRUNE_DEFAULTS`（已经过 `resolvePruneBudget` 校验）
- * @returns 裁剪后的文本；没超阈值就原样返回
- */
-export function pruneToolResult(text: string, budget: PruneBudget = PRUNE_DEFAULTS): PruneResult {
-  const full = String(text ?? '')
-  // Array.from 数的是**码点**不是 UTF-16 单元 —— 中文和 emoji 不会被从中间劈开
-  const chars = Array.from(full)
-  if (chars.length <= budget.thresholdChars) {
-    return { text: full, pruned: false, removedChars: 0 }
-  }
-
-  const removed = chars.length - budget.headChars - budget.tailChars
-  const marker = `${PRUNE_MARKER_PREFIX}${removed}${PRUNE_MARKER_SUFFIX}`
-  const head = chars.slice(0, budget.headChars).join('')
-  const tail = budget.tailChars > 0 ? chars.slice(-budget.tailChars).join('') : ''
-  const pruned = head + marker + tail
-
-  // 第二条保险：真剪完还是没变小就当没剪。
-  // 这能挡住「预算自洽但输入极短」之外的意外组合 —— 与其返回一个更长的
-  // 字符串还声称「我帮你省了」，不如老实返回原文。
-  if (Array.from(pruned).length >= chars.length) {
-    return { text: full, pruned: false, removedChars: 0 }
-  }
-  return { text: pruned, pruned: true, removedChars: removed }
-}
+// 再导出：`agent.ts` 和测试原本从 `context.ts` 拿这几样。
+// 拆文件不该让消费方跟着改 —— 那会把一次内部分层变成一次公开 API 变更（§8.12）。
+export { pruneToolResult, resolvePruneBudget, PRUNE_DEFAULTS, PRUNE_MARKER_PREFIX } from './context-prune.ts'
+export type { PruneBudget, PruneResult } from './context-prune.ts'
 
 // ═══════════════════════════════════════════════════════════
-// 整段上下文的预算
+// 整段证据的预算
 //
 // 这一层是**原型**：它只知道「有多少字符、上限是多少」，
 // 不做摘要、不做分段压缩。DSH 在它之上还有一整套

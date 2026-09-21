@@ -175,6 +175,11 @@ const LAYER: Record<string, number> = {
   // 但 `frame.ts` 知道 `AgentCtx`，而 `context.ts` 只收 `readonly string[]` ——
   // 它比 L3 更不知道上下文。而且它**零 import**，放哪层都不会产生依赖问题。
   context: 1,
+  // `context-prune` 放 L0 而不是和 `context` 同层：它**零 import**、纯函数，
+  // 只收一个字符串出一个字符串，对上下文一无所知。L1 的机制之间不许互相
+  // 依赖（§11），而它的依赖面比 L1 任何一件都小 —— 放在最底下，
+  // 谁都能依赖它，它不依赖谁。拆分理由见 AGENTS.md §12。
+  'context-prune': 0,
   // L2 —— 接缝
   'seam-provider': 2,
   provider: 2,
