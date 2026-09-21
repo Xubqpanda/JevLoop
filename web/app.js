@@ -696,7 +696,7 @@ function run(task) {
 
   startTicker()
 
-  const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}`)
+  const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}&session=${encodeURIComponent(sessionId)}`)
 
   es.onmessage = (msg) => {
     // 防御性：服务端会先发一行 `: connected` 注释，但按 SSE 规范注释行
@@ -845,6 +845,44 @@ function applyTheme(dark) {
 
 $('theme').addEventListener('click', () => applyTheme(!document.body.hasAttribute('data-jl-dark')))
 
+/**
+ * 新对话。
+ *
+ * 换一个会话 id 并清空两个视图。**这会真的断开服务端的上文** ——
+ * 不是只把屏幕擦干净（那样等内核接上 history 之后就会变成一个谎：
+ * 界面看着是新的，agent 却还记得）。
+ */
+$('new-session').addEventListener('click', async () => {
+  if (state.running) return
+  try {
+    await fetch(`/api/session?id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
+  } catch (err) {
+    // 清不掉服务端的就**不要**换 id —— 否则界面是新的、上下文还在，
+    // 两边不一致比不清更糟。说清楚并停在这里。
+    console.error('清空会话失败', err)
+    return
+  }
+  sessionId = newSessionId()
+  remember('jl-session', sessionId)
+
+  turns.length = 0
+  current = null
+  chat.replaceChildren(h('div', { class: 'empty' }, '新对话。说点什么。'))
+  trajBody.replaceChildren(h('tr', {}, h('td', { colspan: '2', class: 'empty' }, '还没有跑过。')))
+  spans.length = 0
+  clock = 0
+  selected = null
+  detailEvent = null
+  renderPlot()
+  state.decisions = state.models = state.tools = state.rules = 0
+  updateTally()
+  $('side-stats').replaceChildren(h('div', { class: 'empty' }, '运行结束后显示'))
+  detailBody.replaceChildren(h('div', { class: 'detail-empty' }, '点左边任意一行'))
+  detailTitle.textContent = '详情'
+  detailLocation.textContent = ''
+  detailTabs.replaceChildren()
+})
+
 function restore(key) {
   try {
     return localStorage.getItem(key)
@@ -853,6 +891,32 @@ function restore(key) {
     return null
   }
 }
+
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* 同上 */
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 会话
+//
+// 一个 id 代表一段对话。服务端按这个 id 记住每一轮的问答 ——
+// 现在**只记不读**（生成器还看不到上文，见 server.ts 的 MEMORY_WIRED）。
+//
+// 界面这边先把它接上：「新对话」换一个 id，服务端那边对应的历史就断了。
+// 这样等内核接上 history，不需要再动这里。
+// ═══════════════════════════════════════════════════════════
+
+function newSessionId() {
+  // 不追求唯一性，只要同一台机器上两次对话不撞 —— 服务端还会做 LRU 淘汰
+  return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+}
+
+let sessionId = restore('jl-session') || newSessionId()
+remember('jl-session', sessionId)
 
 // 跟随系统，除非用户手动选过
 const saved = restore('jl-theme')

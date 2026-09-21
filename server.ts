@@ -96,6 +96,17 @@ const MAX_TURNS = 12
  */
 const MAX_SESSIONS = 64
 
+/**
+ * 生成器**现在能不能看到上文**，如实报给界面。
+ *
+ * 这是这个服务端唯一一处「说了还没做」的地方，所以它必须是数据而不是
+ * 注释 —— 界面拿它决定要不要提示读者「它不记得上一句」。等内核接上
+ * `AgentOptions.history`，把这里改成 `true` 就够了，提示自动消失。
+ *
+ * 一个会撒谎的界面比一个缺功能的界面糟得多。
+ */
+const MEMORY_WIRED = false
+
 const SESSIONS = new Map<string, Turn[]>()
 
 function sessionOf(id: string): Turn[] {
@@ -334,10 +345,10 @@ function handleSession(req: IncomingMessage, res: ServerResponse, url: URL): voi
 
   if (req.method === 'POST') {
     SESSIONS.delete(id)
-    json(200, { turns: [] })
+    json(200, { turns: [], memory: MEMORY_WIRED })
     return
   }
-  json(200, { turns: sessionOf(id) })
+  json(200, { turns: sessionOf(id), memory: MEMORY_WIRED })
 }
 
 /**
