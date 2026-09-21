@@ -64,6 +64,64 @@ const MIME: Record<string, string> = {
 
 const DEFAULT_TASK = '列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数'
 
+// ═══════════════════════════════════════════════════════════
+// 会话
+//
+// 多轮的上文。一轮 = 用户说了什么 + agent 答了什么。
+//
+// ⚠️ **现在只做到「记录」**：会话会存下来、界面刷新能恢复、「新对话」
+// 能清空 —— 但**生成器还看不到上文**。那需要内核侧的
+// `GenerateRequest.history` 和 `AgentOptions.history`，而
+// `src/llm.ts` `src/agent.ts` `src/decisions.ts` 正被重构顾问持有
+// （见 docs/STATUS.md）。
+//
+// 所以下面 `runAgent` 的调用里**没有** history 参数。那不是漏了 ——
+// 等内核收这个字段，接上只要一行。
+// ═══════════════════════════════════════════════════════════
+
+interface Turn {
+  task: string
+  answer: string
+}
+
+/** 每个会话保留的轮数。再多没有意义 —— 生成器的上下文不是无限的 */
+const MAX_TURNS = 12
+
+/**
+ * 最多保留几个会话。
+ *
+ * 不设上限的话，每刷新一次页面就会留下一个永不释放的数组 ——
+ * 一个演示服务不该能被这样撑爆。超出时丢**最久没动过**的那个
+ * （Map 的迭代顺序就是插入顺序，删第一个即可）。
+ */
+const MAX_SESSIONS = 64
+
+const SESSIONS = new Map<string, Turn[]>()
+
+function sessionOf(id: string): Turn[] {
+  const key = id || 'default'
+  const existing = SESSIONS.get(key)
+  if (existing) {
+    // 重新插入 = 移到队尾，这样它不会是下一个被丢掉的
+    SESSIONS.delete(key)
+    SESSIONS.set(key, existing)
+    return existing
+  }
+  const fresh: Turn[] = []
+  SESSIONS.set(key, fresh)
+  if (SESSIONS.size > MAX_SESSIONS) {
+    const oldest = SESSIONS.keys().next().value
+    if (oldest !== undefined) SESSIONS.delete(oldest)
+  }
+  return fresh
+}
+
+function recordTurn(id: string, task: string, answer: string): void {
+  const turns = sessionOf(id)
+  turns.push({ task, answer })
+  if (turns.length > MAX_TURNS) turns.splice(0, turns.length - MAX_TURNS)
+}
+
 /** `maxSteps` 的默认值与上限。上限不是装饰：query 是不花钱就能拧的旋钮 */
 const DEFAULT_MAX_STEPS = 12
 const MAX_MAX_STEPS = 50
@@ -181,6 +239,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   const task = url.searchParams.get('task')?.trim() || DEFAULT_TASK
   const maxSteps = parseMaxSteps(url.searchParams.get('maxSteps'))
+  const session = url.searchParams.get('session') ?? 'default'
   const cwd = await workspaceRoot()
 
   const send = openStream(res)
@@ -201,6 +260,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
     const provider = resolveProvider()
     const generator = resolveGenerator()
 
+    // 注意这里**没有** history —— 内核还不收这个字段（见上面「会话」一节）。
+    // 会话已经记下来了，等 `AgentOptions.history` 落地，这里加一行即可。
     await runAgent({
       task,
       cwd,
@@ -213,6 +274,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       onAskHuman: async () => true,
       onEvent: (e) => {
         if (!clientGone) send(e)
+        // 只记真正跑完的那一轮。`run:end` 是唯一的完成信号，
+        // 中途断开时没有它 —— 那样这一轮不算数，免得存进一个空回答
+        if (e.type === 'run:end') recordTurn(session, task, e.answer)
       },
     })
   } catch (err) {
@@ -230,6 +294,29 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   } finally {
     if (!clientGone) res.end()
   }
+}
+
+/**
+ * 会话的历史：GET 读，POST 清空。
+ *
+ * 界面刷新后能用它把对话恢复出来 —— 会话在服务端，不在浏览器里。
+ *
+ * 这里返回的 `turns` 现在**只用于显示**：生成器还看不到它（见「会话」一节）。
+ * 所以别把它当成「agent 记得上文」的证据。
+ */
+function handleSession(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  const id = url.searchParams.get('id') ?? 'default'
+  const json = (code: number, body: unknown): void => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
+  }
+
+  if (req.method === 'POST') {
+    SESSIONS.delete(id)
+    json(200, { turns: [] })
+    return
+  }
+  json(200, { turns: sessionOf(id) })
 }
 
 /**
@@ -299,6 +386,10 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/spec') {
       await handleSpec(res)
+      return
+    }
+    if (url.pathname === '/api/session') {
+      handleSession(req, res, url)
       return
     }
     await serveStatic(res, url.pathname)
