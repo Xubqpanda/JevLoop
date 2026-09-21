@@ -597,7 +597,7 @@ test('E1: `export KEY=VALUE` 要设上 KEY，不能造出一个叫 `export KEY` 
 // ═══════════════════════════════════════════════════════════
 
 /** 造一个「只选第一个候选项」的判定器，风险分由参数给 */
-const fakeJudge = (risk: number, opts: { denyAfter?: number } = {}) => ({
+const fakeJudge = (risk: number, opts: { doneAfter?: number } = {}) => ({
   name: 'fake',
   decide: async (req: { state: unknown; questions: Record<string, { type: string; criteria?: unknown }> }) => {
     const s = req.state as { files_known?: string[]; already_read?: string[]; already_done?: string[] | string }
@@ -606,13 +606,14 @@ const fakeJudge = (risk: number, opts: { denyAfter?: number } = {}) => ({
       const crit = Object.keys((q.criteria ?? {}) as Record<string, string>)
       if (q.type === 'noul') {
         const read = (s.already_read ?? []).length
+        const doneAt = opts.doneAfter ?? 3
         // ★ `needs_auth` 必须给**低**分，否则授权闸门会把调用拒掉，
         //   循环根本走不到生成 —— A3 的第一版就是这么"空跑"的。
         //   A2 要的是硬闸门（`scoreGte('risk', 2)`），不靠这一条。
         answers[id] =
           id === 'needs_auth' || id === 'unsupported'
             ? { type: 'noul', noul: 0.05 }
-            : { type: 'noul', noul: id === 'done' ? (read >= 3 ? 0.9 : 0.05) : 0.9 }
+            : { type: 'noul', noul: id === 'done' ? (read >= doneAt ? 0.9 : 0.05) : 0.9 }
       } else if (q.type === 'score') {
         answers[id] = { type: 'score', score: risk, legend: {}, probabilities: {}, confidence: 0.9 }
       } else {
@@ -630,7 +631,7 @@ const fakeJudge = (risk: number, opts: { denyAfter?: number } = {}) => ({
         answers[id] = { type: 'choice', choice: pick, probabilities: pick ? { [pick]: 0.99 } : {}, confidence: 0.99 }
       }
     }
-    void opts
+
     return { answers, provider: 'fake', latencyMs: 0 }
   },
 })
@@ -676,12 +677,15 @@ test('A3: 交给生成器的证据有上界，且承认自己被截过', async (
 
   const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-ev-'))
   try {
-    // 三个都够大：全部读完之后，原样拼接会远超 6000 字符的证据预算
+    // 文件数必须够多，让**逐条裁剪之后的总和**也超过 6000 —— 否则测的只是
+    // 「单条被剪」，总量那条上界根本没被触发（第一版 3 个文件就是这样，
+    // 反向验证时把预算放到无穷大测试照样通过，暴露了它是个弱测试）。
+    const FILES = ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts', 'g.ts', 'h.ts', 'i.ts']
     const big = 'x'.repeat(3000)
-    for (const f of ['a.ts', 'b.ts', 'c.ts']) await writeFile(join(cwd, f), big, 'utf8')
+    for (const f of FILES) await writeFile(join(cwd, f), big, 'utf8')
 
     let seen = ''
-    const decider = new Decider({ provider: fakeJudge(0) as never, meter: new Meter() })
+    const decider = new Decider({ provider: fakeJudge(0, { doneAfter: FILES.length }) as never, meter: new Meter() })
     await runAgent({
       task: '读全部',
       cwd,
@@ -698,6 +702,7 @@ test('A3: 交给生成器的证据有上界，且承认自己被截过', async (
 
     // 修之前：`evidence` 把整份 history 原样拼起来 —— 这条路径上没有任何上界，
     // 而它进的是**生成请求**，`budget.validate()` 管不到。
+    // 9 个文件各 3000 字符，原样拼接是 ~27000，远超 6000 的预算。
     assert.ok(seen.length <= 6200, `证据必须有上界，实际 ${seen.length} 字符`)
     // §8.10：被省略/被截断的部分必须被承认，否则读起来就像"本来就这些"
     assert.match(seen, /因为预算被省略|工具输出被截断/, '截断必须报出来')
