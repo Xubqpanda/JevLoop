@@ -122,6 +122,14 @@ function recordTurn(id: string, task: string, answer: string): void {
   if (turns.length > MAX_TURNS) turns.splice(0, turns.length - MAX_TURNS)
 }
 
+/**
+ * `run:end` 之后等多久再关连接。
+ *
+ * 给客户端收到 `run:end` 后自己 `close()` 的时间 —— 服务端的 FIN 先到
+ * 会让浏览器报一次 error（见 handleRun 的 finally）。
+ */
+const STREAM_LINGER_MS = 200
+
 /** `maxSteps` 的默认值与上限。上限不是装饰：query 是不花钱就能拧的旋钮 */
 const DEFAULT_MAX_STEPS = 12
 const MAX_MAX_STEPS = 50
@@ -216,8 +224,15 @@ function openStream(res: ServerResponse): (e: AgentEvent) => void {
     // 关掉 nginx 之类的缓冲，否则事件会被攒着一起发
     'x-accel-buffering': 'no',
   })
+  // 客户端跑掉时 Node 会在 response 上发 `error`（ECONNRESET 之类）。
+  // **没有监听器的 'error' 事件会抛** —— 一个断开的标签页不该能掀掉服务端。
+  // 空 catch 说明：这里吞的就是「对面没了」，没有别的东西会到这里。
+  res.on('error', () => {})
   res.write(': connected\n\n')
-  return (e) => res.write(`data: ${JSON.stringify(e)}\n\n`)
+  return (e) => {
+    if (res.writableEnded || res.destroyed) return
+    res.write(`data: ${JSON.stringify(e)}\n\n`)
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -292,7 +307,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       })
     }
   } finally {
-    if (!clientGone) res.end()
+    // **不要立刻 end。** EventSource 把服务端关连接当成错误：如果 FIN 比
+    // `run:end` 的处理先到，浏览器就会报一次 error，界面于是显示「连接断开」
+    // —— 而那次运行其实完全成功。
+    //
+    // 客户端收到 `run:end` 会自己 close()，那之后我们的 end 就是无害的收尾。
+    // 留一拍是给那个 close() 的时间。
+    if (!clientGone) setTimeout(() => { if (!res.writableEnded) res.end() }, STREAM_LINGER_MS)
   }
 }
 

@@ -108,45 +108,121 @@ function userTurn(text) {
 }
 
 /**
- * 助手这一轮。
+ * 一次运行是「一次模型调用 + 很多次判定」，所以**过程本身就是内容**。
  *
- * 运行中只有**一行状态**（DSH 的扫光带），过程折进一个 details，
- * 正文落在背景上 —— 没有气泡。气泡是用户消息的记号，助手不该抢。
+ * 每一行事件追加到列表里，不覆盖 —— 覆盖的话你只看得见最后一个，
+ * 而「判定 13 次、模型 1 次」这件事恰恰只有铺开才看得见。
+ *
+ * 列表末尾永远有一行运行指示器，**它的秒数在走**。这是「慢」和「断」
+ * 的分界线：一次判定在 hosted Jev 上要 ~390ms，所以几秒没动静是正常的，
+ * 但秒数一直涨而不出下一行，就说明真的卡住了。
  */
 function assistantTurn() {
-  const status = h('div', { class: 'status' }, '开始判定…')
-  const processBody = h('div', { class: 'process-body' })
-  const process = h(
-    'details',
-    { class: 'process' },
-    h('summary', {}, '过程'),
-    processBody,
-  )
-  process.hidden = true
+  const list = h('div', { class: 'process-list' })
+  const running = h('div', { class: 'running-row' }, h('span', { class: 'pulse' }), '开始…')
   const answer = h('div', { class: 'answer' }, '')
   const foot = h('div', { class: 'msg-foot' })
-  const el = h('div', { class: 'msg-assistant' }, status, process, answer, foot)
+  const el = h('div', { class: 'msg-assistant' }, list, running, answer, foot)
   chat.append(el)
   el.scrollIntoView({ block: 'end', behavior: 'smooth' })
-  return { el, status, process, processBody, answer, foot, lines: 0, finished: false }
+  return { el, list, running, answer, foot, rows: 0, finished: false, stopped: false }
 }
 
-function setStatus(text) {
+/** 事件 → 过程里的一行 */
+function processRow(e, dur) {
+  const meta = EVENT_META[e.type]
+  if (!meta) return null
+
+  const detail = []
+  switch (e.type) {
+    case 'decision': {
+      const picked = Object.entries(e.answers ?? {})[0]
+      detail.push(h('span', { class: 'hit' }, `→ ${e.action}`))
+      if (picked) {
+        const [qid, a] = picked
+        if (a.type === 'choice') detail.push(` · ${qid}=${a.choice} ${pct(a.probabilities?.[a.choice] ?? 0)}`)
+        else if (a.type === 'noul') detail.push(` · ${qid}=${a.noul >= 0.5 ? '真' : '假'} ${pct(a.noul)}`)
+        else if (a.type === 'score') detail.push(` · ${qid}=档位 ${a.score}`)
+      }
+      break
+    }
+    case 'tool:call':
+      detail.push(e.input ? `${e.tool}(${e.input})` : `${e.tool}()`)
+      break
+    case 'tool:result':
+      detail.push(`${String(e.output ?? '').length} 字符`)
+      break
+    case 'generate':
+      detail.push(`${e.kind} · ${e.tokens} tokens · 唯一贵的一步`)
+      break
+    case 'authorize':
+      detail.push(`${e.tool} · ${e.approved ? '已授权' : '已拒绝'} · ${e.reason ?? ''}`)
+      break
+    case 'audit':
+      detail.push(`${e.record?.tool ?? ''} · risk ${e.record?.risk ?? '?'}`)
+      break
+    default:
+      break
+  }
+
+  return h(
+    'div',
+    { class: `prow ${meta.cls}` },
+    h('span', { class: 'pdot' }),
+    h('span', { class: 'pkind' }, meta.label),
+    h('span', { class: 'pname' }, e.id ?? e.tool ?? ''),
+    h('span', { class: 'pdetail' }, ...detail),
+    h('span', { class: 'ptime' }, dur && dur.measured ? ms(dur.ms) : ''),
+  )
+}
+
+/**
+ * 运行指示器：显示「现在在等什么」+ 已经等了多久。
+ *
+ * 没有这个，一次 37 秒的运行看起来和挂掉没有区别 —— 而它其实一直在跑，
+ * 只是每次判定之间隔着几百毫秒的静默。
+ */
+const STALL_AFTER_MS = 6000
+let ticker = null
+
+function startTicker() {
+  stopTicker()
+  ticker = setInterval(() => {
+    if (!current || current.finished || current.stopped) return
+    const waited = Date.now() - (current.lastEventAt ?? Date.now())
+    const secs = (waited / 1000).toFixed(0)
+    const stalled = waited >= STALL_AFTER_MS
+    current.running.className = `running-row${stalled ? ' stalled' : ''}`
+    current.running.replaceChildren(
+      h('span', { class: 'pulse' }),
+      `${current.waitingOn}  ·  已等待 ${secs}s${stalled ? '（比平时久）' : ''}`,
+    )
+  }, 500)
+}
+
+function stopTicker() {
+  if (ticker !== null) {
+    clearInterval(ticker)
+    ticker = null
+  }
+}
+
+function setWaiting(text) {
   if (!current) return
-  current.status.textContent = text
+  current.waitingOn = text
+  current.lastEventAt = Date.now()
+  if (!current.stopped) {
+    current.running.className = 'running-row'
+    current.running.replaceChildren(h('span', { class: 'pulse' }), `${text}  ·  已等待 0s`)
+  }
 }
 
 function finishAssistant(text, stats, halt) {
   if (!current) return
   current.finished = true
-  current.el.removeChild(current.status)
+  stopTicker()
+  current.el.removeChild(current.running)
   current.answer.textContent = text || '（没有回答）'
-
-  // 过程那一行只在真的发生过事情时才出现
-  if (current.lines > 0) {
-    current.process.hidden = false
-    current.process.querySelector('summary').textContent = `${current.lines} 步判定`
-  }
 
   const s = stats ?? {}
   const r = s.ratio
@@ -162,25 +238,6 @@ function finishAssistant(text, stats, halt) {
     h('span', {}, `停于 ${halt}`),
   )
   current.el.scrollIntoView({ block: 'end', behavior: 'smooth' })
-}
-
-/** 折进「过程」里的一行 —— 只保留判定的结论，不铺概率 */
-function processLine(e) {
-  const first = Object.entries(e.answers ?? {})[0]
-  let detail = ''
-  if (first) {
-    const [qid, a] = first
-    if (a.type === 'choice') detail = `${qid}=${a.choice} ${pct(a.probabilities?.[a.choice] ?? 0)}`
-    else if (a.type === 'noul') detail = `${qid}=${a.noul >= 0.5 ? '真' : '假'} ${pct(a.noul)}`
-    else if (a.type === 'score') detail = `${qid}=${a.score}`
-  }
-  return h(
-    'div',
-    { class: 'opt' },
-    h('span', { class: 'opt-name' }, e.id),
-    h('span', { class: 'opt-pct' }, e.action),
-    h('span', { class: 'opt-pct' }, detail),
-  )
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -555,36 +612,25 @@ function renderEndStats(e) {
 // ═══════════════════════════════════════════════════════════
 
 let lastStep = 0
+/** 本轮是否收到过 run:end。服务端正常收尾时关连接也会触发 onerror */
+let sawEnd = false
 
 function onEvent(e) {
   if (current) current.events.push(e)
 
-  // 对话侧：一行状态 + 过程里一行
-  switch (e.type) {
-    case 'decision':
-      setStatus(`判定 ${e.id} → ${e.action}`)
-      if (current) {
-        current.processBody.append(processLine(e))
-        current.lines++
-      }
-      break
-    case 'tool:call':
-      setStatus(`调用 ${e.tool}`)
-      break
-    case 'tool:result':
-      setStatus(`${e.tool} 返回 ${String(e.output ?? '').length} 字符`)
-      break
-    case 'authorize':
-      setStatus(e.approved ? `${e.tool} 已授权` : `${e.tool} 被拒绝`)
-      break
-    case 'audit':
-      setStatus(`${e.record?.tool ?? ''} 记了审计留痕`)
-      break
-    case 'generate':
-      setStatus(`生成中…（${e.kind}）`)
-      break
-    default:
-      break
+  // 对话侧：**追加**一行到过程列表，不覆盖。
+  // 覆盖的话你只看得见最后一个，而「判定 13 次、模型 1 次」这件事
+  // 恰恰只有一行行铺开才看得见 —— 那就是这个项目的全部主张。
+  if (current && e.type !== 'run:end') {
+    const row = processRow(e, durationOf(e))
+    if (row) {
+      current.list.append(row)
+      current.rows++
+      row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+    if (e.type === 'tool:call') setWaiting(`正在执行 ${e.tool}`)
+    else if (e.type === 'generate') setWaiting('正在生成回答')
+    else setWaiting('正在判定')
   }
 
   // 轨迹侧：账本加一行，时间轴加一条
@@ -625,11 +671,12 @@ function run(task) {
   state.running = true
   state.decisions = state.models = state.tools = state.rules = 0
   lastStep = 0
+  sawEnd = false
   updateTally()
 
   if (turns.length === 0) chat.replaceChildren()
   userTurn(task)
-  current = { task, events: [], ...assistantTurn() }
+  current = { task, events: [], lastEventAt: Date.now(), waitingOn: '正在判定', ...assistantTurn() }
 
   // 轨迹侧清空。时间轴按**这一轮**的真实耗时排布，混进上一轮的条
   // 会让「橙色的那个最宽」这个结论失真
@@ -646,6 +693,8 @@ function run(task) {
   $('task').value = ''
   $('task').style.height = 'auto'
 
+  startTicker()
+
   const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}`)
 
   es.onmessage = (msg) => {
@@ -657,7 +706,11 @@ function run(task) {
       const e = JSON.parse(msg.data)
       if (e.type === 'run:start') return
       onEvent(e)
-      if (e.type === 'run:end') es.close()
+      if (e.type === 'run:end') {
+        // 记下来：正常收尾时服务端关闭连接也会触发 onerror，那不是故障
+        sawEnd = true
+        es.close()
+      }
     } catch (err) {
       console.error('事件解析失败', err, msg.data)
     }
@@ -668,9 +721,33 @@ function run(task) {
   // agent**，也就是再花一次钱。所以断线时宁可放弃接收，也不能让它自己重来。
   es.onerror = () => {
     es.close()
+    if (sawEnd) return // 正常收尾时服务端关连接也会走到这里，不是故障
+
+    stopTicker()
     state.running = false
     $('run').disabled = false
-    if (current && !current.finished) setStatus('连接断开；服务端那一次运行可能仍在继续')
+    if (current && !current.finished) {
+      current.stopped = true
+      current.running.className = 'running-row dropped'
+      current.running.replaceChildren(
+        h('span', { class: 'pulse' }),
+        '连接断开，已停止接收。服务端那次运行可能仍在继续（本版本没有取消机制）。',
+        h(
+          'button',
+          {
+            class: 'badge action',
+            onclick: () => {
+              // 重发一次是**再花一次钱**，所以让人自己按，不自动重试
+              const t = current.task
+              turns.pop()
+              current.el.remove()
+              run(t)
+            },
+          },
+          '重跑',
+        ),
+      )
+    }
   }
 }
 

@@ -263,46 +263,117 @@ body {
   line-height: var(--jl-line);
 }
 
-/* 运行中的状态：一条从左向右扫过的品牌蓝带（DSH 的 turnStatus）。
-   它就是「正在判定」这个事实的载体 —— 不刷屏，但一眼看得见。 */
-.status {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  height: 26px;
-  font-size: var(--jl-font-size);
-  line-height: var(--jl-line);
-  white-space: nowrap;
-  background: linear-gradient(
-    90deg,
-    var(--jl-alias-state-business-primary) 0%,
-    var(--jl-alias-state-business-primary) 40%,
-    var(--jl-static-deepseek-200) 50%,
-    var(--jl-alias-state-business-primary) 60%,
-    var(--jl-alias-state-business-primary) 100%
-  );
-  background-position: 100% 0;
-  background-size: 250% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  animation: turn-status-shimmer 1.8s linear infinite;
+/* ── 过程：一行一个事件，往下滚 ──────────────────────────────
+   一次运行是「一次模型调用 + 很多次判定」，所以过程本身就是内容。
+   一行一个事件，追加不覆盖 —— 覆盖的话你只看得见最后一个，
+   而"判定 13 次、模型 1 次"这件事恰恰只有铺开才看得见。
+   ────────────────────────────────────────────────────────── */
+
+.process-list {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 4px;
 }
 
-@keyframes turn-status-shimmer {
-  to {
-    background-position: 0 0;
-  }
+.prow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 0.5px solid var(--jl-alias-border-l1);
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-secondary);
+}
+
+.pdot {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  corner-shape: round;
+  background: var(--jl-alias-label-caption);
+}
+.prow.decide .pdot { background: var(--jl-alias-state-business-primary); }
+.prow.tool   .pdot { background: var(--jl-alias-state-warn-label); }
+.prow.model  .pdot { background: var(--jl-model-violet); }
+.prow.audit  .pdot { background: var(--jl-alias-label-caption); }
+
+.pkind {
+  flex: none;
+  width: 2.6em;
+  color: var(--jl-alias-label-caption);
+}
+
+.pname {
+  flex: none;
+  max-width: 11em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-alias-label-primary);
+}
+
+.pdetail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jl-alias-label-tertiary);
+}
+/* 模型那一步用紫罗兰 —— 整个过程里只有它该扎眼 */
+.prow.model .pdetail { color: var(--jl-model-violet); font-weight: 500; }
+.prow.model .pname { color: var(--jl-model-violet); }
+
+.ptime {
+  flex: none;
+  color: var(--jl-alias-label-caption);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 最后一行：还在跑。秒数在走，所以"卡住"和"在跑"分得清 */
+.running-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-caption);
+}
+
+.running-row .pulse {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  corner-shape: round;
+  background: var(--jl-alias-state-business-primary);
+  animation: prow-pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes prow-pulse {
+  from { opacity: 0.25; }
+  to   { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .status {
-    background-position: 0 0;
-    background-size: 100% 100%;
-    animation: none;
-  }
+  .running-row .pulse { animation: none; opacity: 0.7; }
 }
+
+/* 卡住时（很久没有事件）换成告警色 —— 让"慢"和"断"看起来不一样 */
+.running-row.stalled .pulse { background: var(--jl-alias-state-warn-primary); animation: none; opacity: 1; }
+.running-row.stalled { color: var(--jl-alias-state-warn-label); }
+
+/* 断线：不再是永远挂着的一句话，而是一个可以重试的状态 */
+.running-row.dropped .pulse { background: var(--jl-alias-state-error-primary); animation: none; opacity: 1; }
+.running-row.dropped { color: var(--jl-alias-state-error-primary); }
 
 /* 一条回答下面挂的「它为此花了多少」 */
 .msg-foot {
