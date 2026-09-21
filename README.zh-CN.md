@@ -97,9 +97,25 @@ npm run demo -- --jev      # 官方 Jev API（需要 TYPESAFE_API_KEY）
 散文    →  system prompt  →  大模型（整个 loop 唯一贵的一步）
 ```
 
+**不能编译的是帧。** 每个判定还需要一段 `state` 投影 —— 从 agent 的状态里挑哪几个字段给模型、各截多长。那是个**函数**，而 markdown 表达不了函数。它留在 [`src/decisions.ts`](src/decisions.ts) 里：
+
+```ts
+export const needsTool = defineDecision({
+  id: 'loop.needsTool',
+  state: ctx => ({ task: clip(ctx.task, 400), earlier: …, steps_done: … }),  // 代码
+  ...compiled('needs_tool', ['needs_tool']),                                  // 文件
+})
+```
+
+硬把帧塞进 markdown 只有两条路：发明一门真正的 DSL，或者让帧退化成「把整个上下文塞进去」—— 后者装不进判定模型 512/1024 token 的窗口。**这条边界是刻意的，不是没做完。**
+
+两半各有各的把关方向。问题和动作来自文件，代码在**加载时**被文件校验：问题名改成代码不认识的样子，启动就失败并同时列出两边的名字，而不是跑三步之后 `answers.risk` 变成 `undefined`。帧没有这道校验 —— 因为文件里没有能拿来校验它的东西，这也正是它留在代码里的原因。
+
+文件同样没法悄悄腐烂：它在加载时被解析，任何问题 —— 动作名不在封闭词汇表里、谓词指向了错误的问题类型 —— 都会带着行号抛出来，而不是编译成一条永不命中的规则。
+
 所以它是**减法**：每搬一个块进文件，就是少问大模型一个问题。[`headline()`](src/decisiondoc.ts) 会**从文件本身**把它们数出来 —— 改一个 `kind`，那句话就跟着变。
 
-而且这份文件没法悄悄腐烂：[`tests/decisiondoc.test.ts`](tests/decisiondoc.test.ts) 会编译它，并**双向断言**它和 [`src/decisions.ts`](src/decisions.ts) 实际问的是同一件事 —— 没漏、没编造、每个问题的原语类型一致。
+（这句话以前写的是「tests 双向断言它和代码是同一件事」—— 那个说法现在**反了**：文件是正本，没有第二份可供比对。原来那条对账测试留下的是仍然成立的那部分：原语类型、`score` 的档位标签、`noul` 的 true/false 说明。）
 
 ```markdown
 ## grade_risk
@@ -274,7 +290,7 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 ## 目录结构
 
 ```
-DECISION.md      ★ 决策文件 —— 被编译，而且和代码对账
+DECISION.md      ★ 决策文件 —— 被编译（问题与策略；帧仍在代码里）
 src/
   vocab.ts       Question / Answer / Decision —— 全部词汇
   decisions.ts   ★ 这个 agent 的全部判定，一个文件

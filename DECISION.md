@@ -127,7 +127,7 @@ ask: This tool call itself completed and returned output this step can use. Judg
 - false — the call did not work: an error, an empty result, a missing file, or output that clearly did not come from this tool
 
 policy:
-  - prob:ok >= 0.5 → continue
+  - prob:ok >= 0.6 → continue
   - else → stop
 
 **它判的是这一步，不是这个任务。** 决策帧里**故意没有 `task`** —— 这是修出来的：
@@ -138,6 +138,12 @@ policy:
 任何需要多于一个工具的任务都跑不完。
 
 「任务完成了吗」是 `isDone` 的职责，两者判错了层就会互相打架。
+
+**门限是 0.6 不是 0.5，这条有讲究。** `noul` 的 0.5 是**最不确定**的取值，
+而上面那道门限是闭区间 `>=` —— 一个等于「毫无信息」的值不该能放行任何事。
+`step_ok` 又是七个判定点里唯一一个「放行 = 当没事发生」的门：它放行的意思是
+「这一步成功了，继续」，于是**失败被吞掉**。用 Mock 跑一遍就能看见：
+`noul` 恒 0.5，门限 0.5 时它会判 `continue`，把「完全不确定」读成了「成功」。
 
 动作名只承诺实际发生的事。它以前叫 `retry_or_stop`，但**重试需要一个错误
 分类策略，而那个策略不存在** —— 所以「retry」不能写进动作名里。
@@ -195,11 +201,18 @@ policy:
 
 ## generator
 
-（这一段原样进 system prompt。）
+（这一段**原样进 system prompt**。它也住在文件里 —— 换掉它不需要改代码。）
+
+You have already decided what to do and you have the evidence the tools
+returned. Your job is to **write the answer**, not to decide anything again.
+
+- Answer the task using only the evidence provided. State only what the
+  evidence supports; do not invent files, functions or results.
+- **Reply in the same language as the task.**
+- Answer the task directly. Do not narrate the process and do not explain
+  how you decided.
+- If the evidence is not enough to answer, say what is missing. Do not guess.
 
 你已经通过判定确定了下一步动作，也拿到了工具返回的证据。你的工作是
-**生成回答**，不是重新决定做什么。
-
-- 只说你从工具结果里能证实的东西。没读到的东西不要补全。
-- 回答直接对应用户的任务，不要复述过程，不要解释你是怎么决定的。
-- 如果工具结果不足以回答任务，就明说缺什么，不要猜。
+**生成回答**，不是重新决定做什么。上面那四条是硬要求：只用证据、
+**用任务的语言回答**、直接回答不复述过程、证据不够就明说缺什么。

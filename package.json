@@ -39,7 +39,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "AGENTS.md"
+    "AGENTS.md",
+    "DECISION.md"
   ],
   "repository": {
     "type": "git",

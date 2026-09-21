@@ -5,16 +5,36 @@
  *  这个文件就是 JevLoop 的全部主张。
  * ══════════════════════════════════════════════════════════════
  *
- * 一个常规 agent 的 loop 里，下面这六件事都会写成一次大模型调用：
+ * 一个常规 agent 的 loop 里，下面这些事都会写成一次大模型调用：
  *
- *     要不要动手？  用哪个工具？  这个操作危险吗？
+ *     要不要动手？  用哪个工具？  读哪个文件？  这个操作危险吗？
  *     成功了吗？    做完了吗？    这个回答能发出去吗？
  *
  * 它们全都不是「生成」，而是「选择 / 打分 / 是否」。
  * 也就是说：**你一直在用生成的价格，买判定的答案。**
  *
- * 这六个判定一共 6 次前向传播，加起来通常不到 100ms，
+ * 这些判定每个只要一次前向传播，加起来通常几十到几百毫秒，
  * 换来的是整个 loop 里只剩一次真正的大模型调用。
+ *
+ * ── 这里只剩「帧」，问题和策略来自 DECISION.md ────────────────
+ *
+ * 每个节点现在长这样：
+ *
+ *     defineDecision({
+ *       id: 'loop.needsTool',
+ *       state: ctx => ({ ... }),        ← 留在这里：帧构造器是个**函数**
+ *       ...compiled('needs_tool'),      ← questions + policy 来自文件
+ *     })
+ *
+ * **为什么帧必须留在这里**：`DECISION.md` 是一门声明式的格式，能表达
+ * 「问什么」和「答成什么就走哪一步」，但它表达不了**函数** ——
+ * 而帧恰恰是「从完整的 ctx 里挑哪几个字段、各截多长」的一段代码。
+ * 硬把它塞进 markdown 只有两条路：发明一门真正的 DSL，或者让帧退化成
+ * 「把 ctx 全塞进去」（那会撑爆 512/1024 的上下文，见 §8.2）。
+ * 两条都不划算，所以这条边界是**刻意的**，不是没做完。
+ *
+ * 好处是那句主张现在成立：改 `DECISION.md` 里的问题和策略，
+ * 运行时跟着变，不需要改这个文件。
  *
  * ## 为什么不能再拆
  *
@@ -26,15 +46,172 @@
  * @module JevLoop/decisions
  */
 
+import { readFileSync } from 'node:fs'
+
 import { defineDecision } from './vocab-decision.ts'
-import { noul, choice, score } from './vocab.ts'
-import { topGte, probGte, scoreGte } from './policy.ts'
+import { choice } from './vocab.ts'
+import type {
+  AnswerSet,
+  ChoiceQuestion,
+  NoulQuestion,
+  QuestionSet,
+  ScoreQuestion,
+} from './vocab.ts'
+import type { PolicyRule } from './vocab-decision.ts'
 import { clip } from './budget.ts'
 import { TOOLS, isToolName } from './tools.ts'
+import { parseDecisionDoc, type DecisionDoc, type DocBlock } from './decisiondoc.ts'
+import { compilePolicy, compileQuestions } from './decision-compile.ts'
 
 import { toolsFor, fileOptions, pickInputInstructions, describeDone, lastInput } from './frame.ts'
 import type { AgentCtx } from './frame.ts'
 export type { AgentCtx, StepRecord } from './frame.ts'
+
+// ═══════════════════════════════════════════════════════════
+// DECISION.md 的编译
+//
+// ★ **这是运行时真的在用的那一份**，不是文档。
+//
+// 在这之前 `DECISION.md` 是一份被机器对账的文档：代码是正本，测试
+// 双向检查两边一致。现在反过来了 —— 问到判定模型的**问题和策略**
+// 都从文件里编译出来，代码只留帧构造器（理由见模块头）。
+//
+// ⚠️ **代价要说清楚：这个模块在 import 时会读盘。** 一个纯计算的内核
+// 多了一处 IO 副作用。换来的是「改文件 → 行为变」这条主张成立，
+// 而那正是 DECISION.md 存在的全部理由。
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 读并解析 `DECISION.md`。
+ *
+ * 路径用 `import.meta.url` 相对定位，所以 `src/` 下跑和发布后从 `dist/`
+ * 跑都找得到同一个文件（`package.json` 的 `files` 里有它）。
+ *
+ * @throws 文件读不到、或者解析出任何 problem。
+ *   **解析出问题必须当场炸，不能降级。** 一个编译不了的谓词会变成
+ *   「这条规则永不命中」= **一道空闸门** —— 作者以为自己加了一道人
+ *   工审核，实际没有，而且是 fail open 的。§8.5 那两条闸门的存在理由
+ *   就是这个，静默丢掉它们的后果比启动失败严重得多。
+ */
+function loadDecisionDoc(): DecisionDoc {
+  const url = new URL('../DECISION.md', import.meta.url)
+  let md: string
+  try {
+    md = readFileSync(url, 'utf8')
+  } catch (err) {
+    // 吞的是「文件不在」—— 把它换成一条**能直接照做**的报错。
+    // 内核没有 DECISION.md 就没有判定规格，没有可用的降级。
+    throw new Error(
+      `读不到判定规格 ${url.pathname}（${(err as Error).message}）—— ` +
+        `JevLoop 的问题与策略都从 DECISION.md 编译，没有它就没有判定节点`,
+    )
+  }
+  const doc = parseDecisionDoc(md)
+  if (doc.problems.length > 0) {
+    const lines = doc.problems.map((p) => `  DECISION.md:${p.line}  ${p.message}`).join('\n')
+    throw new Error(`DECISION.md 有 ${doc.problems.length} 处解析不了：\n${lines}`)
+  }
+  return doc
+}
+
+const DOC = loadDecisionDoc()
+
+/**
+ * `DECISION.md` 里 `## generator` 那一段 —— **生成器的 system prompt**。
+ *
+ * 这就是「一份文件，两个消费者」的另一半：结构块编译成判定模型的问题，
+ * 散文进 system prompt。它和判定节点住同一个文件，所以「这条 loop 怎么
+ * 作决定」和「它怎么写答案」是放在一起改的，不会一个改了另一个忘掉。
+ *
+ * 空字符串是允许的（解析器不强制这一段），这时 `HttpGenerator` 退回它
+ * 内置的那句 —— 见 `llm.ts` 的 `DEFAULT_INSTRUCTION`。
+ */
+export const GENERATOR_INSTRUCTION: string = DOC.generatorSection
+
+/** 按块 id 取块。写错名字要当场知道，不是静默给一个空问题集 */
+function block(id: string): DocBlock {
+  const b = DOC.blocks.find((x) => x.id === id)
+  if (!b) {
+    throw new Error(
+      `DECISION.md 里没有 '${id}' 这个块（现有：${DOC.blocks.map((x) => x.id).join('、')}）`,
+    )
+  }
+  return b
+}
+
+/**
+ * 把一条策略编译出来。
+ *
+ * 两条策略（`pick_tool` / `pick_input`）的**问题**是运行时算的（候选每步
+ * 重建），所以它们不能整块编译 —— 但策略仍然是文件说了算，分开取。
+ */
+function policyOf(id: string): { policy: PolicyRule<AnswerSet>[] } {
+  const pol = compilePolicy(block(id))
+  if (!pol) throw new Error(`DECISION.md 的 '${id}' 没有 policy —— 一个没有策略的判定节点不会产生任何动作`)
+  if (!pol.ok) {
+    throw new Error(
+      `DECISION.md 的 '${id}' 有编译不了的谓词：${pol.problems.join('；')} —— ` +
+        `「看不懂这个谓词」不能编码成「这条永远命中」，所以只能停下`,
+    )
+  }
+  return { policy: pol.rules }
+}
+
+/**
+ * 整块编译：问题 + 策略都来自文件。
+ *
+ * 用于问题集**不随状态变**的那五个节点。候选每步重建的那两个用
+ * `askOf` + `policyOf` —— 因为 markdown 表达不了 `toolsFor(ctx)`。
+ *
+ * ── 为什么要显式传 `expect` ────────────────────────────────────
+ *
+ * ★ 问题的名字现在住在 **markdown** 里，而代码在按名字读答案
+ *   （`agent.ts` 读 `answers.risk.score`）。这层耦合是真的存在，
+ *   藏起来只会让它变成运行时的 `undefined`。
+ *
+ *   传 `expect` 一次做两件事：
+ *
+ *   1. **类型**：TS 拿得到 `{ risk: ScoreQuestion }`，于是 `answers.risk.score`
+ *      仍然是有类型的，不是 `any`。
+ *   2. **启动时校验**：文件里的问题 id 和声明的不一致就当场炸 ——
+ *      改错了名字会立刻知道，而不是等到某一步 `answers.risk` 是 undefined。
+ *
+ *   这比改之前**更严**：以前 id 只存在于代码里，没人检查文件对不对得上。
+ */
+function compiled<Q extends QuestionSet>(
+  id: string,
+  expect: readonly (keyof Q & string)[],
+): { questions: Q; policy: PolicyRule<AnswerSet>[] } {
+  const b = block(id)
+  const q = compileQuestions(b)
+  if (!q) throw new Error(`DECISION.md 的 '${id}' 编译不出问题集`)
+
+  const actual = Object.keys(q).sort()
+  const wanted = [...expect].sort()
+  if (actual.join(',') !== wanted.join(',')) {
+    throw new Error(
+      `DECISION.md 的 '${id}' 问的是 [${actual.join(', ')}]，而代码声明的是 [${wanted.join(', ')}] —— ` +
+        `代码在按名字读答案，对不上就是运行时的 undefined`,
+    )
+  }
+  return { questions: q as Q, ...policyOf(id) }
+}
+
+/** 块里唯一那个问题的 `ask` 原文 —— 给「候选运行时算」的那两个块用 */
+function askOf(id: string, expect: readonly string[]): string {
+  const b = block(id)
+  const actual = b.questions.map((q) => q.id)
+  // 同样校验：这两个块的**问题**由代码算（候选每步重建），但问题 id
+  // 仍然要和文件对上 —— 代码在按 `answers.tool` / `answers.file` 读
+  if (actual.join(',') !== [...expect].join(',')) {
+    throw new Error(
+      `DECISION.md 的 '${id}' 问的是 [${actual.join(', ')}]，而代码声明的是 [${expect.join(', ')}]`,
+    )
+  }
+  const q = b.questions[0]
+  if (!q) throw new Error(`DECISION.md 的 '${id}' 里没有问题，取不到 ask`)
+  return q.ask
+}
 
 
 // ═══════════════════════════════════════════════════════════
@@ -53,40 +230,12 @@ export type { AgentCtx, StepRecord } from './frame.ts'
  */
 const EARLIER_MAX_CHARS = 200
 
-const T = {
-  needsTool: 0.5,
-  toolAuto: 0.6,
-  inputPick: 0.5,
-  riskAuth: 2,
-  riskAudit: 1,
-  // ★ 0.5 → 0.6。**这是一个占位值，不是校准值。**
-  //
-  //   0.5 是 `noul` **最不确定**的取值，而门限是闭区间 `>=` ——
-  //   一个等于「毫无信息」的值不该能放行任何事。
-  //
-  //   `stepOk` 是唯一一个「放行 = 当没事发生」的门：它放行的意思是
-  //   「这一步成功了，继续」，于是**失败被吞掉**。实测：Mock 的 0.5
-  //   在这里被读成「成功」，正是 §8.10 要防的那种假装成功。
-  //   （`needsTool` / `inputPick` 保持 0.5 是有理由的：它们放行的是
-  //   下游还有闸门的路径 —— 真要动工具仍要过 `gradeRisk`。**只改这一处
-  //   是有意的**，别因为"另外两个也是 0.5"就把它们一起提上去。）
-  //
-  //   ⚠️ **债（未还）**：0.6 **不是**从标注数据算出来的，它是为了让
-  //   `MockProvider` 那个恒定的 0.5 落到 `stop` 而不是 `continue` 而选的 ——
-  //   而上面第 36-37 行自己写着「阈值该用你自己的标注数据算出来」。
-  //   换句话说：**为了让一个测试替身表现正确，移动了一个对所有真实后端
-  //   生效的门限。**
-  //
-  //   当时实测的代价为零（离线规则判定器给 0.92 / 0.05，真实后端给
-  //   0.80 / 0.78，都远离 0.6），所以它今天是安全的；但它**不是一个
-  //   已验证的门限**，接上真实后端、拿到标注数据之后**应当重算**。
-  //   根治办法是让策略能识别 `degraded`，那样这个门限就不必为 Mock 服务
-  //   （见 docs/REVIEWS-2026-09-21-round6.md 的 M3）。
-  stepOk: 0.6,
-  done: 0.6,
-  deliver: 0.6,
-}
-
+/*
+ * 门限**不在这里** —— 它们现在住在 `DECISION.md` 的 `policy:` 里
+ * （`prob:ok >= 0.6` 这样写）。这里曾经有一个 `T` 对象，理由是
+ * 「改一个数就能调整行为」；搬进文件之后同一个目的达标得更彻底：
+ * 连**哪条规则用它、命中之后做什么**都在一起，不用两头看。
+ */
 // ═══════════════════════════════════════════════════════════
 // 1 · 这一步需要动手吗
 //
@@ -112,20 +261,8 @@ export const needsTool = defineDecision({
     last: clip(ctx.lastResult ?? '（还没有做过任何动作）', 300),
   }),
 
-  questions: {
-    needs_tool: noul(
-      'The agent still needs to call a tool before it can answer the task; no tool call now would mean answering with information it does not have yet',
-      {
-        true: 'the task requires reading, listing, writing or running something first',
-        false: 'there is already enough information to answer directly',
-      },
-    ),
-  },
-
-  policy: [
-    { when: probGte('needs_tool', T.needsTool), action: 'use_tool', reason: `needs_tool ≥ ${T.needsTool}` },
-    { action: 'answer', reason: '信息已足够，直接生成回答' },
-  ],
+  // 问题与策略都来自 DECISION.md 的 needs_tool 块
+  ...compiled<{ needs_tool: NoulQuestion }>('needs_tool', ['needs_tool']),
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -160,14 +297,13 @@ export const pickTool = defineDecision({
     last_result: clip(ctx.lastResult ?? '', 300),
   }),
 
+  // ★ 候选**每步重建**（`toolsFor`），而 markdown 表达不了函数 ——
+  //   所以问题由代码算，`ask` 原文和策略仍来自文件。
+  //   文件里那个块写了 `dynamic: toolsFor(ctx)` 就是在声明这件事。
   questions: (ctx: AgentCtx) => ({
-    tool: choice('Which tool should the agent call next?', toolsFor(ctx)),
-  }),
-
-  policy: [
-    { when: topGte('tool', T.toolAuto), action: 'call', reason: `选中项概率 ≥ ${T.toolAuto}` },
-    { action: 'escalate', reason: '工具选择置信度不足 → 交回上层，不猜' },
-  ],
+    tool: choice(askOf('pick_tool', ['tool']), toolsFor(ctx)),
+  }) satisfies { tool: ChoiceQuestion },
+  ...policyOf('pick_tool'),
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -201,14 +337,14 @@ export const pickInput = defineDecision({
     candidates: (ctx.files ?? []).slice(0, 20),
   }),
 
-  questions: (ctx: AgentCtx) => ({
-    file: choice(pickInputInstructions(ctx), fileOptions(ctx)),
-  }),
-
-  policy: [
-    { when: topGte('file', T.inputPick), action: 'use', reason: `选中项概率 ≥ ${T.inputPick}` },
-    { action: 'escalate', reason: '文件选择置信度不足 → 交回上层，不猜' },
-  ],
+  // 同 `pickTool`：候选由 `fileOptions` 每步重建，问题留代码，策略来自文件
+  // `satisfies` 在这里而不是在 `choice(...)` 上：要断言的是**这个对象**
+  // 的形状 —— 代码在按 `answers.file` 读答案
+  questions: (ctx: AgentCtx) =>
+    ({
+      file: choice(pickInputInstructions(ctx), fileOptions(ctx)),
+    }) satisfies { file: ChoiceQuestion },
+  ...policyOf('pick_input'),
 })
 
 
@@ -250,29 +386,9 @@ export const gradeRisk = defineDecision({
     }
   },
 
-  questions: {
-    risk: score('How risky is this tool call?', [
-      'read-only',
-      'reversible write',
-      'irreversible',
-      'destructive',
-    ]),
-    needs_auth: noul(
-      'This call must be explicitly authorised by a human before it runs',
-      {
-        true: 'it can destroy data, spend money, or leave the machine',
-        false: 'it only reads or writes inside the working directory',
-      },
-    ),
-  },
-
-  policy: [
-    // 不接受概率绕过 —— 风险分够高就是必须授权
-    { when: scoreGte('risk', T.riskAuth), action: 'ask_human', reason: `risk ≥ ${T.riskAuth} → 必须显式授权（不接受概率绕过）` },
-    { when: probGte('needs_auth', 0.5), action: 'ask_human', reason: '模型判定需要授权' },
-    { when: scoreGte('risk', T.riskAudit), action: 'auto_audit', reason: `risk ≥ ${T.riskAudit} → 执行但记审计` },
-    { action: 'auto', reason: '只读，直接放行' },
-  ],
+  // 问题与策略都来自 DECISION.md 的 grade_risk 块。
+  // 那条硬闸门（risk 够高就必须授权）现在写在文件里 —— 见那个块的 policy。
+  ...compiled<{ risk: ScoreQuestion; needs_auth: NoulQuestion }>('grade_risk', ['risk', 'needs_auth']),
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -311,25 +427,8 @@ export const stepOk = defineDecision({
     already_read: (ctx.readFiles ?? []).length,
   }),
 
-  questions: {
-    ok: noul(
-      'This tool call itself completed and returned output this step can use. Judge only this call; whether the whole task is finished is a different question, decided elsewhere.',
-      {
-        true:
-          'the tool ran and returned content — no error, no empty result, and the target it names is the one that was requested',
-        false:
-          'the call did not work: an error, an empty result, a missing file, or output that clearly did not come from this tool',
-      },
-    ),
-  },
-
-  policy: [
-    { when: probGte('ok', T.stepOk), action: 'continue', reason: `ok ≥ ${T.stepOk}` },
-    // 名字只承诺实际发生的事：loop 收到这个动作就停机，没有重试分支。
-    // 以前叫 `retry_or_stop`，但重试需要一个错误分类策略 —— 那个策略不存在，
-    // 所以「retry」不能写进 action 名里。约束见 JevLoop/AGENTS.md。
-    { action: 'stop', reason: '工具结果不可用 → 停下（没有错误分类策略，盲目重试不是改进）' },
-  ],
+  // 问题与策略都来自 DECISION.md 的 step_ok 块
+  ...compiled<{ ok: NoulQuestion }>('step_ok', ['ok']),
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -353,20 +452,8 @@ export const isDone = defineDecision({
     steps: (ctx.history ?? []).slice(-6).map((h) => `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, 80)}`),
   }),
 
-  questions: {
-    done: noul(
-      'The agent has done everything the task requires; any further tool call would not add information or change the outcome',
-      {
-        true: 'the goal stated in the task has been reached',
-        false: 'something the task asks for is still missing',
-      },
-    ),
-  },
-
-  policy: [
-    { when: probGte('done', T.done), action: 'finish', reason: `done ≥ ${T.done}` },
-    { action: 'keep_going', reason: '任务还没完成' },
-  ],
+  // 问题与策略都来自 DECISION.md 的 is_done 块
+  ...compiled<{ done: NoulQuestion }>('is_done', ['done']),
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -399,26 +486,6 @@ export const canDeliver = defineDecision({
     }),
   }),
 
-  questions: {
-    deliverable: noul(
-      'The answer is complete and correct for the task, and can be returned to the user as-is',
-      {
-        true: 'it addresses the task and is consistent with what the tools returned',
-        false: 'it is incomplete, off-topic, or contradicts the tool output',
-      },
-    ),
-    unsupported: noul(
-      'The answer states something that the tool output does not support',
-      {
-        true: 'it claims a fact, file or result that was never observed',
-        false: 'everything it says traces back to a tool result',
-      },
-    ),
-  },
-
-  policy: [
-    { when: probGte('unsupported', 0.5), action: 'revise', reason: '回答里有工具输出不支持的内容' },
-    { when: probGte('deliverable', T.deliver), action: 'deliver', reason: `deliverable ≥ ${T.deliver}` },
-    { action: 'revise', reason: '回答不达标 → 重来一次' },
-  ],
+  // 问题与策略都来自 DECISION.md 的 can_deliver 块
+  ...compiled<{ deliverable: NoulQuestion; unsupported: NoulQuestion }>('can_deliver', ['deliverable', 'unsupported']),
 })

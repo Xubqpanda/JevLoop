@@ -457,8 +457,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const gen = await generator.generate({
     task: ctx.task,
     evidence: evidenceText,
-    history: folded.recent,
-    historyDigest: folded.digest,
+    // ★ 用 `genHistory`/`genDigest`（空就传 `undefined`），**不是** `folded.recent`。
+    //   实测：这两个写法在这里分过叉 —— 第一次生成传的是空数组 `[]`，
+    //   而修订那次传的是 `undefined`，同一件事两个值。
+    //   今天对 `HttpGenerator` / `ScriptedGenerator` 没有行为差别
+    //   （两边都写 `req.history ?? []`），但**契约是「缺省就是缺省」**，
+    //   而下面的测试原本看不见这次分叉（见那条测试的注释）。
+    history: genHistory,
+    historyDigest: genDigest,
   })
   meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,

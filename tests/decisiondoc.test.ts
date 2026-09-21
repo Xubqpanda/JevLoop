@@ -181,21 +181,81 @@ test('noul 问题的 true/false 说明和代码一致', () => {
   assert.deepEqual(wrong, [], `这些说明对不上：${wrong.join('、')}`)
 })
 
-test('阈值数字和代码里的一致', () => {
-  // 阈值写错不会报错，只会让 agent 的行为悄悄变一档 —— 所以要钉住
-  const expected: Record<string, string> = {
-    needs_tool: 'prob:needs_tool >= 0.5',
-    pick_tool: 'top >= 0.6',
-    pick_input: 'top >= 0.5',
-    step_ok: 'prob:ok >= 0.5',
-    is_done: 'prob:done >= 0.6',
+/**
+ * 把一个 noul 概率从 0 扫到 1，记下动作**翻转**的那些点。
+ *
+ * `others` 是其它问题的固定答案 —— 多问题节点（`grade_risk` / `can_deliver`）
+ * 要把它按住才能单独看一个门限。
+ */
+function flipsAt(
+  spec: { policy: { action: string }[] },
+  qid: string,
+  others: Record<string, unknown> = {},
+): number[] {
+  const out: number[] = []
+  let prev: string | undefined
+  for (let i = 0; i <= 100; i++) {
+    const v = i / 100
+    const a = resolvePolicy(spec.policy as never, { ...others, [qid]: { type: 'noul', noul: v } } as never).action
+    if (prev !== undefined && a !== prev) out.push(v)
+    prev = a
   }
-  for (const [id, when] of Object.entries(expected)) {
-    const got = block(id).policy[0]?.when
-    assert.equal(got, when, `${id} 的第一条策略谓词变了`)
+  return out
+}
+
+test('门限：钉住的是**行为**（动作在哪个概率上翻转），不是字符串', () => {
+  // ★ 这个测试以前叫「阈值数字和代码里的一致」，而它**从来没读过代码** ——
+  //   只是把文件里的谓词字符串钉在一份硬编码清单上。于是 `T.stepOk` 从
+  //   0.5 改成 0.6 时它照样绿，而 agent 的行为已经变了一档。
+  //
+  //   名字宣称的比较没做，是这类检查最典型的失效方式：它挡住了「手滑改错」，
+  //   挡不住「改了另一处」。现在钉行为 —— 谓词怎么写都不重要。
+  //
+  //   这些数是**量出来的**，不是猜的：改门限会让它红，那正是它存在的理由。
+  const spec = (id: string) => SPECS.find(([b]) => b === id)![1] as never as { policy: { action: string }[] }
+
+  const cases: [string, string, Record<string, unknown>, number[]][] = [
+    ['needs_tool', 'needs_tool', {}, [0.5]],
+    ['step_ok', 'ok', {}, [0.6]],
+    ['is_done', 'done', {}, [0.6]],
+    // 交付要同时满足两件事，所以按住「有证据不支持的内容」这一条
+    ['can_deliver', 'deliverable', { unsupported: { type: 'noul', noul: 0.1 } }, [0.6]],
+  ]
+  for (const [blockId, qid, others, want] of cases) {
+    assert.deepEqual(flipsAt(spec(blockId), qid, others), want, `${blockId} 的门限变了`)
   }
-  const risk = block('grade_risk').policy.map((r) => r.when)
-  assert.deepEqual(risk, ['score:risk >= 2', 'prob:needs_auth >= 0.5', 'score:risk >= 1', 'else'])
+})
+
+test('门限：grade_risk 的两条闸门在各自的分数上翻转', () => {
+  const risk = SPECS.find(([b]) => b === 'grade_risk')![1] as never as { policy: { action: string }[] }
+  const actions: { score: number; action: string }[] = []
+  for (let v = 0; v <= 4; v += 0.25) {
+    const a = resolvePolicy(risk.policy as never, {
+      risk: { type: 'score', score: v, legend: {}, probabilities: {}, confidence: 0.5 },
+      needs_auth: { type: 'noul', noul: 0.1 },
+    } as never).action
+    actions.push({ score: v, action: a })
+  }
+  const first = (a: string) => actions.find((x) => x.action === a)?.score
+  // 1 → auto_audit（可逆写要留痕），2 → ask_human（硬闸门，不接受概率绕过）
+  assert.equal(first('auto'), 0)
+  assert.equal(first('auto_audit'), 1)
+  assert.equal(first('ask_human'), 2)
+})
+
+test('generator 段带着两条承重规则 —— 少了它们交付闸门会开始要求修订', () => {
+  // system prompt 现在来自 DECISION.md 的 `## generator` 段（`llm.ts` 里
+  // 那句 `DEFAULT_INSTRUCTION` 只是**直接使用 HttpGenerator 时**的兜底）。
+  // 所以这两条规则必须真的在那一段里，否则换掉 system prompt 就是行为退化。
+  //
+  // 为什么是这两条：
+  //   · 「只用证据」—— 少了它回答会写出工具没返回过的东西，
+  //     而 `canDeliver` 的 `unsupported` 会正确地判出来并要求修订
+  //   · 「用任务的语言回答」—— 少了它中文问会得到英文答，同样过不了闸门
+  const sec = doc.generatorSection
+  assert.ok(sec.length > 0, 'DECISION.md 里没有 generator 段')
+  assert.match(sec, /same language as the task/i, '必须要求用任务的语言回答')
+  assert.match(sec, /only the evidence/i, '必须要求只用证据')
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -433,15 +493,22 @@ test('S4: 不认识的 action 在解析时就报出来，带行号', () => {
   assert.equal(isGate(doc2.blocks[0]!), false, '笔误让闸门计数直接失真')
 })
 
-test('S4: ACTIONS 覆盖 decisions.ts 里实际用到的每个动作名', () => {
-  const src = readFileSync(new URL('../src/decisions.ts', import.meta.url), 'utf8')
-  const used = new Set([...src.matchAll(/action:\s*'([a-z_]+)'/g)].map((m) => m[1]!))
-  // 防呆：正则失效时不要静默通过
-  assert.ok(used.size >= 10, `没扫到动作名（只扫到 ${used.size} 个）—— 正则或源码结构变了`)
+test('S4: ACTIONS 覆盖运行时实际用到的每个动作名', () => {
+  // ★ 以前这个测试扫的是 `decisions.ts` 的**源码文本**（正则找 `action: '...'`）。
+  //   动作搬进 DECISION.md 之后，那个正则一个都扫不到 —— 防呆断言把它拦住了
+  //   （「只扫到 0 个」），否则它会静默通过，而覆盖检查已经名存实亡。
+  //
+  //   现在扫的是**运行时编译出来的策略**：比源码文本稳，而且动作住在哪个
+  //   文件里都跟着走。
+  const used = new Set<string>()
+  for (const [, spec] of SPECS) {
+    for (const r of (spec as never as { policy: { action: string }[] }).policy) used.add(r.action)
+  }
+  assert.ok(used.size >= 10, `没扫到动作名（只扫到 ${used.size} 个）—— 节点结构变了`)
   for (const a of used) {
     assert.ok(
       (ACTIONS as readonly string[]).includes(a),
-      `decisions.ts 用了 '${a}'，但 ACTIONS 里没有 —— 写进 DECISION.md 会被当成笔误`,
+      `运行时用了 '${a}'，但 ACTIONS 里没有 —— 写进 DECISION.md 会被当成笔误`,
     )
   }
 })

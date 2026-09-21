@@ -176,7 +176,13 @@ test('runAgent 把 history 交给了生成器，并压进了 ctx.earlier', async
 })
 
 test('runAgent 不带 history 时，生成器收到的是 undefined 而不是空数组', async () => {
-  let seen: unknown = 'unset'
+  // ★ 记的是**每一次**调用，不是最后一次。
+  //
+  //   以前这里是 `let seen` + `seen = req.history`，于是后一次调用**覆盖**
+  //   前一次。实测踩到：第一次生成传的是 `[]`（bug），修订那次传的是
+  //   `undefined`（对），而测试只看得见后者 —— **它因为错误的原因通过了**，
+  //   想守的契约在第一次调用上早就破了。
+  const seen: unknown[] = []
   const decider = new Decider({
     meter: new Meter(),
     provider: {
@@ -191,13 +197,15 @@ test('runAgent 不带 history 时，生成器收到的是 undefined 而不是空
     generator: {
       name: 'capture',
       generate: async (req) => {
-        seen = req.history
+        seen.push(req.history)
         return { text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
       },
     },
     maxSteps: 1,
   })
-  assert.equal(seen, undefined)
+  assert.ok(seen.length >= 1, '一次生成都没发生 —— 这条测试没测到东西')
+  // 每一次都必须是 `undefined`：多一次调用就多一次机会分叉
+  assert.deepEqual(seen, seen.map(() => undefined), '有调用传了空数组而不是 undefined')
 })
 
 test('★ M1：上文截断保留的是**最近**几轮，不是最早的', async () => {

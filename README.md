@@ -98,7 +98,21 @@ prose             →  system prompt       →  the LLM              (the one ex
 
 So it is subtraction: every block you move into the file is one question the LLM no longer has to be asked. [`headline()`](src/decisiondoc.ts) counts them **from the file itself** — change a `kind` and the sentence changes with it.
 
-And the file cannot quietly rot. [`tests/decisiondoc.test.ts`](tests/decisiondoc.test.ts) compiles it and asserts, in both directions, that it matches what [`src/decisions.ts`](src/decisions.ts) actually asks: no decision missing, none invented, every question's primitive type the same.
+**What does *not* compile is the frame.** Each decision also needs a `state` projection — which few fields of the agent's state go to the model, and how far each is clipped. That is a function, and markdown cannot express one. It stays in [`src/decisions.ts`](src/decisions.ts):
+
+```ts
+export const needsTool = defineDecision({
+  id: 'loop.needsTool',
+  state: ctx => ({ task: clip(ctx.task, 400), earlier: …, steps_done: … }),  // code
+  ...compiled('needs_tool', ['needs_tool']),                                  // the file
+})
+```
+
+Squeezing a frame into markdown would mean either inventing a real DSL or letting the frame degenerate into "send the whole context" — which does not fit the 512/1024-token window the decision model works in. The boundary is deliberate, not unfinished.
+
+The two halves stay honest in opposite directions. Questions and actions come from the file and the code is checked against them **at load**: name a question something the code does not expect and startup fails with both lists, rather than an `undefined` three steps into a run. The frame has no such check, because the file has nothing to check it against — which is exactly why it stays in code.
+
+The file cannot quietly rot, either. It is parsed on load and any problem — an action name that is not in the closed vocabulary, a predicate aimed at the wrong question type — throws with a line number, instead of compiling into a rule that never fires.
 
 ```markdown
 ## grade_risk
@@ -274,7 +288,7 @@ Swapping either one touches exactly one file. The loop and the decision specs do
 ## Layout
 
 ```
-DECISION.md      ★ the decisions as a file — compiled, and checked against the code
+DECISION.md      ★ the decisions as a file — compiled (questions and policy; frames stay in code)
 src/
   vocab.ts       Question / Answer / Decision — the whole vocabulary
   decisions.ts   ★ all six of the agent's judgements, one file

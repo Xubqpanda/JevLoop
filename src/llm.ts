@@ -28,7 +28,27 @@ export interface GenerateRequest {
   task: string
   /** 工具执行的历史，作为素材 */
   evidence: string
-  /** 额外要求 */
+  /**
+   * **system prompt** —— 它现在来自 `DECISION.md` 的 `## generator` 段。
+   *
+   * ★ 和 `instruction` 分开是**修出来的**，不是一开始就这么设计的：
+   *   以前只有一个 `instruction`，而 `HttpGenerator` 拿它当 system prompt、
+   *   `ScriptedGenerator` 拿它接在正文后面 —— 同一个字段两种含义。
+   *   后果在修订那条路径上：`agent.ts` 把交付闸门的反馈当 `instruction`
+   *   传进来，于是**整个 system prompt 被那条反馈替换掉**。实测：
+   *
+   *     首次调用 system: "Answer the task using only the evidence provided…"
+   *     修订调用 system: "上一次的回答没有通过交付闸门：不完整。"
+   *
+   *   模型于是丢掉了「只用证据」「用任务的语言回答」「不要编」，而它
+   *   正要重写的就是那个没通过闸门的回答。
+   */
+  system?: string
+  /**
+   * **这一次的额外要求** —— 接在用户消息后面，**不动 system prompt**。
+   *
+   * 目前只有一处用它：交付闸门要求修订时，把闸门给的理由带过去。
+   */
   instruction?: string
   /**
    * 之前的轮次。**多轮的全部意义就在这里** ——
@@ -113,7 +133,16 @@ export class ScriptedGenerator implements Generator {
 }
 
 /**
- * HTTP 生成器的默认指令。
+ * HTTP 生成器的**兜底** system prompt。
+ *
+ * ⚠️ 正常路径上轮不到它：`agent.ts` 会把 `DECISION.md` 里 `## generator`
+ * 那一段当 `system` 传进来。留着它是为了**直接使用这个类**的人
+ * （不经过 `runAgent`、也不带 judging 规格的场景）拿到一句像样的指令，
+ * 而不是一个空 system。
+ *
+ * 两者**不要求文字相同**（DECISION.md 是中英双语），但必须带着同一组
+ * **承重规则** —— 只用证据、用任务的语言回答。少任何一条，交付闸门就会
+ * 开始要求修订。`tests/decisiondoc.test.ts` 有一条断言盯着这两条。
  *
  * 三件事都是刻意的：**只用给到的证据**（判定节点会拿这条去查「回答里有没有
  * 证据不支持的内容」）、**用任务的语言回答**（问中文答英文会让 canDeliver 判不过）、
@@ -151,11 +180,11 @@ export class HttpGenerator implements Generator {
 
     // 折叠摘要进 **system**，不伪装成一问一答 —— 它不是任何一轮的真实发言。
     // 摘要在前、逐字轮次在后，顺序上就是真实的时间顺序。
-    const instruction = req.instruction ?? DEFAULT_INSTRUCTION
+    const base = req.system ?? DEFAULT_INSTRUCTION
     const system = req.historyDigest
-      ? `${instruction}\n\nEarlier turns in this conversation, folded to their essentials. ` +
+      ? `${base}\n\nEarlier turns in this conversation, folded to their essentials. ` +
         `The full text is not in this request:\n${req.historyDigest}`
-      : instruction
+      : base
 
     try {
       const res = await fetch(`${this.#baseUrl}/chat/completions`, {
@@ -174,7 +203,13 @@ export class HttpGenerator implements Generator {
               { role: 'user', content: `Task:\n${t.task}` },
               { role: 'assistant', content: t.answer },
             ]),
-            { role: 'user', content: `Task:\n${req.task}\n\nWhat was done:\n${req.evidence}` },
+            {
+              role: 'user',
+              // ★ 额外要求接在**用户消息**后面，不覆盖 system prompt（见 `GenerateRequest.system`）
+              content:
+                `Task:\n${req.task}\n\nWhat was done:\n${req.evidence}` +
+                (req.instruction ? `\n\n${req.instruction}` : ''),
+            },
           ],
         }),
         signal: ctrl.signal,
