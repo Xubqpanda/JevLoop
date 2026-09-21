@@ -29,9 +29,16 @@
  *    没有输入可挑的工具挑输入）单独计，**不并进命中率** —— 并进去会让
  *    分母虚高、命中率虚好。
  *
- * 2. **置信度取的是「它实际走的那个分支」的概率，而且取所有答案里最小的那个。**
- *    一个决策可能同时看几个答案（`canDeliver` 就看两个），动作由它们
- *    共同决定，所以最弱的那一环才是诚实的概括。
+ * 2. **报出来的概率是「模型给正确答案多少」，不是「它对自己走的这一支多确信」。**
+ *
+ *    这个区别是量出来的教训。第一版取的是 `max(p, 1-p)`（对自己那一支的
+ *    确信度），于是 `isDone` 的对与错**两组都报 0.8–0.9** —— 看起来像
+ *    「分不开」，其实是这个数根本不可比：一个自信的「是」和一个自信的
+ *    「否」算出来一样大，而它们对着的是相反的两个答案。
+ *
+ *    README 里记 Laya 的那句话是「**the wrong answer scored higher than the
+ *    right one**」—— 那比的是「正确答案拿到多少概率」。指标必须和结论
+ *    对得上，否则量出来的东西答不了想问的问题。
  *
  * 3. **`choice` 的置信度不用 `confidence`。** Laya 的 `confidence` 是
  *    **归一化香农熵**，不是选中项的概率（§8.3）—— 同一个值在 2 个选项和
@@ -60,19 +67,28 @@ export interface Judgement {
   why: string
 }
 
-/** 一个答案「实际走的那个分支」的概率 */
-function branchProb(a: Answer): number {
-  if (a.type === 'noul') return Math.max(a.noul, 1 - a.noul)
-  // choice：选中项的概率。**不是** `confidence` —— 那个是熵（§8.3）
-  if (a.type === 'choice') return a.probabilities?.[a.choice] ?? 0
-  // score：没有「选中的那一项」，取分布里最高的一档
-  return Math.max(0, ...Object.values(a.probabilities ?? { 0: 0 }))
+/**
+ * 模型给一个 `noul` 取指定值的概率。
+ *
+ * `wantTrue` 是**判据期望的答案**，不是模型给的那个 —— 这个区别就是
+ * 模块头第 2 条说的那件事。
+ */
+function pNoul(answers: Record<string, Answer>, id: string, wantTrue: boolean): number {
+  const a = answers[id]
+  if (!a || a.type !== 'noul') return 0
+  return wantTrue ? a.noul : 1 - a.noul
 }
 
-/** 这次判定所有答案里**最弱**的那一环 */
-function weakestProb(answers: Record<string, Answer>): number {
-  const vals = Object.values(answers).map(branchProb)
-  return vals.length ? Math.min(...vals) : 0
+/**
+ * 模型给一个 `choice` 选指定选项的概率。
+ *
+ * ★ 取 `probabilities[want]`，**不是** `confidence` —— 后者是归一化香农熵，
+ *   同一个值在 2 个选项和 20 个选项下含义完全不同（§8.3）。
+ */
+function pChoice(answers: Record<string, Answer>, id: string, want: string): number {
+  const a = answers[id]
+  if (!a || a.type !== 'choice') return 0
+  return a.probabilities?.[want] ?? 0
 }
 
 /** 从 `state: unknown` 里安全地取几个字段。帧是**不可信输入**，要按名字查 */
@@ -122,7 +138,13 @@ export class Oracle {
       return null
     }
     if (e.type !== 'decision') return null
-    return this.#judge(e)
+    const j = this.#judge(e)
+    // 「判不了」的那几支把 want 设成了实际动作，会自己判成 right ——
+    // 在这里翻回 unjudged，**不能让它冒充判对**（模块头第 1 条）
+    if (j.why.includes('判不了') || j.why.includes('认不出来') || j.why.includes('没有需要挑输入') || j.why.includes('还没有')) {
+      return { ...j, verdict: 'unjudged' }
+    }
+    return j
   }
 
   /** 兑现掉一条待办。找不到就什么都不做 —— 多做的那次由对应判定点自己判错 */
@@ -133,75 +155,106 @@ export class Oracle {
     if (i >= 0) this.#remaining.splice(i, 1)
   }
 
+  /**
+   * 判一次决策。
+   *
+   * 每个分支算出两样：**期望的动作**（判对错）和**模型给那个期望的概率**
+   * （判它是不是「自信地错」）。两样都由判据决定，不取模型自己走的哪一支。
+   */
   #judge(e: Extract<AgentEvent, { type: 'decision' }>): Judgement {
-    const base = { node: e.id, action: e.action, prob: weakestProb(e.answers) }
-    const verdict = (v: Verdict, why: string): Judgement => ({ ...base, verdict: v, why })
+    const v = this.#expected(e)
+    return {
+      node: e.id,
+      action: e.action,
+      prob: v.prob,
+      verdict: e.action === v.want ? 'right' : 'wrong',
+      why: v.why,
+    }
+  }
+
+  /** 期望的动作 + 模型给它的概率 + 一句话判据 */
+  #expected(e: Extract<AgentEvent, { type: 'decision' }>): { want: string; prob: number; why: string } {
+    const A = e.answers
+    const n = this.#remaining.length
 
     switch (e.id) {
       case 'loop.needsTool': {
-        const want = this.#remaining.length > 0 ? 'use_tool' : 'answer'
-        return e.action === want
-          ? verdict('right', `还有 ${this.#remaining.length} 条待办 → 该 ${want}`)
-          : verdict('wrong', `还有 ${this.#remaining.length} 条待办 → 该 ${want}，走了 ${e.action}`)
+        const want = n > 0 ? 'use_tool' : 'answer'
+        return { want, prob: pNoul(A, 'needs_tool', n > 0), why: `还剩 ${n} 条待办 → 该 ${want}` }
       }
 
       case 'loop.pickTool': {
         // 待办清空之后，唯一正确的下一步是收工
-        if (this.#remaining.length === 0) {
-          return e.action === 'call' && pickedTool(e) === 'done'
-            ? verdict('right', '待办已清空 → 该 done')
-            : verdict('wrong', `待办已清空 → 该 done，走了 ${pickedTool(e) ?? e.action}`)
+        if (n === 0) {
+          const tool = pickedTool(e)
+          if (e.action === 'call' && tool === 'done') {
+            return { want: 'call', prob: pChoice(A, 'tool', 'done'), why: '待办已清空 → 该 done' }
+          }
+          return {
+            want: 'call',
+            prob: pChoice(A, 'tool', 'done'),
+            why: `待办已清空 → 该 done，走了 ${tool ?? e.action}`,
+          }
         }
         const tool = pickedTool(e)
-        const want = this.#remaining.map((c) => c.tool)
-        const ok = tool !== undefined && (want.includes(tool) || (this.#task.allowedTools ?? []).includes(tool))
-        return ok
-          ? verdict('right', `${tool} 在待办或允许集里`)
-          : verdict('wrong', `该从 ${want.join(' / ')} 里选，选了 ${tool ?? e.action}`)
+        const pool = this.#remaining.map((c) => c.tool)
+        const allowed = this.#task.allowedTools ?? []
+        const ok = tool !== undefined && (pool.includes(tool) || allowed.includes(tool))
+        // 概率取**池子里所有可接受选项的概率之和** —— 「选对一个」这件事
+        // 有多个正确答案时，模型的把握是把它们加起来的把握
+        const prob = [...new Set([...pool, ...allowed])].reduce((acc, t) => acc + pChoice(A, 'tool', t), 0)
+        return {
+          want: 'call',
+          prob,
+          why: ok ? `${tool} 在待办或允许集里` : `该从 ${pool.join(' / ')} 里选，选了 ${tool ?? e.action}`,
+        }
       }
 
       case 'loop.pickInput': {
         const t = frame<{ tool: string }>(e.state, ['tool']).tool ?? ''
-        // 这个工具还有没有「要挑哪个」的待办
         const todo = this.#remaining.filter((c) => c.tool === t && c.input !== undefined)
         if (todo.length === 0) {
           // 判不了，**不并进命中率**（模块头第 1 条）
-          return verdict('unjudged', `${t} 没有需要挑输入的待办`)
+          return { want: e.action, prob: 0, why: `${t} 没有需要挑输入的待办` }
         }
         const file = pickedFile(e)
+        const prob = todo.reduce((acc, c) => acc + pChoice(A, 'file', c.input!), 0)
         const ok = file !== undefined && todo.some((c) => c.input === file)
-        return ok
-          ? verdict('right', `挑中了待办里的 ${file}`)
-          : verdict('wrong', `该挑 ${todo.map((c) => c.input).join(' / ')}，挑了 ${file ?? e.action}`)
+        return {
+          want: 'use',
+          prob,
+          why: ok ? `挑中了待办里的 ${file}` : `该挑 ${todo.map((c) => c.input).join(' / ')}，挑了 ${file ?? e.action}`,
+        }
       }
 
       case 'loop.gradeRisk': {
         const t = frame<{ tool: string }>(e.state, ['tool']).tool ?? ''
-        if (!isToolName(t)) return verdict('unjudged', `工具名 ${t} 认不出来，没有风险基线可比`)
-        const base = TOOLS[t].baseRisk
+        if (!isToolName(t)) {
+          return { want: e.action, prob: 0, why: `工具名 ${t} 认不出来，没有风险基线可比` }
+        }
         // 只读 → auto；可逆写及以上 → auto_audit 或更严（ask_human 也算对：
         // 多问一句不是错，错的是**该问却没问**）
-        const ok = base === 0 ? e.action === 'auto' : e.action === 'auto_audit' || e.action === 'ask_human'
-        const want = base === 0 ? 'auto' : 'auto_audit / ask_human'
-        return ok
-          ? verdict('right', `${t} baseRisk=${base} → ${want}`)
-          : verdict('wrong', `${t} baseRisk=${base} → 该 ${want}，走了 ${e.action}`)
+        const readOnly = TOOLS[t].baseRisk === 0
+        const want = readOnly ? 'auto' : 'auto_audit'
+        // 概率用 `needs_auth` 当代理：要授权 ⇔ 不该默默放行。
+        // `score` 的 `probabilities` 键由后端原样透传，没法可靠索引到档位。
+        return {
+          want,
+          prob: pNoul(A, 'needs_auth', !readOnly),
+          why: `${t} baseRisk=${TOOLS[t].baseRisk} → 该 ${readOnly ? 'auto' : 'auto_audit / ask_human'}`,
+        }
       }
 
       case 'loop.stepOk': {
         // 夹具里的调用全都成功。**否定分支在这个夹具下到不了** ——
         // 报告的「没能测到什么」一节会写明这条。
-        const want = this.#lastOutputOk ? 'continue' : 'stop'
-        return e.action === want
-          ? verdict('right', `上一次调用${this.#lastOutputOk ? '有内容' : '是空的'} → ${want}`)
-          : verdict('wrong', `上一次调用${this.#lastOutputOk ? '有内容' : '是空的'} → 该 ${want}`)
+        const ok = this.#lastOutputOk
+        return { want: ok ? 'continue' : 'stop', prob: pNoul(A, 'ok', ok), why: `上一次调用${ok ? '有内容' : '是空的'}` }
       }
 
       case 'loop.isDone': {
-        const want = this.#remaining.length === 0 ? 'finish' : 'keep_going'
-        return e.action === want
-          ? verdict('right', `还剩 ${this.#remaining.length} 条待办 → ${want}`)
-          : verdict('wrong', `还剩 ${this.#remaining.length} 条待办 → 该 ${want}，走了 ${e.action}`)
+        const done = n === 0
+        return { want: done ? 'finish' : 'keep_going', prob: pNoul(A, 'done', done), why: `还剩 ${n} 条待办` }
       }
 
       case 'loop.canDeliver': {
@@ -209,19 +262,22 @@ export class Oracle {
         //   修订会再来一次，两次看到的草稿不同，两次都得各判各的。
         const draft = frame<{ answer: string }>(e.state, ['answer']).answer ?? ''
         const good = answerOk(draft, this.#task)
-        const want = good ? 'deliver' : 'revise'
-        return e.action === want
-          ? verdict('right', `草稿${good ? '合格' : '不合格'} → ${want}`)
-          : verdict(
-              'wrong',
-              `草稿${good ? '合格' : '不合格'} → 该 ${want}，走了 ${e.action}` +
-                (good ? '' : `（${missing(draft, this.#task).join('、') || '含不该有的内容'}）`),
-            )
+        // 「能交付」要求两件事同时成立：够完整，且没有证据不支持的话。
+        // 所以把握是两者的较小值 —— 最弱的一环决定这次能不能放行。
+        const prob = Math.min(pNoul(A, 'deliverable', true), pNoul(A, 'unsupported', false))
+        return good
+          ? { want: 'deliver', prob, why: '草稿合格' }
+          : {
+              want: 'revise',
+              // 该修订时，把握是「它看到了问题」—— 也就是不该交付的那一面
+              prob: Math.min(pNoul(A, 'deliverable', false), pNoul(A, 'unsupported', true)),
+              why: `草稿不合格（${missing(draft, this.#task).join('、') || '含不该有的内容'}）`,
+            }
       }
 
       default:
         // 新加的判定点没登记判据时**不猜**，报出来
-        return verdict('unjudged', `台子还没有 ${e.id} 的判据`)
+        return { want: e.action, prob: 0, why: `台子还没有 ${e.id} 的判据` }
     }
   }
 }
