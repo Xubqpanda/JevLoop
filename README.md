@@ -1,39 +1,49 @@
 # JevLoop
 
-**The agent loop where decisions don't cost a model call.**
+**Every fork in your agent loop is a full LLM call. Not one of them is generation.**
 
-Every fork in a normal agent loop — *should I act? which tool? is this safe? did it work? am I done? can I ship this?* — is answered by a full LLM call. None of those are generation. They're picks, scores and yes/no answers.
+*Should I act? Which tool? Is this safe? Did it work? Am I done? Can I ship this?* A conventional agent answers each of those by writing a sentence and parsing it back. But each is a pick, a score or a yes/no answer: one forward pass over a fixed candidate set, ~10–40 ms, no tokens generated.
 
 JevLoop routes them to a decision model ([Jev](https://typesafe.ai) / [Laya](https://github.com/NandaKishorM/laya)) and keeps the LLM for the one thing only it can do: **writing**.
 
+**English** · [中文](README.zh-CN.md)
+
+![JevLoop: one demo run, twelve decisions and one model call](docs/demo.gif)
+
 ```
-$ npm run demo          # 全新 clone，无 key、无网络
+$ npm run demo          # fresh clone: no key, no network, no npm install
 
-  判定后端  : laya→rule-judge
-  生成后端  : scripted（脚本化，设 DEEPSEEK_API_KEY 可换真实 LLM）
+JevLoop · demo
+  decision  : laya→rule-judge
+  generator : scripted — set DEEPSEEK_API_KEY for a real LLM
 
-  判定放行：list_dir（auto）
-  判定放行：read_file（auto）
+  ── loop trace ──────────────────────────────────────────
+  ▲ laya unavailable (fetch failed), falling back to rule-judge
+  cleared: list_dir (auto)
+  cleared: read_file (auto)
 
-  判定   12 次   50.4ms（均 4.2ms）
-  模型    1 次   600.9ms
+  ── every decision ──────────────────────────────────────
+  step 1
+     decide  loop.needsTool         use_tool           4.3ms  needs_tool=0.95
+     decide  loop.pickTool          call               4.3ms  tool=list_dir
+     decide  loop.gradeRisk         auto               4.2ms  risk=0.0 needs_auth=0.05
+     decide  loop.stepOk            continue           4.1ms  ok=0.92
+     decide  loop.isDone            keep_going         4.0ms  done=0.10
+  ...
+  step 3
+     decide  loop.canDeliver        deliver            4.3ms  deliverable=0.90 unsupported=0.08
+     model   generate (scripted)                       601ms
 
-  判定 : 模型 = 12.0 : 1      判定耗时只占 7.7%
+  ── accounting ──────────────────────────────────────────
+  decisions  12     50ms (4.2ms each)
+  model       1     601.2ms
+
+  decisions : model = 12.0:1   decisions are 7.7% of wall clock
 ```
-
-**同一个命令在不同环境下自动走不同的判定后端，数字也完全不同。** 下面是三种环境的实测：
-
-| 你的环境 | `npm run demo` 实际的后端 | 判定 : 模型 | 判定耗时占比 |
-|---|---|---:|---:|
-| 全新 clone（无 key） | `laya→rule-judge` | 12 : 1 | **7.7 %** |
-| 有 `TYPESAFE_API_KEY` | `jev→laya→rule-judge` | 13 : 1 | **79.4 %** |
-| 本地 Laya sidecar 在跑 | `laya→rule-judge` | 12 : 1 | ~38 % |
-
-> 上面那组头条数字来自**规则表，不是模型** —— 它演示的是「loop 结构长什么样」，
-> 不是「判定有多准」。真实判定的质量与延迟见
-> [Which decision backend](#which-decision-backend-and-what-it-costs-you)。
 
 Zero dependencies. Zero build step. Runs offline with no API key.
+
+> That run's judge is a rule table, not a model — it shows the **shape** of the loop, not the quality of a decision. Real backends and what they actually cost: [Honest numbers](#honest-numbers).
 
 ---
 
@@ -50,7 +60,7 @@ Take a task that needs two tool calls. A conventional agent burns a model call o
 | Am I done? | `max_iter` counter | decision |
 | Can I ship this answer? | **nothing** | decision |
 
-You were paying generation prices for decisions. A decision is one forward pass over a fixed candidate set — no tokens generated, nothing to parse, ~10–40 ms on a GPU.
+You were paying generation prices for decisions.
 
 ## Quick start
 
@@ -62,7 +72,7 @@ cd JevLoop
 npm run demo
 ```
 
-That's it. No `npm install`, no API key, no network — the demo falls back to a deterministic rule judge so the whole loop runs offline.
+That's it — no `npm install`, no API key, no network. The demo falls back to a deterministic rule judge so the whole loop runs offline.
 
 **Use a real decision model:**
 
@@ -70,6 +80,55 @@ That's it. No `npm install`, no API key, no network — the demo falls back to a
 npm run demo -- --laya     # local Laya sidecar on :7789 (open weights, free)
 npm run demo -- --jev      # official Jev API (needs TYPESAFE_API_KEY)
 ```
+
+## DECISION.md — the decisions, compiled
+
+Every generation of agent framework leaves behind a `.md`. `AGENTS.md` holds conventions, `SKILL.md` holds capabilities — and both are **prose for a model to read**. The model pays tokens for them every turn, it can ignore them, and nothing tells you whether it did.
+
+`DECISION.md` is the first one that gets **compiled**.
+
+> **Not a decision *record*.** A record is written afterwards, to explain what an agent did. `DECISION.md` declares what the loop is *going to* decide, and a program turns it into the questions the decision model is asked.
+
+One file, two consumers:
+
+```
+structure blocks  →  questions + policy  →  the decision model   (tens of ms, no tokens)
+prose             →  system prompt       →  the LLM              (the one expensive step)
+```
+
+So it is subtraction: every block you move into the file is one question the LLM no longer has to be asked. [`headline()`](src/decisiondoc.ts) counts them **from the file itself** — change a `kind` and the sentence changes with it.
+
+And the file cannot quietly rot. [`tests/decisiondoc.test.ts`](tests/decisiondoc.test.ts) compiles it and asserts, in both directions, that it matches what [`src/decisions.ts`](src/decisions.ts) actually asks: no decision missing, none invented, every question's primitive type the same.
+
+```markdown
+## grade_risk
+kind: mixed
+when: before every tool call that actually runs
+
+### risk
+ask: How risky is this tool call?
+- read-only
+- reversible write
+- irreversible
+- destructive
+
+### needs_auth
+ask: This call must be explicitly authorised by a human before it runs
+- true — it can destroy data, spend money, or leave the machine
+- false — it only reads or writes inside the working directory
+
+policy:
+  - score:risk >= 2 → ask_human
+  - prob:needs_auth >= 0.5 → ask_human
+  - score:risk >= 1 → auto_audit
+  - else → auto
+```
+
+**The question type is inferred from how the options are written, never declared.** Two options named `true` and `false` is a `noul`; every option named is a `choice`; none named is a `score`; a mix is an error rather than a guess. `kind` then has to agree with what the writing implies.
+
+**Predicates are a closed vocabulary.** `else`, `top >= n` / `top < n` (single-question blocks only), `prob:<id>` (on a `noul`), `score:<id> >= n` (on a `score`), `picked:<id> = <option>` (on a `choice`). There is deliberately no `>` and no `<=`: a condition you cannot write here is a condition that belongs in code.
+
+**A predicate aimed at the wrong kind of question is rejected, not compiled.** Left alone it would become a rule that never fires — the author believes they wrote a gate, there is no gate, and it fails open. Actions are a closed list too, and an unknown one is reported with its line number. Nothing is ever silently dropped: everything unrecognised lands in `problems`, with the line it came from.
 
 ## How it works
 
@@ -148,82 +207,32 @@ policy: [
 
 A decision model may decide *whether to ask a human*. It must never decide *whether to skip authorisation*.
 
-## DECISION.md — the decisions, compiled
+## Honest numbers
 
-Every generation of agent framework leaves behind a `.md`. `AGENTS.md` holds conventions, `SKILL.md` holds capabilities — and both are **prose for a model to read**. The model pays tokens for them every turn, it can ignore them, and nothing tells you whether it did.
+The same loop against three decision backends. The ratio that matters is decisions : model calls, and the one that surprised us is how much of the wall clock the decisions take.
 
-`DECISION.md` is the first one that gets **compiled**.
+| Decision backend | Per decision | decisions : model | decision share of wall clock | Quality |
+|---|---:|---:|---:|---|
+| `examples/rule-judge.ts` (offline demo) | 4 ms | 12 : 1 | **7.7 %** | a rule table, not a model |
+| Laya `typed-decisions`, local A100 | 30–85 ms | 8 : 1 | ~38 % | **not enough zero-shot** (below) |
+| Jev `jev-latest`, hosted API | ~390 ms | 13 : 1 | **79 %** | decisive and correct on every decision |
 
-> **Not a decision *record*.** A record is written afterwards, to explain what an agent did. `DECISION.md` declares what the loop is *going to* decide, and a program turns it into the questions the decision model is asked.
+Two conclusions we are not going to soften:
 
-One file, two consumers:
+- **The whole claim holds on a locally-served decision model.** 30 ms decisions make the loop's thinking essentially free next to one generation call.
+- **Over the hosted API it does not.** ~390 ms per decision is network round-trips, and with 13 decisions for 1 generation the decisions dominate the clock. Still ~5–8× faster than a frontier LLM call and orders of magnitude cheaper, but "decisions are free" would be a lie at that latency.
 
-```
-structure blocks  →  questions + policy  →  the decision model   (tens of ms, no tokens)
-prose             →  system prompt       →  the LLM              (the one expensive step)
-```
+The obvious sweet spot is a strong decision model served locally. Neither of the two we could test is that: one is fast but not accurate enough, the other is accurate but round-trips.
 
-So it is subtraction: every block you move into the file is one question the LLM no longer has to be asked. [`headline()`](src/decisiondoc.ts) counts them **from the file itself** — change a `kind` and the sentence changes with it.
+### Two gotchas we hit so you don't have to
 
-And the file cannot quietly rot. [`tests/decisiondoc.test.ts`](tests/decisiondoc.test.ts) compiles it and asserts, in both directions, that it matches what [`src/decisions.ts`](src/decisions.ts) actually asks: no decision missing, none invented, every question's primitive type the same.
+Both were found by running this loop against a real Laya checkpoint on an A100, not by reading docs.
 
-### The syntax
+**`confidence` is not the top probability.** Laya's `confidence` for a choice is normalised Shannon entropy (`1 - H(p)/log(k)`) — `p = [0.80, 0.20]` gives `confidence = 0.269`. So a fixed threshold means a completely different thing at 2 options than at 20. Gate a `choice` on the winning option's probability instead; that's what `topGte()` is for. (The [official docs](https://docs.typesafe.ai/confidence) call `confidence` a solid default and hand you the full `probabilities` for exactly this reason.)
 
-```markdown
-# DECISION.md
+**A base checkpoint will not do a novel decision task zero-shot.** Asked *"which tool next?"*, `laya-typed-decisions` chose `done` at **0.660** on step 2 while the right answer on step 1 scored **0.646** — the wrong answer scored higher, and everything landed in a 0.55–0.66 band with no separation. No threshold fixes that; it's a capability gap. The open-weight checkpoint is a **fast base to specialise**, not a drop-in judge.
 
-## grade_risk
-kind: mixed
-when: before every tool call that actually runs
-
-### risk
-ask: How risky is this tool call?
-- read-only
-- reversible write
-- irreversible
-- destructive
-
-### needs_auth
-ask: This call must be explicitly authorised by a human before it runs
-- true — it can destroy data, spend money, or leave the machine
-- false — it only reads or writes inside the working directory
-
-policy:
-  - score:risk >= 2 → ask_human
-  - prob:needs_auth >= 0.5 → ask_human
-  - score:risk >= 1 → auto_audit
-  - else → auto
-```
-
-| Written | Means |
-|---|---|
-| `## <id>` | one decision block |
-| `kind: choice \| noul \| score \| mixed \| rule` | required on every block — this is where you take a position |
-| `when:` / `dynamic:` | prose: when it is asked, and how the candidates are rebuilt each step |
-| `ask: <question>` | the question that reaches the decision model |
-| `- name — criteria` | an option (em dash or `--`, spaces required) |
-| `- criteria`, no name | a level of a `score` |
-| `### <id>` | a second question in the same block (`mixed`) |
-| `policy:` then `- <predicate> → <action>` | answers → action |
-| `## generator` | prose, injected verbatim into the system prompt |
-
-**The question type is inferred from how the options are written, never declared.** Two options named `true` and `false` is a `noul`; every option named is a `choice`; none named is a `score`; a mix is an error rather than a guess. `kind` then has to agree with what the writing implies.
-
-**Predicates are a closed vocabulary.** `else`, `top >= n` / `top < n` (single-question blocks only), `prob:<id>` (on a `noul`), `score:<id> >= n` (on a `score`), `picked:<id> = <option>` (on a `choice`). There is deliberately no `>` and no `<=`: a condition you cannot write here is a condition that belongs in code.
-
-**A predicate aimed at the wrong kind of question is rejected, not compiled.** Left alone it would become a rule that never fires — the author believes they wrote a gate, there is no gate, and it fails open. Actions are a closed list too, and an unknown one is reported with its line number. Nothing is ever silently dropped: everything unrecognised lands in `problems`, with the line it came from.
-
-Writing `dynamic: <how it is computed>` lifts the "a choice needs at least two options" rule, because a decision whose candidates are rebuilt every step can only list a placeholder — the real options come from code.
-
-## Accounting
-
-The `Meter` is not a nice-to-have — it's the point. Every run ends with the number that justifies the architecture:
-
-```
-判定 : 模型 = 11.0 : 1      判定耗时只占 7.2%
-```
-
-Decisions and model calls are counted separately, with separate latency. If that ratio isn't high for your workload, JevLoop is the wrong tool — and you should find out immediately rather than after a bill.
+Both are the same lesson from [Jev Engineering](https://madewithjev.com/what-is-jev-engineering): *the call is the easy part — the work is in the state you send and the threshold you act on.*
 
 ## Bring your own backends
 
@@ -252,59 +261,15 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 
 Swapping either one touches exactly one file. The loop and the decision specs don't move.
 
-## Which decision backend, and what it costs you
-
-We ran the same loop against three backends. The ratio that matters is decisions : model calls, and the one that surprised us is how much of the wall clock the decisions take.
-
-| Decision backend | Per decision | Decisions : model | Decision share of wall clock | Quality |
-|---|---:|---:|---:|---|
-| `examples/rule-judge.ts` (offline) | 4 ms | 12 : 1 | **7.7 %** | rule table, not a model |
-| Laya `typed-decisions`, local A100 | 30–85 ms | 8 : 1 | ~38 % | **not enough zero-shot** (see below) |
-| Jev `jev-latest`, hosted API | ~390 ms | 13 : 1 | **79 %** | decisive and correct on every decision |
-
-Two honest conclusions:
-
-- **The whole claim holds on a locally-served decision model** — 30 ms decisions make the loop's thinking essentially free next to one generation call.
-- **Over the hosted API it does not.** ~390 ms per decision is network round-trips, and with 13 decisions for 1 generation the decisions dominate the clock. Still ~5–8× faster than a frontier LLM call and orders of magnitude cheaper, but "decisions are free" would be a lie at that latency.
-
-The obvious sweet spot is a strong decision model served locally. Neither of the two we could test is that: one is fast but not accurate enough, the other is accurate but round-trips.
-
-## Two gotchas we hit so you don't have to
-
-Both were found by running this loop against a real Laya checkpoint on an A100, not by reading docs.
-
-### 1. `confidence` is not the top probability
-
-Laya's `confidence` for a choice is **normalised Shannon entropy** (`1 - H(p)/log(k)`, where `k` is the number of options) — not the probability of the winning option.
-
-```
-p = [0.80, 0.20]   →   confidence = 0.269
-```
-
-So a fixed `confidence` threshold means a completely different thing at 2 options than at 20: the fewer the options, the more extreme the required probability. **Gate a `choice` on the winning option's probability instead** — that's what `topGte()` is for, and it's independent of how many options you offer.
-
-### 2. A base checkpoint will not do a novel decision task zero-shot
-
-Measured on `laya-typed-decisions` (fine-tuned for invoice processing, security incidents, customer service and agent-trace observability) on the question *"which tool next?"*:
-
-| Decision | Chosen | Top probability |
-|---|---|---|
-| step 1, pick a tool | `list_dir` ✓ | 0.646 |
-| step 2, pick a tool | `done` ✗ | **0.660** |
-
-The wrong answer scored *higher* than the right one, and every answer across four different decision points landed in a 0.55–0.66 band with no separation. **No threshold fixes that** — it's a capability gap, not a calibration gap.
-
-What this means in practice: the loop, the state projection and the policy all work; the open-weight checkpoint is a **fast base to specialise**, not a drop-in judge for your task. Expect to fine-tune on a few thousand labelled examples, or use a stronger decision model.
-
-Both gotchas are the same lesson from [Jev Engineering](https://madewithjev.com/what-is-jev-engineering): *the call is the easy part — the work is in the state you send and the threshold you act on.*
+> Not on npm yet. Install from git — the `prepare` script builds `dist/` for you:
+> `npm install github:Xubqpanda/JevLoop`
 
 ## What this is not
 
 - **Not a replacement for an LLM.** Drafting, coding and summarising still need one.
-- **Not "zero hallucination".** A decision model can't return an answer outside the type you asked for, but the answer can still be wrong. That's what the confidence is for.
-- **Not benchmarked yet.** The `11:1` above is from the bundled demo. A real comparison against a conventional agent on the same task is the obvious next step — and it isn't done.
-- **The demo's judge is a rule table, not a model.** `examples/rule-judge.ts` is a deterministic stand-in so `npm run demo` works with no key and no network. Real numbers need `--laya` or `--jev`. The file is clearly marked and gets deleted the moment you have a real backend.
-- **Not production-hardened.** Tool sandboxing covers path escape only. Read `src/tools.ts` before pointing it at anything you care about.
+- **Not "zero hallucination".** A decision model can't return an answer outside the type you asked for, but the answer can still be wrong. That's what the threshold is for.
+- **Not benchmarked against a conventional agent on the same task yet.** The `12:1` above is from the bundled demo. That comparison is the obvious next step and it isn't done.
+- **Not production-hardened.** Tool sandboxing covers path escape only. Read [`src/tools.ts`](src/tools.ts) before pointing it at anything you care about.
 
 ## Layout
 
