@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>JevLoop · 决策可视化</title>
+    <title>JevLoop · 判定不花钱的 agent</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>⬢</text></svg>" />
     <!-- tokens 必须先于 app：app.css 只用 tokens.css 里的语义别名 -->
     <link rel="stylesheet" href="/tokens.css" />
@@ -14,7 +14,7 @@
       <header class="topbar">
         <div class="brand">
           JevLoop
-          <small>判定不花钱的 agent loop</small>
+          <small>判定不花钱的 agent</small>
         </div>
 
         <!-- 四个计数就是全部主张：判定很多次，模型很少次 -->
@@ -28,27 +28,55 @@
       </header>
 
       <div class="cols">
+        <!-- ── 左：这份 agent 的判定规格 ────────────────────── -->
         <aside class="pane side">
-          <h2 class="section-title">任务</h2>
-          <textarea class="field" id="task" rows="4" spellcheck="false">列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数</textarea>
-          <button class="btn" id="run">运行</button>
+          <h2 class="section-title">DECISION.md</h2>
+          <div id="spec"><div class="empty">读取中…</div></div>
 
           <div class="legend">
             <h2 class="section-title">图例</h2>
             <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向，几十毫秒</div>
+            <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定，不过模型</div>
             <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
             <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步</b></div>
-            <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定</div>
             <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
           </div>
         </aside>
 
-        <main class="pane">
-          <div class="timeline" id="timeline">
-            <div class="empty">点「运行」，看每一次判定</div>
+        <!-- ── 中：对话 / 轨迹 ──────────────────────────────── -->
+        <main class="pane center">
+          <div class="tabs" role="tablist" aria-label="视图">
+            <button class="tab" role="tab" id="tab-chat" data-view="chat" aria-selected="true">对话</button>
+            <button class="tab" role="tab" id="tab-trace" data-view="trace" aria-selected="false">轨迹</button>
+            <span class="tab-note" id="tab-note"></span>
           </div>
+
+          <!-- 对话 -->
+          <section class="view" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
+            <div class="stream" id="chat">
+              <div class="empty">说点什么，它会边判定边做。</div>
+            </div>
+            <form class="composer" id="composer">
+              <textarea
+                class="field"
+                id="task"
+                rows="1"
+                spellcheck="false"
+                placeholder="让它做点什么…（Enter 发送，Shift+Enter 换行）"
+              >列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数</textarea>
+              <button class="btn" id="run" type="submit">发送</button>
+            </form>
+          </section>
+
+          <!-- 轨迹：和对话看的是同一串事件，只是不折叠 -->
+          <section class="view" id="view-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
+            <div class="timeline" id="timeline">
+              <div class="empty">还没有跑过。切回「对话」发一条。</div>
+            </div>
+          </section>
         </main>
 
+        <!-- ── 右：记账 ─────────────────────────────────────── -->
         <aside class="pane aside">
           <h2 class="section-title">记账</h2>
           <div id="side-stats">

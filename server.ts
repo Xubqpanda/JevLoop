@@ -31,10 +31,12 @@ import { Meter } from './src/meter.ts'
 import { runAgent } from './src/agent.ts'
 import { resolveProvider, resolveGenerator } from './src/backends.ts'
 import { loadEnv } from './src/env.ts'
+import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc.ts'
 import type { AgentEvent } from './src/events.ts'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = join(ROOT, 'web')
+const DECISION_MD = join(ROOT, 'DECISION.md')
 const PORT = Number(process.env.PORT ?? 7799)
 const HOST = process.env.HOST ?? '127.0.0.1'
 
@@ -230,6 +232,43 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 }
 
+/**
+ * 把 `DECISION.md` 的解析结果给界面。
+ *
+ * 左栏显示的是**这个 agent 会问哪些问题**的规格，和右栏的记账是一对：
+ * 规格说应该问什么，记账说实际花了多少。
+ *
+ * 解析出的问题也一并发出去。一个被悄悄忽略的判定块会让 agent 安静地
+ * 少问一个问题，界面上不显示就等于没人会知道（§8.10 不假装成功）。
+ */
+async function handleSpec(res: ServerResponse): Promise<void> {
+  let md: string
+  try {
+    md = await readFile(DECISION_MD, 'utf8')
+  } catch (err) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ error: `读不到 DECISION.md：${(err as Error).message}` }))
+    return
+  }
+
+  const doc = parseDecisionDoc(md)
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(
+    JSON.stringify({
+      headline: headline(doc),
+      summary: summarize(doc),
+      blocks: doc.blocks.map((b) => ({
+        id: b.id,
+        kind: b.kind,
+        when: b.when,
+        gate: isGate(b),
+        questions: b.questions.map((q) => q.id),
+      })),
+      problems: doc.problems,
+    }),
+  )
+}
+
 async function serveStatic(res: ServerResponse, path: string): Promise<void> {
   const rel = path === '/' ? '/index.html' : path
   const safe = normalize(rel).replace(/^(\.\.[/\\])+/, '')
@@ -256,6 +295,10 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === '/api/run') {
       await handleRun(req, res, url)
+      return
+    }
+    if (url.pathname === '/api/spec') {
+      await handleSpec(res)
       return
     }
     await serveStatic(res, url.pathname)
