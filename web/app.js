@@ -706,17 +706,35 @@ async function loadSpec() {
     const spec = await res.json()
 
     const kids = [h('div', { class: 'spec-headline' }, spec.headline)]
-    for (const b of spec.blocks) {
+
+    // 有策略没编译出来时，先说这一句。
+    // 编译不了的谓词会变成永不命中的规则 —— 也就是一条**空闸门**。
+    // 不显示的话，上面那句汇总看起来完全正常（审计第十一轮 S3）。
+    const broken = spec.blocks.filter((b) => (b.uncompiled ?? []).length > 0)
+    if (broken.length > 0) {
       kids.push(
         h(
           'div',
-          { class: `spec-block k-${b.kind}` },
+          { class: 'spec-alert' },
+          `⚠ ${broken.length} 个判定块有策略没编译出来，那些规则永远不会命中：` +
+            broken.map((b) => `${b.id}（${b.uncompiled.join(' / ')}）`).join('；'),
+        ),
+      )
+    }
+
+    for (const b of spec.blocks) {
+      const bad = (b.uncompiled ?? []).length > 0
+      kids.push(
+        h(
+          'div',
+          { class: `spec-block k-${b.kind}${bad ? ' broken' : ''}` },
           h(
             'div',
             {},
             h('span', { class: 'spec-id' }, b.id),
             h('span', { class: 'spec-kind' }, b.kind),
             b.gate ? h('span', { class: 'spec-gate' }, '闸门') : null,
+            bad ? h('span', { class: 'spec-broken' }, `${b.uncompiled.length} 条未编译`) : null,
           ),
           b.when ? h('div', { class: 'spec-when' }, b.when) : null,
         ),

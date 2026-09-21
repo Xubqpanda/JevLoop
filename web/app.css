@@ -1264,3 +1264,27 @@ button.badge.action:hover {
   font-size: 11px;
   line-height: 16px;
 }
+
+/* 未编译的策略：一条永远不命中的规则 = 一道空闸门。
+   它必须比旁边的正常判定块更扎眼，因为它正是"看起来没事"的那类问题 */
+.spec-alert {
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--jl-alias-state-error-primary);
+  border-radius: var(--jl-radius-sm);
+  /* DSH 没有 error-tertiary —— 用它的 hover-danger 底色（极浅的红） */
+  background: var(--jl-alias-interactive-bg-hover-danger);
+  color: var(--jl-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.spec-block.broken {
+  border-left-color: var(--jl-alias-state-error-primary);
+}
+
+.spec-broken {
+  margin-left: 6px;
+  color: var(--jl-alias-state-error-primary);
+  font-size: 11px;
+}

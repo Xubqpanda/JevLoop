@@ -31,7 +31,7 @@ import { Meter } from './src/meter.ts'
 import { runAgent } from './src/agent.ts'
 import { resolveProvider, resolveGenerator } from './src/backends.ts'
 import { loadEnv } from './src/env.ts'
-import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc.ts'
+import { parseDecisionDoc, summarize, headline, isGate, compilePredicate } from './src/decisiondoc.ts'
 import type { AgentEvent } from './src/events.ts'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
@@ -344,13 +344,21 @@ async function handleSpec(res: ServerResponse): Promise<void> {
     JSON.stringify({
       headline: headline(doc),
       summary: summarize(doc),
-      blocks: doc.blocks.map((b) => ({
-        id: b.id,
-        kind: b.kind,
-        when: b.when,
-        gate: isGate(b),
-        questions: b.questions.map((q) => q.id),
-      })),
+      blocks: doc.blocks.map((b) => {
+        // 这里的谓词编译**不是为了用它的结果，是为了它的失败**。
+        // 编译不了的谓词会被编成永不命中的规则，那意味着这份规格里有一条
+        // 闸门是空的 —— 界面必须把这件事显示出来，否则汇总看起来完全正常，
+        // 而实际上少了一条规则（审计第十一轮 S3）。
+        return {
+          id: b.id,
+          kind: b.kind,
+          when: b.when,
+          gate: isGate(b),
+          questions: b.questions.map((q) => q.id),
+          /** 没编译出来的谓词原文。空数组 = 这个块的策略全部可编译 */
+          uncompiled: b.policy.filter((r) => compilePredicate(r.when, b) === null).map((r) => r.when),
+        }
+      }),
       problems: doc.problems,
     }),
   )
