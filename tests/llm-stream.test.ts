@@ -105,7 +105,7 @@ test('增量按顺序到，第一段是 reset', async (t) => {
   assert.deepEqual(
     rec.deltas,
     [
-      { text: '', reset: true },
+      { text: '', reset: true, resetWhy: 'start' },
       { text: '你', reset: false },
       { text: '好', reset: false },
       { text: '呀', reset: false },
@@ -234,6 +234,12 @@ test('整次尝试一个字都没吐时不发 reset —— 没什么可重置的
   // 和上一条相对。503 在 `#readStream` 之前就抛了，所以那次尝试
   // **没有向界面显示过任何东西**；这时发 reset 是无意义的动作。
   // 把这个语义写下来，是因为它容易被当成漏了（我自己第一版就断言错了）。
+  //
+  // ★ `resetWhy` 那条断言**当场抓住过一个真的不准确**：`RetryingGenerator`
+  //   一开始按「次数 > 1」标 `retry`，于是这一次会标成 retry —— 界面上就会
+  //   说「已经流出来的部分已作废」，而根本没有东西流出来过。
+  //   **次数不等于「屏幕上有东西可作废」**，所以判据改成了「上一次真的
+  //   吐出过字吗」（见那个类里的说明）。
   const be = await backend((_b, res, nth) => {
     if (nth === 1) {
       res.writeHead(503, { 'content-type': 'text/plain' })
@@ -250,7 +256,11 @@ test('整次尝试一个字都没吐时不发 reset —— 没什么可重置的
   const r = await g.generate({ task: 't', evidence: 'e', onDelta: rec.onDelta })
 
   assert.equal(r.text, '才算数')
-  assert.deepEqual(rec.deltas, [{ text: '', reset: true }, { text: '才', reset: false }, { text: '算数', reset: false }])
+  assert.deepEqual(rec.deltas, [
+    { text: '', reset: true, resetWhy: 'start' },
+    { text: '才', reset: false },
+    { text: '算数', reset: false },
+  ])
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -287,4 +297,84 @@ test('不给 onDelta 时脚本生成器行为不变：等一次，不分块', as
   const r = await g.generate({ task: 't', evidence: 'e' })
   assert.ok(r.text.includes('task: t'))
   assert.ok(r.latencyMs >= 15, `应当等了一次，实际 ${r.latencyMs}ms`)
+})
+
+// ═══════════════════════════════════════════════════════════
+// 重置的**原因** —— 界面上要被擦掉几百字，得说得出为什么
+// ═══════════════════════════════════════════════════════════
+
+test('第一次生成：resetWhy 是 start（画面上本来就是空的，没什么可解释）', async (t) => {
+  const be = await backend((_b, res) => speakSse(res, [chunk('甲')]))
+  t.after(() => be.close())
+
+  const rec = recorder()
+  const g = new HttpGenerator({ baseUrl: be.baseUrl, model: 'm' })
+  await g.generate({ task: 't', evidence: 'e', onDelta: rec.onDelta })
+
+  assert.equal(rec.deltas[0].resetWhy, 'start')
+  assert.equal('resetNote' in rec.deltas[0], false, 'start 不该带理由')
+})
+
+test('loop 说这是一次修订：resetWhy 是 revise，并带上闸门给的理由', async (t) => {
+  const be = await backend((_b, res) => speakSse(res, [chunk('改过的回答')]))
+  t.after(() => be.close())
+
+  const rec = recorder()
+  const g = new HttpGenerator({ baseUrl: be.baseUrl, model: 'm' })
+  await g.generate({
+    task: 't',
+    evidence: 'e',
+    onDelta: rec.onDelta,
+    revise: 'prob:unsupported >= 0.5 → revise',
+  })
+
+  assert.equal(rec.deltas[0].resetWhy, 'revise')
+  assert.equal(rec.deltas[0].resetNote, 'prob:unsupported >= 0.5 → revise')
+})
+
+test('重试：resetWhy 是 retry —— 由 RetryingGenerator 改写，因为只有它知道这是第几次', async (t) => {
+  // `HttpGenerator` 每次都是被重新调用的，它分不出「第一次」和「第三次」。
+  const be = await backend((_b, res, nth) => {
+    if (nth === 1) {
+      // 吐了一点然后干净结束（没有 [DONE]）= 截断，可重试
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${chunk('半句')}\n\n`)
+      res.end()
+      return
+    }
+    speakSse(res, [chunk('完整的')])
+  })
+  t.after(() => be.close())
+
+  const rec = recorder()
+  const inner = new HttpGenerator({ baseUrl: be.baseUrl, model: 'm' })
+  const g = new RetryingGenerator(inner, { maxRetries: 2, initialDelayMs: 1 })
+  await g.generate({ task: 't', evidence: 'e', onDelta: rec.onDelta })
+
+  const resets = rec.deltas.filter((d) => d.reset)
+  assert.equal(resets.length, 2)
+  assert.equal(resets[0].resetWhy, 'start', '第一次是正常开头')
+  assert.equal(resets[1].resetWhy, 'retry', '第二次是重试 —— 上一次那半句作废了')
+})
+
+test('修订 + 重试叠在一起：重试的标记优先（界面要说的是「刚才那些字作废了」）', async (t) => {
+  const be = await backend((_b, res, nth) => {
+    if (nth === 1) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${chunk('被截断的')}\n\n`)
+      res.end()
+      return
+    }
+    speakSse(res, [chunk('修订后的')])
+  })
+  t.after(() => be.close())
+
+  const rec = recorder()
+  const inner = new HttpGenerator({ baseUrl: be.baseUrl, model: 'm' })
+  const g = new RetryingGenerator(inner, { maxRetries: 2, initialDelayMs: 1 })
+  await g.generate({ task: 't', evidence: 'e', revise: '闸门要求修订', onDelta: rec.onDelta })
+
+  const resets = rec.deltas.filter((d) => d.reset)
+  assert.equal(resets[0].resetWhy, 'revise')
+  assert.equal(resets[1].resetWhy, 'retry')
 })

@@ -27,7 +27,6 @@ import type { Generator } from './llm.ts'
 /** 降级回调。每次从一层掉到下一层时调用一次，不是每次请求都调。 */
 export type FallbackNotice = (error: unknown, from: string, to: string) => void
 
-/** 判定后端的选择。 */
 /**
  * 钉住的 Jev 版本。
  *
@@ -37,6 +36,7 @@ export type FallbackNotice = (error: unknown, from: string, to: string) => void
  */
 export const PINNED_JEV_MODEL = 'jev-1.13.0'
 
+/** 判定后端的选择。 */
 export interface ProviderChoice {
   /** 官方 Jev 的 baseUrl，默认 `https://api.typesafe.ai` */
   jevUrl?: string

@@ -131,6 +131,21 @@
 
           <form class="composer" id="composer">
             <div class="composer-card">
+              <!--
+                ★ 「这个页面跑的是旧代码」提示。默认 `hidden`，由 `app.js`
+                  在每次开跑前和服务端的当前版本比一次（见 `checkStale`）。
+
+                为什么需要它：界面**没有构建步骤**，浏览器拿到什么就一直在跑
+                什么 —— 而**一直开着的标签页**不会自己更新。表现是「新功能没
+                生效」，看起来完全像那个新功能本身坏了（实测 2026-09-21：
+                流式做完之后看到的仍是「生成完了一次性出全文」）。
+
+                它是个**提示**，不是功能：拿不到版本号就什么都不显示。
+              -->
+              <div class="stale" id="stale" hidden>
+                <span>这个页面跑的是旧代码，上面那次运行看不到新改动。</span>
+                <button class="badge action" id="stale-reload" type="button">刷新</button>
+              </div>
               <div class="composer-scroll">
                 <textarea
                   class="composer-input"

@@ -1243,6 +1243,64 @@ body {
   margin-right: 4px;
 }
 
+/*
+  「这个页面跑的是旧代码」提示。
+
+  贴在输入框上方、卡片内部 —— 它要说的事情和「按下运行」直接相关，放在
+  别处（顶栏、页脚）就等于让人自己去找。默认 `hidden`，由 `app.js` 的
+  `checkStale` 决定显不显示。
+
+  用 warning 那个语义色而不是 danger：页面旧了**不是错误**，
+  状态一个字节都没坏，只是需要刷一下。
+
+  ⚠️ **不加底色。** 试过 `warn-tertiary` 打底 + `warn-label` 写字：浅色主题
+  （amber-100 / amber-600）很好，深色主题（amber-900 / amber-600）对比度掉到
+  读不清 —— 而第三层静态色不该被组件直接用（§13 的层规矩）。
+  这里跟 `web/app.css` 已有的写法（`.picker-note .warn`）：**语义色写字，
+  靠一根竖线给分量**，两种主题都成立。
+*/
+.stale,
+.answer-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--jl-alias-state-warn-primary);
+  color: var(--jl-alias-state-warn-label);
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+}
+
+/* `hidden` 必须真的藏起来 —— `display: flex` 会盖掉它的默认样式 */
+.stale[hidden],
+.answer-notice[hidden] {
+  display: none;
+}
+
+.stale {
+  gap: 8px;
+  margin: 0 14px;
+}
+
+.stale button {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/*
+  「上一次的输出作废了，正在重写」。
+
+  **实时专有**，和「正在生成回答 · 已等待 Ns」同一类：历史里没有它，
+  因为历史里没有东西被擦掉（见 `app.js` 的 `generate:delta` 分支）。
+*/
+.answer-notice {
+  margin: 6px 0 2px;
+}
+
+.answer-notice .mark {
+  flex: 0 0 auto;
+}
+
 .composer-input {
   display: block;
   width: 100%;

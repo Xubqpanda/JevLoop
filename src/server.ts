@@ -42,7 +42,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { realpathSync, existsSync } from 'node:fs'
+import { realpathSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -806,6 +806,32 @@ async function handleSpec(res: ServerResponse): Promise<void> {
   )
 }
 
+/**
+ * `web/` 的当前版本 —— 各文件的**名字 + 大小 + 修改时间**揉成一个短串。
+ *
+ * ★ 为什么需要它：这个界面**没有构建步骤**，浏览器拿到什么就一直在跑什么。
+ *   改了 `app.js` 之后，一个**一直开着的标签页**跑的还是旧代码 —— 而表现是
+ *   「新功能没生效」，看起来完全像那个新功能本身坏了。
+ *
+ *   实测（2026-09-21）：流式生成做完之后，看到的仍然是「生成完了一次性出全文」。
+ *   服务端、CSS、缓存头（`no-store` 全都是对的）挨个排查完，最后发现是那个
+ *   标签页从改动之前就一直开着。
+ *
+ * **每次请求现算**，不缓存：静态文件本来就是每次从磁盘读的，所以改完文件
+ * 不重启也生效 —— 版本号必须跟着一起变，缓存住反而会让「刚改完」那一次
+ * 比对给出错误答案。
+ */
+function webBuild(): string {
+  let newest = 0
+  let bytes = 0
+  for (const name of readdirSync(WEB_DIR).sort()) {
+    const st = statSync(join(WEB_DIR, name))
+    newest = Math.max(newest, st.mtimeMs)
+    bytes += st.size
+  }
+  return `${Math.round(newest).toString(36)}-${bytes.toString(36)}`
+}
+
 async function serveStatic(res: ServerResponse, path: string): Promise<void> {
   const rel = path === '/' ? '/index.html' : path
   const safe = normalize(rel).replace(/^(\.\.[/\\])+/, '')
@@ -821,6 +847,20 @@ async function serveStatic(res: ServerResponse, path: string): Promise<void> {
   try {
     const data = await readFile(file)
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store' })
+    /*
+      index.html 里注入**当前版本**。前端把它和自己加载时那一份比对，
+      对不上就提示刷新 —— 只有 HTML 需要注入，因为它是页面唯一的入口，
+      别的资源都是它拉起来的（见 `webBuild`）。
+    */
+    if (file.endsWith('index.html')) {
+      // 连 `</head>` 前面那两格缩进一起匹配，否则注入的行会缩进 6 格
+      res.end(
+        data
+          .toString('utf8')
+          .replace('\n  </head>', `\n    <meta name="jl-build" content="${webBuild()}" />\n  </head>`),
+      )
+      return
+    }
     res.end(data)
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('404')
@@ -832,6 +872,10 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === '/api/run') {
       await handleRun(req, res, url)
+      return
+    }
+    if (url.pathname === '/api/build') {
+      sendJson(res, 200, { build: webBuild() })
       return
     }
     if (url.pathname === '/api/spec') {

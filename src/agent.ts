@@ -698,6 +698,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       historyDigest: genDigest,
       instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
       onDelta: deltaFor(genStep),
+      /*
+        ★ 告诉生成器**这是一次修订**，理由原样带过去。
+
+        它是给**界面**用的：修订意味着上一次流出去的回答整个作废，那些字
+        会被擦掉。一声不吭地擦掉几百字正是「这个功能坏了」的样子
+        （见 `GenDelta.resetWhy`）。
+      */
+      revise: deliver.reason,
     })
     meter.recordModelCall(genStep, {
       kind: `generate/revise (${generator.name})`,

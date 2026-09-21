@@ -37,19 +37,6 @@ import { renderMarkdown, createStreamRenderer } from './markdown.js'
 // DOM 小工具（不引框架：这个界面只有两种交互，画卡片和切视图）
 // ═══════════════════════════════════════════════════════════
 
-/**
- * 一次生成调用的 token 账。
- *
- * 三个数回答不同的问题，所以**并排显示**：
- *
- *     估 N      我们按字符启发式估的「我们发出去的那部分」
- *     入 M       provider 报的输入（含生成器内部的 system prompt）
- *     出 K       provider 报的输出
- *
- * `入/出` 是 0 的时候**不说 0，说「未报」** —— 脚本生成器不报 usage，
- * 那是「没量到」而不是「量到了 0」（§8.10）。把两者显示成同一个东西
- * 会让人以为一次调用真的没花 token。
- */
 /** 上下文账目的一句话。两个调用点共用 —— 分两处写必然分叉 */
 function contextBits(e) {
   const bits = [`${e.rawChars} → ${e.keptChars} 字符`]
@@ -67,6 +54,19 @@ function conversationBits(e) {
   return bits
 }
 
+/**
+ * 一次生成调用的 token 账。
+ *
+ * 三个数回答不同的问题，所以**并排显示**：
+ *
+ *     估 N      我们按字符启发式估的「我们发出去的那部分」
+ *     入 M       provider 报的输入（含生成器内部的 system prompt）
+ *     出 K       provider 报的输出
+ *
+ * `入/出` 是 0 的时候**不说 0，说「未报」** —— 脚本生成器不报 usage，
+ * 那是「没量到」而不是「量到了 0」（§8.10）。把两者显示成同一个东西
+ * 会让人以为一次调用真的没花 token。
+ */
 function tokenText(e) {
   const reported = e.inputTokens > 0 || e.outputTokens > 0
   if (!reported) return `估 ${e.estimatedInputTokens} tok · 用量未报`
@@ -357,13 +357,18 @@ function assistantTurn() {
   const running = h('div', { class: 'running-row' }, h('span', { class: 'pulse' }), '开始…')
   const answer = h('div', { class: 'answer' }, '')
   const foot = h('div', { class: 'msg-foot' })
-  const el = h('div', { class: 'msg-assistant' }, list, running, answer, foot)
+  // 「上一次的输出作废了，正在重写」——和 `running` 一样是**实时专有**的，
+  // 历史里没有它（那时没有东西被擦掉，没什么可解释的）。
+  const notice = h('div', { class: 'answer-notice' })
+  notice.hidden = true
+  const el = h('div', { class: 'msg-assistant' }, list, running, notice, answer, foot)
   chat.append(el)
   followTail()
   return {
     el,
     list,
     running,
+    notice,
     answer,
     foot,
     rows: 0,
@@ -384,10 +389,24 @@ function processRow(e, dur) {
   const detail = []
   switch (e.type) {
     case 'decision': {
-      const picked = Object.entries(e.answers ?? {})[0]
       detail.push(h('span', { class: 'hit' }, `→ ${e.action}`))
-      if (picked) {
-        const [qid, a] = picked
+      /*
+        ★ **所有答案都显示，不是只显示第一个。**
+
+        以前只取 `Object.entries(answers)[0]`，而策略可能看的是**第二个**。
+        实测（2026-09-21，查「输出被收回」时撞见的）：
+
+            loop.canDeliver → revise · deliverable=真 68.0%
+
+        那一行读起来自相矛盾 —— 68% 的把握说「可以交付」，动作却是「修订」。
+        真相在没被显示的那个答案上：`unsupported=0.70`，而策略是
+        `prob:unsupported >= 0.5 → revise` 排在 `deliverable` 前面。
+        `gradeRisk`（risk + needs_auth）同理，两个都在，只显示一个就会漏掉
+        真正决定动作的那个。
+
+        答案最多两三个，全铺开也不会长到读不下。
+      */
+      for (const [qid, a] of Object.entries(e.answers ?? {})) {
         if (a.type === 'choice') detail.push(` · ${qid}=${a.choice} ${pct(a.probabilities?.[a.choice] ?? 0)}`)
         else if (a.type === 'noul') detail.push(` · ${qid}=${a.noul >= 0.5 ? '真' : '假'} ${pct(a.noul)}`)
         else if (a.type === 'score') detail.push(` · ${qid}=档位 ${a.score}`)
@@ -435,12 +454,6 @@ function processRow(e, dur) {
 }
 
 /**
- * 运行指示器：显示「现在在等什么」+ 已经等了多久。
- *
- * 没有这个，一次 37 秒的运行看起来和挂掉没有区别 —— 而它其实一直在跑，
- * 只是每次判定之间隔着几百毫秒的静默。
- */
-/**
  * 「比平时久」的界线，**按阶段分开**。
  *
  * ★ 一个数管三段是错的：托管 Jev 一次判定约 **390ms**（§8.11），而一次
@@ -454,6 +467,12 @@ function processRow(e, dur) {
 const STALL_AFTER_MS = { decide: 6000, tool: 6000, generate: 30000 }
 let ticker = null
 
+/**
+ * 运行指示器：显示「现在在等什么」+ 已经等了多久。
+ *
+ * 没有这个，一次 37 秒的运行看起来和挂掉没有区别 —— 而它其实一直在跑，
+ * 只是每次判定之间隔着几百毫秒的静默。
+ */
 function startTicker() {
   stopTicker()
   ticker = setInterval(() => {
@@ -528,6 +547,21 @@ function ratioText(s) {
   return `${r.toFixed(1)} : 1`
 }
 
+/**
+ * 这一轮被交付闸门要求修订过吗？有就返回那句话，没有返回 `null`。
+ *
+ * ★ 判据是**持久化的事件**：修订那一次的 `generate` 事件 kind 是
+ *   `generate/revise …`，它进日志（增量不进，见 `src/events.ts` 的
+ *   `GenerateDelta`）。所以只有它能同时对**实时那一轮**和**刷新之后重放的
+ *   那一轮**说同一句话 —— 拿增量判就会「实时看得见、刷新就没了」。
+ */
+function reviseNoteOf(events) {
+  const revised = (events ?? []).some(
+    (e) => e.type === 'generate' && String(e.kind ?? '').startsWith('generate/revise'),
+  )
+  return revised ? '这次回答被交付闸门要求修订过一次，上面是修订后的版本' : null
+}
+
 function finishAssistant(text, stats, halt) {
   if (!current) return
   current.finished = true
@@ -544,6 +578,12 @@ function finishAssistant(text, stats, halt) {
     `innerHTML`**（渲染的是模型生成的文本，即不可信输入）。
   */
   current.answer.replaceChildren(text ? renderMarkdown(text) : '（没有回答）')
+
+  // 说明行定稿：实时那一轮用闸门给的原话（流式时写的），重放那一轮只能
+  // 从事件里推出来 —— 两者到这里统一成同一句
+  const note = reviseNoteOf(current.events)
+  current.notice.hidden = note === null
+  if (note) current.notice.replaceChildren(h('span', { class: 'mark' }, '⟲'), note)
 
   const s = stats ?? {}
   const ratio = ratioText(s)
@@ -1179,10 +1219,53 @@ function onEvent(e) {
   */
   if (e.type === 'generate:delta') {
     if (!current || replaying) return
-    if (e.reset) current.stream.reset()
-    current.draft = (e.reset ? '' : current.draft) + e.text
+
+    if (e.reset) {
+      current.draft = ''
+      /*
+        ══════════════════════════════════════════════════════════════
+          ★ **不在这一刻擦掉画面上的字，也不沉默。**
+
+          实测（2026-09-21，用户报的「输出被收回」）：一次运行里第一版回答
+          流到 563 字，交付闸门判 `revise`，第二次生成开头的 `reset` 把
+          563 字**瞬间擦成 0**，然后重流到 577 字。内容是错的吗？不是 ——
+          被否掉的答案本来就该换掉。**错的是它一声不吭**：几百个字凭空消失，
+          看起来完全像这个功能坏了，而用户没有任何办法知道刚才发生了什么。
+        ══════════════════════════════════════════════════════════════
+
+        所以两件事：
+          ① **先不擦** —— 旧答案留在屏幕上，等新文本真的来了再换。这样中间
+             不会空一段（首次 token 要等一两秒），读的人也不会突然面对空白。
+          ② 摆一行说明，写清**为什么**作废（`resetWhy` 由服务端给，见
+             `GenDelta`）。它是**实时专有**的，和「正在生成回答…」同一类：
+             历史里没有它，因为历史里没有东西被擦掉。
+      */
+      if (e.resetWhy === 'retry' || e.resetWhy === 'revise') {
+        current.notice.hidden = false
+        current.notice.replaceChildren(
+          h('span', { class: 'mark' }, '⟲'),
+          e.resetWhy === 'revise'
+            ? `交付闸门要求修订${e.resetNote ? `（${e.resetNote}）` : ''} —— 上一次的回答已作废，正在重写`
+            : '上一次生成中断了 —— 已经流出来的部分已作废，正在重试',
+        )
+      }
+      // 秒数从头数起：**它在动**，不是在卡住
+      touch()
+      followTail()
+      return
+    }
+
+    /*
+      新文本真的来了 —— 现在才把旧答案换掉（渲染器自己发现文本不是接着
+      上一帧的，会整段重建）。
+
+      ★ 那行说明**不在这里收掉**。第一版是收到新文本就隐藏，实测它只亮了
+      **不到 100ms**（reset 和第一个 token 之间就那么多），也就是根本读不到 ——
+      一个读不到的说明等于没有说明。它留到这一轮结束，由 `finishAssistant`
+      按**持久化的事件**重新定稿（那样刷新重放之后它也在）。
+    */
+    current.draft += e.text
     current.stream.update(current.draft)
-    // 秒数从头数起：**它在动**，不是在卡住
     touch()
     followTail()
     return
@@ -1299,10 +1382,45 @@ function abortedTurn() {
 // 运行
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 开跑之前确认：这个页面跑的，是不是服务端**现在**那一份代码。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  这个界面**没有构建步骤** —— 浏览器拿到什么就一直在跑什么。
+ *  于是一个**一直开着的标签页**在代码改完之后仍然跑旧版本，而表现是
+ *  「新功能没生效」：看起来完全像那个新功能本身坏了。
+ *
+ *  实测（2026-09-21）：流式生成做完之后，看到的仍然是「生成完了一次性
+ *  出全文」。服务端、CSS、缓存头（`no-store` 全对）挨个排查完，最后发现
+ *  是那个标签页从改动之前就一直开着 —— **白跑了一圈**。
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 版本号是服务端注入到 `index.html` 的 `<meta name="jl-build">`（见
+ * `server.ts` 的 `webBuild`）；这里拿它和 `/api/build` 的当前值比。
+ *
+ * ★ 它是个**提示**，不是功能：拿不到就什么都不显示。所以这里既不等它、
+ *   也不因为它失败而挡住运行 —— 提示不该有能力影响正事。
+ */
+async function checkStale() {
+  const box = $('stale')
+  const mine = document.querySelector('meta[name="jl-build"]')?.content
+  if (!box || !mine) return
+  try {
+    const res = await fetch('/api/build', { cache: 'no-store' })
+    if (!res.ok) return
+    const { build } = await res.json()
+    box.hidden = build === mine
+  } catch {
+    // 吞的是：这次探测本身失败（服务端不可用、网络断了）。
+    // 没有别的东西会到这里，而且**探测失败不该报错** —— 它是提示不是功能。
+  }
+}
+
 function run(task) {
   if (state.running || !task) return
   state.running = true
   sawEnd = false
+  void checkStale()
 
   if (turns.length === 0) chat.replaceChildren()
   userTurn(task)
@@ -1949,6 +2067,10 @@ async function restoreConversation() {
 }
 
 $('sess-new').addEventListener('click', () => void startFreshSession())
+
+// 陈旧提示里的「刷新」。用手动按钮而不是自动 reload：自动刷新会**打断**
+// 正在看的东西（包括正在跑的那一轮），而那一轮通常就是在旧代码上跑完的。
+$('stale-reload').addEventListener('click', () => location.reload())
 
 // ═══════════════════════════════════════════════════════════
 // 选目录

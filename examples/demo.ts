@@ -128,6 +128,69 @@ if (env.skipped.length) {
 console.log('')
 console.log(C.bold('  ── loop trace ──────────────────────────────────────────'))
 
+/**
+ * 把生成的回答**边生成边打到终端**。
+ *
+ * ── 为什么不回退去擦掉上一版 ──────────────────────────────────
+ *
+ * 重试会**重新发起**生成（`reset: true`），而已经打出去的那半句在终端里
+ * 收不回来 —— 真要收得按行数算光标位置往上抹，而回答一动行数就变，
+ * 抹错地方比不抹更糟。
+ *
+ * 所以这里打一行说明再接着打：**「重来了一遍」这件事本身要看得到**，
+ * 而不是让两次尝试的文字在屏幕上首尾相接、看起来像一句模型从没说过的话
+ * （§8.10 不假装成功）。
+ *
+ * `chars` 是**收到过多少增量**，用来判断这次到底流没流 —— 后端不理睬
+ * `stream` 时一个增量都不会来，那时答案只能从 `run:end` 那份拿。
+ */
+function answerStream() {
+  const INDENT = '  '
+  let started = false
+  let lineStart = true
+  let chars = 0
+
+  return {
+    get chars() {
+      return chars
+    },
+    onDelta(d: { text: string; reset: boolean }): void {
+      if (d.reset) {
+        // 第一次进来是正常的开头；之后再进来就是重试
+        if (started) console.log(C.dim('\n  ⟲ 上一次生成作废，重新生成…'))
+        else {
+          console.log('')
+          console.log(C.bold('  ── answer ──────────────────────────────────────────────'))
+          console.log('')
+        }
+        started = true
+        lineStart = true
+        chars = 0
+        return
+      }
+      // 逐字符走是为了**每行开头补缩进**（增量切在哪里和行边界无关）。
+      // `for…of` 按码点迭代，中文和 emoji 都不会被切成半个。
+      let out = ''
+      for (const ch of d.text) {
+        if (lineStart) {
+          out += INDENT
+          lineStart = false
+        }
+        out += ch
+        if (ch === '\n') lineStart = true
+      }
+      process.stdout.write(out)
+      chars += d.text.length
+    },
+    /** 收尾：最后一行没有换行的话补一个，免得后面的输出接在它屁股上 */
+    end(): void {
+      if (started && !lineStart) process.stdout.write('\n')
+    },
+  }
+}
+
+const stream = answerStream()
+
 const result = await runAgent({
   task: TASK,
   cwd,
@@ -135,7 +198,9 @@ const result = await runAgent({
   generator,
   maxSteps: 8,
   onTrace: (line) => console.log(C.dim(line)),
+  onDelta: (d) => stream.onDelta(d),
 })
+stream.end()
 
 // ── 输出 ─────────────────────────────────────────────────────
 
@@ -148,7 +213,23 @@ console.log(C.bold('  ── result ──────────────�
 console.log(`  halt      : ${C.cyan(result.halt)}`)
 console.log(`  steps     : ${result.steps}`)
 console.log('')
-console.log(C.dim('  ' + result.answer.split('\n').join('\n  ').slice(0, 600)))
+/*
+  ★ 答案通常**已经在上面流出来了**，这里不再抄一遍。
+
+  两种情况下仍然要打：后端没流式（`stream.chars === 0`），或者答案和流出来的
+  不一致 —— 后者意味着两者之间有一道没人预期的缝，那比重复一遍严重得多，
+  所以要说出来而不是找个好看的写法盖过去。
+*/
+if (stream.chars === 0) {
+  console.log(C.dim('  ' + result.answer.split('\n').join('\n  ').slice(0, 600)))
+} else if (stream.chars !== result.answer.length) {
+  console.log(
+    C.yellow(`  ⚠ 流式收到 ${stream.chars} 字，最终答案是 ${result.answer.length} 字 —— 两者本该相同`),
+  )
+  console.log(C.dim('  ' + result.answer.split('\n').join('\n  ').slice(0, 600)))
+} else {
+  console.log(C.dim(`  （回答见上，${result.answer.length} 字 —— 它是边生成边打出来的）`))
+}
 
 const s = meter.stats
 console.log('')

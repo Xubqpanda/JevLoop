@@ -110,6 +110,16 @@ export interface GenerateRequest {
    * 所以调用方**不能**依赖回调一定被调用过。
    */
   onDelta?: (d: GenDelta) => void
+  /**
+   * 这是一次**修订**，值是**给人看的理由**（交付闸门给的那句话）。
+   *
+   * 不传 = 这一轮第一次生成。生成器自己分不出两者 —— 它只知道「你让我生成
+   * 一段文本」，不知道前面有没有一次被闸门否掉的尝试。所以由 loop 说。
+   *
+   * 它的唯一用途是**让界面能解释那一次擦拭**：修订时已经流出来的字要作废，
+   * 而一声不吭地擦掉几百字正是「这个功能坏了」的样子（见 `GenDelta.resetWhy`）。
+   */
+  revise?: string
 }
 
 export interface GenerateResult {
@@ -187,7 +197,7 @@ export class ScriptedGenerator implements Generator {
       const chunks = Math.max(1, Math.ceil(text.length / 24))
       const size = Math.max(1, Math.ceil(text.length / chunks))
       const gap = this.#latencyMs / chunks
-      onDelta({ text: '', reset: true })
+      onDelta({ text: '', reset: true, resetWhy: req.revise ? 'revise' : 'start', ...(req.revise ? { resetNote: req.revise } : {}) })
       for (let i = 0; i < text.length; i += size) {
         await new Promise((r) => setTimeout(r, gap))
         onDelta({ text: text.slice(i, i + size), reset: false })
@@ -345,7 +355,23 @@ export class HttpGenerator implements Generator {
     if (!onDelta) throw new Error('readStream 只在给了 onDelta 时调用')
     if (!res.body) throw new Error(`流式响应没有 body（content-type 说是流，但读不到）`)
 
-    onDelta({ text: '', reset: true })
+    /*
+      ★ 每次 `generate()` 进来都先发一个 `reset`，而**为什么**要说清楚：
+      `#readStream` 只在拿到 2xx 的流式响应之后才被调用，所以走到这里
+      一定是「真的要开始生成了」。但开始的原因有三种，界面要说的话也不同：
+
+        · 这一轮第一次生成  → 画面上本来就是空的，没什么可解释
+        · 同一次生成重试    → 上一次可能已经吐了半句，那些字作废
+        · loop 说这是修订  → 上一次整个回答被闸门否掉了，那些字作废
+    */
+    onDelta({
+      text: '',
+      reset: true,
+      // 「重试」由 `RetryingGenerator` 改写（它才知道这是第几次）——
+      // 这里只能分出「第一次」和「loop 说是修订」，见那个类里的说明。
+      resetWhy: req.revise ? 'revise' : 'start',
+      ...(req.revise ? { resetNote: req.revise } : {}),
+    })
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -466,6 +492,40 @@ export class RetryingGenerator implements Generator {
   }
 
   generate(req: GenerateRequest): Promise<GenerateResult> {
-    return retryCall(this.name, this.#cfg, () => this.#inner.generate(req))
+    let attempt = 0
+    /** 到此刻为止，**有没有哪一次尝试真的吐出过字** */
+    let emitted = false
+    const onDelta = req.onDelta
+
+    /*
+      ★ **「重试」这件事只有这里知道。**
+
+      `HttpGenerator.generate` 每次都是被重新调用的，它分不出「第一次」和
+      「第三次」—— 而界面要对这两种情况说不同的话（一次是正常开头，一次是
+      「刚才那些字作废了」）。所以标记在这里改写。
+
+      ⚠️ **判据是「上一次真的吐出过字」，不是「这是第几次」。** 实测被自己
+      的测试抓住过：第一次尝试返回 503，**一个增量都没有**，第二次的 reset
+      却标成 `retry` —— 界面于是说「已经流出来的部分已作废」，而根本没有
+      东西流出来过。次数不等于「屏幕上有东西可作废」。
+
+      只包 `reset` 那一段：正常增量的热路径（一次回答几百段）不该多绕一层。
+    */
+    const wrapped: GenerateRequest =
+      onDelta === undefined
+        ? req
+        : {
+            ...req,
+            onDelta: (d) => {
+              const marked = d.reset && attempt > 1 && emitted ? { ...d, resetWhy: 'retry' as const } : d
+              if (!d.reset) emitted = true
+              onDelta(marked)
+            },
+          }
+
+    return retryCall(this.name, this.#cfg, () => {
+      attempt += 1
+      return this.#inner.generate(wrapped)
+    })
   }
 }
