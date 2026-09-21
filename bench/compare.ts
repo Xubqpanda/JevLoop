@@ -1,0 +1,350 @@
+/**
+ * JevLoop · 两种循环形状的对比台
+ *
+ *   node --experimental-strip-types bench/compare.ts
+ *   node --experimental-strip-types bench/compare.ts --repeat 3
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  **它回答的是哪一句话。**
+ *
+ *  这个项目到处写着「14:1」。那个数字是**判定次数 : 生成次数** ——
+ *  它说的是「这条 loop 里的岔路口有几个不花生成的钱」，**不是**
+ *  「省了 14 次大模型调用」。同样一个任务，一个像样的 ReAct 循环大概只要
+ *  3–4 次调用。两者不是一个量纲的东西，混着说就变成了口号。
+ *
+ *  所以这个台子跑同一个任务的两条路，量三个数：
+ *
+ *     大模型调用次数   最直接的那个 —— 「便宜」到底便宜在哪
+ *     墙钟             判定的延迟优势在这儿（§8.11）
+ *     输入/输出 token  钱是按这个算的
+ *
+ * ── 读这些数字时要记住的三件事 ──────────────────────────────────
+ *
+ *  ① **JevLoop 那一边多干了两件事**：风险分级（判定，不花钱）和交付闸门
+ *     （过不了要**再生成一次** —— 那是实打实的成本）。所以它在生成次数上
+ *     有时是 2 而不是 1。这不是不公，是这条 loop 真的多做了事。
+ *
+ *  ② **两边都没做「谁的答案更好」的判断**。验收只看任务要求的工具调用有没有
+ *     发生、回答里该有的东西在不在、文件有没有真的写出来（`bench/oracle.ts`）。
+ *     质量不在这把尺子的量程里。
+ *
+ *  ③ **一次运行一个样本。** 想看得住就 `--repeat`，看中位数。
+ *
+ * @module JevLoop/compare
+ */
+
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+import { Decider, Meter, runAgent, loadEnv, resolveProvider, resolveGenerator } from '../src/index.ts'
+import { RuleJudge } from '../examples/rule-judge.ts'
+import { TASKS, type BenchTask } from './tasks.ts'
+import { answerOk, missing, checkArtifacts, matchesCall } from './oracle.ts'
+import { runReact, REACT_SYSTEM } from './react.ts'
+
+const C = {
+  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
+  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+}
+
+const argv = process.argv.slice(2)
+const only = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : undefined
+const repeat = argv.includes('--repeat') ? Math.max(1, Number(argv[argv.indexOf('--repeat') + 1]) || 1) : 1
+const useRule = argv.includes('--rule')
+const MAX_STEPS = 8
+
+/** 一条路跑一条任务的结果 */
+interface Sample {
+  shape: 'JevLoop' | 'ReAct'
+  task: string
+  modelCalls: number
+  inputTokens: number
+  outputTokens: number
+  latencyMs: number
+  /**
+   * 墙钟花在哪。**没有这个分解，`40.7s` 那样的数字是不可解释的** ——
+   * 而不可解释的数字对读的人只是一句「好慢」，指不出该改哪里。
+   */
+  decisionMs: number
+  /** meter 记的生成耗时 —— **成功那一次**的，不含重试 */
+  modelMs: number
+  /**
+   * 生成那一步的**墙钟**（由事件时间戳量出来）。
+   *
+   * ★ 它和 `modelMs` 不是一回事，而差出来的那部分是真的：生成失败重试时，
+   *   失败那次的耗时和退避等待都**不计入** `GenerateResult.latencyMs`。
+   *   实测一条 `list` 任务：`generate` 那一步墙钟 **21.8s**，meter 只记了
+   *   **11.0s** —— 另外 10.8s 是重试。拿 meter 的数当墙钟，会得出一个
+   *   「JevLoop 比 ReAct 慢 10 倍」的结论，而其中一半是后端抖动。
+   */
+  modelWallMs: number
+  /** 验收：工具调用齐了、回答对了、产物在盘上 */
+  passed: boolean
+  why: string[]
+}
+
+// ── 后端：两条路**必须**用同一个生成器，否则数字不可比 ──────────
+
+loadEnv()
+let warned = false
+const provider = useRule
+  ? new RuleJudge()
+  : resolveProvider({
+      lastResort: new RuleJudge(),
+      onFallback: (err, from, to) => {
+        if (warned) return
+        warned = true
+        console.error(C.yellow(`  ▲ ${from} 不可用（${(err as Error).message.slice(0, 60)}），改用 ${to}`))
+      },
+    })
+const generator = resolveGenerator()
+
+/** 铺夹具，跑，然后把目录删掉。两条路**用同一个函数**铺，免得夹具分叉 */
+async function inFixture<T>(task: BenchTask, fn: (cwd: string) => Promise<T>): Promise<T> {
+  const cwd = await mkdtemp(join(tmpdir(), `jevcompare-${task.id}-`))
+  try {
+    for (const [name, content] of Object.entries(task.files)) {
+      await writeFile(join(cwd, name), content, 'utf8')
+    }
+    return await fn(cwd)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+}
+
+/**
+ * 工具调用齐了吗 —— **两条路同一套判据**，而且和判据机用的是同一个函数
+ * （`matchesCall`）。自己再写一份的话，`write_file` 那种「输入是路径 + 内容」
+ * 的形状会被判错，而错的方向是**把成功的判成失败**。
+ */
+function callsOk(calls: { tool: string; input?: string }[], task: BenchTask): string[] {
+  const why: string[] = []
+  for (const want of task.required) {
+    if (!calls.some((c) => matchesCall(want, c))) why.push(`没调用 ${want.tool}${want.input ? `(${want.input})` : ''}`)
+  }
+  return why
+}
+
+async function runJev(task: BenchTask): Promise<Sample> {
+  return inFixture(task, async (cwd) => {
+    const meter = new Meter()
+    const decider = new Decider({ provider, meter })
+    const calls: { tool: string; input?: string }[] = []
+    // ★ **整轮墙钟**，和 ReAct 那边同一个口径。
+    //   第一版这里写的是 `s.decisionMs + s.modelMs` —— 那只算判定和生成，
+    //   不算工具执行，而 ReAct 那边量的是整轮。**两把尺子量出来的数不可比**，
+    //   而它看起来完全正常（一边 13.6s、一边 3.7s），差点就成了结论。
+    const t0 = performance.now()
+    /*
+      用**事件时间戳**量生成那一步的墙钟：`generate` 事件和它上一条之间的间隔
+      就是那一步实际花掉的时间。这样重试和退避都被算进去 —— 而它们是用户
+      真的等掉的时间。
+    */
+    let lastAt = t0
+    let modelWallMs = 0
+    let sawGenerate = false
+
+    const result = await runAgent({
+      task: task.task,
+      cwd,
+      decider,
+      generator,
+      maxSteps: MAX_STEPS,
+      onAskHuman: async () => true,
+      ...(task.writeInput !== undefined ? { provideWriteInput: () => task.writeInput } : {}),
+      onEvent: (e) => {
+        const now = performance.now()
+        if (e.type === 'generate') {
+          modelWallMs += now - lastAt
+          sawGenerate = true
+        }
+        lastAt = now
+        if (e.type === 'tool:call') calls.push({ tool: e.tool, input: e.input })
+      },
+    })
+
+    const why = [
+      ...callsOk(calls, task),
+      ...missing(result.answer, task),
+      ...(await checkArtifacts(task, cwd)),
+    ]
+    const s = meter.stats
+    return {
+      shape: 'JevLoop' as const,
+      task: task.id,
+      // **只数生成**：判定不花这个钱，那正是这条 loop 的主张
+      modelCalls: s.modelCalls,
+      // `MeterStats` 上的是**生成器**报的真值。判定那一边的记录里没有 token ——
+      // 因为判定不花生成的钱，那正是这条 loop 的主张（判定模型那边确实也发
+      // token，但走的是另一个后端、另一个价目表，不计在这一列里）
+      inputTokens: s.inputTokens,
+      outputTokens: s.outputTokens,
+      latencyMs: performance.now() - t0,
+      decisionMs: s.decisionMs,
+      modelMs: s.modelMs,
+      modelWallMs: sawGenerate ? modelWallMs : s.modelMs,
+      passed: why.length === 0 && answerOk(result.answer, task),
+      why,
+    }
+  })
+}
+
+async function runReAct(task: BenchTask): Promise<Sample> {
+  return inFixture(task, async (cwd) => {
+    const r = await runReact({ task: task.task, cwd, generator, maxSteps: MAX_STEPS })
+    if (r.failed) {
+      return {
+        shape: 'ReAct' as const,
+        task: task.id,
+        modelCalls: r.modelCalls,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        latencyMs: r.latencyMs,
+        decisionMs: 0,
+        modelMs: r.modelMs,
+        modelWallMs: r.modelMs,
+        passed: false,
+        why: [`跑不起来：${r.failed.slice(0, 60)}`],
+      }
+    }
+    const why = [...callsOk(r.calls, task), ...missing(r.answer, task), ...(await checkArtifacts(task, cwd))]
+    return {
+      shape: 'ReAct' as const,
+      task: task.id,
+      modelCalls: r.modelCalls,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      latencyMs: r.latencyMs,
+      decisionMs: 0,
+      modelMs: r.modelMs,
+      modelWallMs: r.modelMs,
+      passed: why.length === 0,
+      why,
+    }
+  })
+}
+
+// ── 汇总 ─────────────────────────────────────────────────────
+
+const median = (xs: number[]): number => {
+  if (!xs.length) return NaN
+  const s = [...xs].sort((a, b) => a - b)
+  const m = s.length >> 1
+  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
+}
+
+const pad = (s: string | number, n: number) => {
+  const str = String(s)
+  return str + ' '.repeat(Math.max(0, n - [...str].length))
+}
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+
+async function main(): Promise<void> {
+  const tasks = only ? TASKS.filter((t) => t.id.includes(only)) : TASKS
+  console.log(C.bold('\nJevLoop · 两种循环形状'))
+  console.log(C.dim(`  判定后端 : ${provider.name}`))
+  console.log(C.dim(`  生成后端 : ${generator.name}`))
+  console.log(C.dim(`  任务     : ${tasks.length} 条 × ${repeat} 遍 · maxSteps ${MAX_STEPS}（两条路相同）`))
+  console.log(C.dim('  验收     : 要求的工具调用 + 回答内容 + 产物在盘上（两边同一套判据）'))
+
+  const all: Sample[] = []
+  for (const task of tasks) {
+    for (let i = 0; i < repeat; i++) {
+      process.stdout.write(C.dim(`\r  跑 ${task.id} (${i + 1}/${repeat})…`.padEnd(60)))
+      all.push(await runJev(task))
+      process.stdout.write(C.dim(`\r  跑 ${task.id} (${i + 1}/${repeat})…  ReAct`.padEnd(60)))
+      all.push(await runReAct(task))
+    }
+  }
+  process.stdout.write('\r'.padEnd(62) + '\r')
+
+  // ── 逐任务 ──
+  console.log('')
+  console.log(C.bold('  ── 逐任务 ──────────────────────────────────────────────'))
+  console.log(
+    C.dim(
+      `  ${pad('任务', 22)}${pad('形状', 9)}${pad('大模型调用', 11)}${pad('墙钟', 8)}${pad('输出token', 10)}验收`,
+    ),
+  )
+  for (const task of tasks) {
+    for (const shape of ['JevLoop', 'ReAct'] as const) {
+      const xs = all.filter((s) => s.task === task.id && s.shape === shape)
+      if (!xs.length) continue
+      console.log(
+        `  ${pad(shape === 'JevLoop' ? task.id : '', 22)}${pad(shape, 9)}` +
+          pad(median(xs.map((s) => s.modelCalls)), 11) +
+          pad(secs(median(xs.map((s) => s.latencyMs))), 8) +
+          pad(Math.round(median(xs.map((s) => s.outputTokens))), 10) +
+          (xs.every((s) => s.passed) ? C.green('✓') : C.red(`✗ ${xs.find((s) => !s.passed)?.why.join('；').slice(0, 40)}`)),
+      )
+    }
+    // 分解：读到「40.7s」时**下一步能查什么**，全在这一行里
+    const jx = all.filter((s) => s.task === task.id && s.shape === 'JevLoop')
+    const rx = all.filter((s) => s.task === task.id && s.shape === 'ReAct')
+    const parts = (xs: Sample[], label: string) => {
+      if (!xs.length) return ''
+      const wall = median(xs.map((s) => s.latencyMs))
+      const dec = median(xs.map((s) => s.decisionMs))
+      const gen = median(xs.map((s) => s.modelWallMs))
+      // 余项（工具 + 框架本身）。**它就是减出来的**，因为前两项是量出来的、
+      // 这一项是剩下的 —— 三者必须加起来等于整轮，否则账本身就不成立
+      const other = Math.max(0, wall - dec - gen)
+      // 生成的重试要标出来：它让墙钟变长，而那不是循环形状的差别
+      const retried = xs.some((s) => s.modelWallMs - s.modelMs > 1000)
+      return `${label} 判定 ${secs(dec)} · 生成 ${secs(gen)}${retried ? '(含重试)' : ''} · 其他 ${secs(other)}`
+    }
+    console.log(
+      C.dim(`  ${' '.repeat(22)}${parts(jx, 'JevLoop')}`) +
+        (rx.length ? C.dim(`   │   ${parts(rx, 'ReAct')}`) : ''),
+    )
+    console.log('')
+  }
+
+  // ── 汇总 ──
+  console.log(C.bold('  ── 汇总 ────────────────────────────────────────────────'))
+  console.log(
+    C.dim(`  ${pad('形状', 10)}${pad('大模型调用/任务', 16)}${pad('墙钟/任务', 12)}${pad('输出token/任务', 16)}验收`),
+  )
+  for (const shape of ['JevLoop', 'ReAct'] as const) {
+    const xs = all.filter((s) => s.shape === shape)
+    if (!xs.length) continue
+    const okCount = xs.filter((s) => s.passed).length
+    console.log(
+      `  ${pad(shape, 10)}` +
+        pad(median(xs.map((s) => s.modelCalls)).toFixed(1), 16) +
+        pad(secs(median(xs.map((s) => s.latencyMs))), 12) +
+        pad(Math.round(median(xs.map((s) => s.outputTokens))), 16) +
+        `${okCount}/${xs.length}`,
+    )
+  }
+
+  const j = all.filter((s) => s.shape === 'JevLoop')
+  const r = all.filter((s) => s.shape === 'ReAct')
+  const jc = median(j.map((s) => s.modelCalls))
+  const rc = median(r.map((s) => s.modelCalls))
+  console.log('')
+  console.log(
+    C.bold(`  同一个任务：大模型调用 JevLoop ${jc} 次 vs ReAct ${rc} 次`) +
+      C.dim(`   （比值 ${(rc / jc).toFixed(1)}×）`),
+  )
+  console.log(
+    C.dim(
+      '  ★ 这个比值说的是「大模型调用少了几倍」，**不是** README 里那个「14:1」——\n' +
+        '    那个是**判定次数 : 生成次数**，量的是「有多少岔路口不花生成的钱」。',
+    ),
+  )
+  console.log('')
+
+  // ── 对手拿到的指令 ──
+  //
+  // 「对比」如果说不清对手拿到的指令，读的人就只能信我。所以原样印出来。
+  console.log(C.dim('  ── ReAct 那一边拿到的 system prompt（原样）────────────────'))
+  for (const line of REACT_SYSTEM.split('\n')) console.log(C.dim(`  │ ${line}`))
+  console.log('')
+}
+
+await main()

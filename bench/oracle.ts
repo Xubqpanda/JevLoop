@@ -48,12 +48,38 @@
  * @module JevLoop/oracle
  */
 
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import type { AgentEvent } from '../src/events.ts'
 import type { Answer } from '../src/vocab.ts'
 import { TOOLS, isToolName } from '../src/tools.ts'
 import type { BenchTask, ExpectedCall } from './tasks.ts'
 
 export type Verdict = 'right' | 'wrong' | 'unjudged'
+
+/**
+ * 期望的一次调用和实际发生的那次，是不是同一次。
+ *
+ * ★ `write_file` 的输入是 `路径\n内容`，而夹具里写的是目标路径 ——
+ *   所以按**第一行**比。写路径的名字是**生成**出来的（`write-content.ts`），
+ *   夹具说不出完整输入，但它说得出「该写哪个文件」。
+ *
+ * ★ 导出是因为**两个消费者**：这个判据机，和 `bench/compare.ts` 里那两个
+ *   循环形状的验收。判据分两处写必然分叉，而分叉的表现是「同一份产物在
+ *   一条路上算过、另一条路上算挂」—— 那会让对比本身失去意义。
+ *   （实测：`compare.ts` 第一版自己写了 `c.input === want.input`，
+ *   于是 `write` 那条任务**两边都被判成没写文件**，而盘上文件是有的。）
+ */
+export function matchesCall(
+  want: ExpectedCall,
+  got: { tool: string; input?: string },
+): boolean {
+  if (want.tool !== got.tool) return false
+  if (want.input === undefined) return true
+  const input = got.input ?? ''
+  return input === want.input || input.startsWith(`${want.input}\n`)
+}
 
 export interface Judgement {
   /** 判定点 id，如 `loop.pickTool` */
@@ -149,14 +175,7 @@ export class Oracle {
 
   /** 兑现掉一条待办。找不到就什么都不做 —— 多做的那次由对应判定点自己判错 */
   #advance(tool: string, input: string): void {
-    // ★ `write_file` 的输入是 `路径\n内容`，而夹具里写的是目标路径 ——
-    //   所以按**第一行**比。写路径的名字现在是**生成**的（`write-content.ts`），
-    //   夹具说不出完整输入，但它说得出「该写哪个文件」。
-    const i = this.#remaining.findIndex(
-      (c) =>
-        c.tool === tool &&
-        (c.input === undefined || c.input === input || input.startsWith(`${c.input}\n`)),
-    )
+    const i = this.#remaining.findIndex((c) => matchesCall(c, { tool, input }))
     if (i >= 0) this.#remaining.splice(i, 1)
   }
 
@@ -311,4 +330,31 @@ export function missing(text: string, task: BenchTask): string[] {
   const miss = task.answerMust.filter((re) => !re.test(text)).map((re) => `缺 ${re}`)
   const extra = (task.answerMustNot ?? []).filter((re) => re.test(text)).map((re) => `多 ${re}`)
   return [...miss, ...extra]
+}
+
+/**
+ * 产物验收：说做了的，盘上到底有没有。
+ *
+ * ★ 它住在这里、不在 `bench/run.ts` 里，是因为**两个循环形状的对比台
+ *   （`bench/compare.ts`）也要用它**。判据分两处写必然分叉，而分叉的表现是
+ *   「同一份产物在一条路上算过、另一条路上算挂」—— 那会让对比本身失去意义。
+ *
+ * 读不到就报「没写出来」；内容不匹配就报「写了但不对」——
+ * 这两种失败的含义不同，合成一句会丢掉排查方向。
+ */
+export async function checkArtifacts(task: BenchTask, cwd: string): Promise<string[]> {
+  const why: string[] = []
+  for (const a of task.artifacts ?? []) {
+    let text: string
+    try {
+      text = await readFile(join(cwd, a.path), 'utf8')
+    } catch {
+      // 空 catch 必须说明吞了什么：吞的是「文件不存在」，
+      // 而这个函数的**职责**就是把不存在报成一条失败，不是让它冒出去
+      why.push(`${a.path} 没写出来`)
+      continue
+    }
+    if (a.must && !a.must.test(text)) why.push(`${a.path} 写了但内容不含 ${a.must}`)
+  }
+  return why
 }

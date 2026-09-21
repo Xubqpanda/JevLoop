@@ -43,7 +43,7 @@
  * @module JevLoop/run
  */
 
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -58,7 +58,7 @@ import {
 } from '../src/index.ts'
 import { RuleJudge } from '../examples/rule-judge.ts'
 import { TASKS, type BenchTask } from './tasks.ts'
-import { Oracle, answerOk, missing, type Judgement } from './oracle.ts'
+import { Oracle, answerOk, missing, checkArtifacts, type Judgement } from './oracle.ts'
 
 const C = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -213,23 +213,6 @@ async function runTask(task: BenchTask): Promise<TaskRun> {
  * 读不到就报「没写出来」；内容不匹配就报「写了但不对」——
  * 这两种失败的含义不同，合成一句会丢掉排查方向。
  */
-async function checkArtifacts(task: BenchTask, cwd: string): Promise<string[]> {
-  const why: string[] = []
-  for (const a of task.artifacts ?? []) {
-    let text: string
-    try {
-      text = await readFile(join(cwd, a.path), 'utf8')
-    } catch {
-      // 空 catch 必须说明吞了什么：吞的是「文件不存在」，
-      // 而这个函数的**职责**就是把不存在报成一条失败，不是让它冒出去
-      why.push(`${a.path} 没写出来`)
-      continue
-    }
-    if (a.must && !a.must.test(text)) why.push(`${a.path} 写了但内容不含 ${a.must}`)
-  }
-  return why
-}
-
 // ── 汇总 ─────────────────────────────────────────────────────
 
 const median = (xs: number[]): number | undefined => {

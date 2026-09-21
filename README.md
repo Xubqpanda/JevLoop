@@ -135,6 +135,15 @@ npm run demo -- --laya     # local Laya sidecar on :7789 (open weights, free)
 npm run demo -- --jev      # official Jev API (needs TYPESAFE_API_KEY)
 ```
 
+**Measure it against the thing it claims to beat:**
+
+```bash
+npm run compare            # this loop vs a ReAct loop, same tasks and tools
+npm run compare -- --repeat 3
+```
+
+Two harnesses, measuring different things: `npm run bench` scores each **decision** against an expected trajectory, `npm run compare` scores two **loop shapes** against each other on calls, tokens, wall clock and task outcome. Neither is in the kernel's dependency path.
+
 ## DECISION.md — the decisions, compiled
 
 Every generation of agent framework leaves behind a `.md`. `AGENTS.md` holds conventions, `SKILL.md` holds capabilities — and both are **prose for a model to read**. The model pays tokens for them every turn, it can ignore them, and nothing tells you whether it did.
@@ -319,6 +328,28 @@ Two conclusions we are not going to soften:
 - **Over the hosted API it does not.** ~390 ms per decision is network round-trips, and with 13 decisions for 1 generation the decisions dominate the clock. Still ~5–8× faster than a frontier LLM call and orders of magnitude cheaper, but "decisions are free" would be a lie at that latency.
 
 The obvious sweet spot is a strong decision model served locally. Neither of the two we could test is that: one is fast but not accurate enough, the other is accurate but round-trips.
+
+### And `13 : 1` is not "we saved thirteen LLM calls"
+
+`decisions : model` counts **decisions per generation**. It does not mean this loop made one LLM call where a normal agent would have made thirteen. A ReAct loop solving the same task makes three or four, not thirteen — so the two numbers are not the same quantity and comparing them is nonsense.
+
+So we measured it. `npm run compare` runs the same seven tasks twice: once through this loop, once through a ReAct loop that asks the LLM at every branch point. Same model, same tools (literally the same `callTool`), same fixture, same `maxSteps`, same acceptance checks.
+
+| | LLM calls / task | wall clock / task | output tokens / task | accepted |
+|---|---:|---:|---:|---:|
+| JevLoop | **1** | 5.5 s | **96** | 6 / 7 |
+| ReAct | **4** | 4.1 s | **495** | 7 / 7 |
+
+*Hosted Jev for decisions, `deepseek-flash` for generation, 7 tasks × 1 run each.*
+
+Including the parts that do not flatter the project:
+
+- **Four times fewer model calls, five times fewer output tokens.** This is where the claim actually lands: picking a tool is a closed question, and a closed question does not need tokens generated one at a time. On the write task it is **1 call against 8**.
+- **Not faster.** Over the hosted API the wall clock is slightly *worse* — 5.5 s against 4.1 s — because thirteen network round-trips cost more than three LLM calls. Same finding as the table above, now measured end-to-end against a real alternative instead of asserted.
+- **It also paid for a revision.** On the `direct` task this loop made **2** generation calls: the delivery gate rejected the first answer, and the revision still missed what the task asked for. The gate is real work that ReAct does not do, and it is counted here rather than averaged away.
+- **One sample per task.** An acceptance failure of 1 in 7 is not a quality claim in either direction. `--repeat` exists; the medians above are one run each.
+
+The ReAct side is not a straw man: it is given the JSON protocol in its system prompt, it may recover from a malformed reply (and that costs it a call), and it works in the same fixture with the same tools. `npm run compare` prints its system prompt verbatim so you can judge that rather than take our word for it.
 
 ### Two gotchas we hit so you don't have to
 

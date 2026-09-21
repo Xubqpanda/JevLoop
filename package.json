@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
     "check": "node --experimental-strip-types scripts/check.ts",
-    "bench": "node --experimental-strip-types bench/run.ts"
+    "bench": "node --experimental-strip-types bench/run.ts",
+    "compare": "node --experimental-strip-types bench/compare.ts"
   },
   "keywords": [
     "agent",
