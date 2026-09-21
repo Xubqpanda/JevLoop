@@ -43,10 +43,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Xubqpanda/JevLoop.git"
+    "url": "git+https://github.com/zjunlp/JevLoop.git"
   },
-  "homepage": "https://github.com/Xubqpanda/JevLoop",
+  "homepage": "https://github.com/zjunlp/JevLoop",
   "bugs": {
-    "url": "https://github.com/Xubqpanda/JevLoop/issues"
+    "url": "https://github.com/zjunlp/JevLoop/issues"
   }
 }

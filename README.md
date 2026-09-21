@@ -67,7 +67,7 @@ You were paying generation prices for decisions.
 Needs **Node ≥ 22.6** (it runs TypeScript directly, no build).
 
 ```bash
-git clone https://github.com/Xubqpanda/JevLoop
+git clone https://github.com/zjunlp/JevLoop
 cd JevLoop
 npm run demo
 ```
@@ -262,7 +262,7 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 Swapping either one touches exactly one file. The loop and the decision specs don't move.
 
 > Not on npm yet. Install from git — the `prepare` script builds `dist/` for you:
-> `npm install github:Xubqpanda/JevLoop`
+> `npm install github:zjunlp/JevLoop`
 
 ## What this is not
 

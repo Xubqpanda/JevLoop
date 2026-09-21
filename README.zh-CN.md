@@ -68,7 +68,7 @@ JevLoop · demo
 需要 **Node ≥ 22.6**（它直接跑 TypeScript，没有构建步骤）。
 
 ```bash
-git clone https://github.com/Xubqpanda/JevLoop
+git clone https://github.com/zjunlp/JevLoop
 cd JevLoop
 npm run demo
 ```
@@ -262,7 +262,7 @@ new HttpGenerator({ baseUrl: "http://localhost:11434/v1", model: "qwen3" });  //
 换掉任何一个都只动一个文件。loop 和判定规格一步都不用挪。
 
 > 还没发到 npm。从 git 装 —— `prepare` 脚本会自动帮你构建 `dist/`：
-> `npm install github:Xubqpanda/JevLoop`
+> `npm install github:zjunlp/JevLoop`
 
 ## 它不是什么
 
