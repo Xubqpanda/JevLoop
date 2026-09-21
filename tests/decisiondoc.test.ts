@@ -453,3 +453,24 @@ test('S4: ACTIONS 覆盖 decisions.ts 里实际用到的每个动作名', () => 
     )
   }
 })
+
+test('谓词必须与目标问题的类型匹配 —— 否则是一条永不触发的规则', () => {
+  // `probGte` / `scoreGte` / `picked` 对**类型不符**的答案一律返回 `false`，
+  // 而以前这里只校验 id 的**形状**、不校验它指向的问题**是什么类型**。
+  // 于是 `prob:tool >= 0.9 → ask_human` 写在 choice 块上会编译成功、
+  // 但一次都不触发 —— 作者以为写了一道闸门，实际没有，而且方向是 fail open。
+  // 第十二轮 S2 修的是 `top` 那一对，这是它的另一半。
+  const noulB = singleQ('noul', 'ok')
+  const choiceB = singleQ('choice', 'tool')
+  const scoreB = singleQ('score', 'risk')
+
+  assert.equal(compilePredicate('prob:tool >= 0.9', choiceB), null, 'prob: 只能用在 noul 上')
+  assert.equal(compilePredicate('score:ok >= 2', noulB), null, 'score: 只能用在 score 上')
+  assert.equal(compilePredicate('picked:ok = a', noulB), null, 'picked: 只能用在 choice 上')
+  assert.equal(compilePredicate('prob:nope >= 0.5', noulB), null, 'id 不存在也要拒绝')
+
+  // 合法用法一条都不能受影响
+  assert.ok(compilePredicate('prob:ok >= 0.5', noulB))
+  assert.ok(compilePredicate('score:risk >= 2', scoreB))
+  assert.ok(compilePredicate('picked:tool = a', choiceB))
+})

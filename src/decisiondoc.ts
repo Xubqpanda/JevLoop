@@ -641,14 +641,41 @@ export function compilePredicate(
     return top[1] === '>=' ? topGte(qid, Number(top[2])) : topLt(qid, Number(top[2]))
   }
 
+  // ★ `prob:` / `score:` / `picked:` 都要**核对目标问题的类型**。
+  //
+  //   以前这里只把 id 交给 `probGte` / `scoreGte` / `picked`，不检查那个 id 指向的
+  //   问题是什么类型。而这三个函数对**类型不符**的答案一律返回 `false` ——
+  //   于是 `prob:tool >= 0.9 → ask_human` 写在 choice 块上时会**编译成功、
+  //   但一次都不会触发**（实测恒为 false）。作者以为写了一道闸门，实际没有。
+  //
+  //   这和第十二轮 S2 是同一个根因（编译期不校验谓词与问题类型的匹配），
+  //   S2 只修了 `top` 那一对。这里是它的另一半。
+  //
+  //   方向是 **fail open**：闸门消失而没有任何东西报错 —— 所以必须在这里拒绝，
+  //   让它进 `problems`（见 `compilePolicy` 的说明）。
+  // 找不到那个 id 时 `?.` 给 `undefined`，与「类型不符」一起落到下面每个 `!==` 判断上 ——
+  // 两种都该拒绝。（第一版写成 `.find(...)` 再取 `.type`，id 不存在时会抛，
+  //  tsc 和复现脚本都抓到了。）
+  const typeOf = (id: string) => block.questions.find((q) => q.id === id)?.type
+
   const prob = RE_PROB.exec(src)
-  if (prob) return prob[2] === '>=' ? probGte(prob[1]!, Number(prob[3])) : probLt(prob[1]!, Number(prob[3]))
+  if (prob) {
+    if (typeOf(prob[1]!) !== 'noul') return null
+    return prob[2] === '>=' ? probGte(prob[1]!, Number(prob[3])) : probLt(prob[1]!, Number(prob[3]))
+  }
 
   const sc = RE_SCORE.exec(src)
-  if (sc) return scoreGte(sc[1]!, Number(sc[2]))
+  if (sc) {
+    if (typeOf(sc[1]!) !== 'score') return null
+    return scoreGte(sc[1]!, Number(sc[2]))
+  }
 
   const pk = RE_PICKED.exec(src)
-  if (pk) return picked(pk[1]!, pk[2]!)
+  if (pk) {
+    // 同理：`picked` 只对 choice 答案成立，用在别的类型上会恒为 false
+    if (typeOf(pk[1]!) !== 'choice') return null
+    return picked(pk[1]!, pk[2]!)
+  }
 
   return null
 }
