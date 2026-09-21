@@ -363,6 +363,31 @@ body {
   color: var(--jl-alias-label-caption);
 }
 
+/*
+  「其他 N 个会话」那一组。
+
+  它们属于别的工作区（或者目录没被登记）。**不删掉是有意的** ——
+  那里面是真的聊过的内容，只是不在当前这个目录下。藏起来比混在一起更糟。
+*/
+.sess-more {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 0;
+  border-top: 0.5px solid var(--jl-alias-border-l1);
+  border-radius: 0;
+  background: none;
+  color: var(--jl-alias-label-caption);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sess-more:hover {
+  color: var(--jl-alias-label-secondary);
+}
+
 /* 删除按钮平时不出现 —— 列表是拿来点的，不是拿来删的 */
 .sess-del {
   flex: none;

@@ -24,11 +24,11 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFile, mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
-import { extname, isAbsolute, join, normalize, relative } from 'node:path'
+import { basename, extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 
 import { Decider } from './src/decide.ts'
 import { Meter } from './src/meter.ts'
@@ -222,12 +222,44 @@ export function backoff(attempt: number, base = 200): number {
   'notes.md': '# 说明\n\n这个目录由 JevLoop 的开发服务器自动生成。\n',
 }
 
-async function makeWorkspace(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'jevloop-'))
+/**
+ * 演示目录。**固定在 `JEVLOOP_HOME/demo`，不再每次启动换一个。**
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  以前这里是 `mkdtemp`，于是**每次重启都是一个新目录**。
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 后果实测（2026-09-21）：39 个残留临时目录，而会话记着自己的 `cwd` ——
+ * 于是重启之后，**所有历史会话都挂在一个已经不存在的目录上**。
+ * 会话列表里 16 条，只有当前那一条是活的。
+ *
+ * 更要紧的是「工作区」这个概念在默认配置下因此**没有意义**：你去挑一个
+ * 工作区，可选的那些全是死的。
+ *
+ * 固定下来之后，「会话属于哪个工作区」是稳定的，重启也不变。
+ */
+const DEMO_DIR = join(JEVLOOP_HOME, 'demo')
+
+async function ensureDemoWorkspace(): Promise<string> {
+  await mkdir(DEMO_DIR, { recursive: true })
   for (const [name, body] of Object.entries(DEMO_FILES)) {
-    await writeFile(join(dir, name), body, 'utf8')
+    // ★ **只补缺的，不覆盖已有的。** agent 可以往这些文件里写东西，
+    //   而每次启动都重新播种等于**悄悄回滚用户的工作**。
+    if (!(await isDir(join(DEMO_DIR, name))) && !(await fileExists(join(DEMO_DIR, name)))) {
+      await writeFile(join(DEMO_DIR, name), body, 'utf8')
+    }
   }
-  return dir
+  return DEMO_DIR
+}
+
+/** 这个路径存在吗（文件或目录都算）。空 catch 说明：吞的是「stat 失败 = 不存在」 */
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await stat(p)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function resolveCwdRoot(): string | null {
@@ -246,10 +278,10 @@ const CWD_ROOT = resolveCwdRoot()
 
 let demoWorkspace: Promise<string> | null = null
 
-/** 演示目录只造一次：反复运行共用同一个，可预测，也不泄漏临时目录 */
+/** 演示目录只准备一次（这是**进程内**的缓存；目录本身现在跨重启稳定） */
 function workspaceRoot(): Promise<string> {
   if (CWD_ROOT) return Promise.resolve(CWD_ROOT)
-  demoWorkspace ??= makeWorkspace()
+  demoWorkspace ??= ensureDemoWorkspace()
   return demoWorkspace
 }
 
@@ -520,7 +552,24 @@ async function handleSessions(req: IncomingMessage, res: ServerResponse, url: UR
     sendJson(res, 200, { removed: await store.remove(id) })
     return
   }
-  sendJson(res, 200, { sessions: await store.list(), home: JEVLOOP_HOME })
+  /*
+    ★ **每个会话属于哪个工作区，服务端算**（界面认不得两边）。
+
+    关系是**查出来的**，不是存下来的：会话记着自己的 `cwd`，工作区记着
+    自己的 `path`，两边相等就属于它。存一份 `sessionIds[]` 的话就多一个
+    会漂移的副本 —— 而漂移的后果是「这个会话从工作区里消失了」，没人会
+    报错。DSH 存那份列表是为了手动排序，我们还没有排序，所以不存。
+
+    `workspaceId: null` 表示它的目录没有被登记过（目录被删了、或者是
+    用 `CWD_ROOT` 临时指过来的）。这不是错误，是一种状态。
+  */
+  const ws = await workspaces.list()
+  const idByPath = new Map(ws.map((w) => [w.path, w.id]))
+  const sessions = (await store.list()).map((s) => ({
+    ...s,
+    workspaceId: s.cwd ? (idByPath.get(s.cwd) ?? null) : null,
+  }))
+  sendJson(res, 200, { sessions, home: JEVLOOP_HOME })
 }
 
 /**
@@ -726,12 +775,35 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 })
 
 server.listen(PORT, HOST, async () => {
+  const dir = await workspaceRoot()
+
+  /*
+    ★ **把演示目录登记成一个工作区。**
+
+    没有这一步的话，默认配置下工作区列表是空的 —— 而会话挂在它们的 `cwd`
+    上，于是「这个会话属于哪个工作区」答不出来，工作区那一栏也永远显示
+    「演示目录（未登记）」。登记之后默认状态就是自洽的：一个工作区，
+    会话挂在它下面。
+
+    幂等（`create` 对同一个路径返回原来那条），所以重启几次都不会多。
+    用户可以把它从列表里移除 —— 移除只是不登记，目录还在。
+  */
+  try {
+    // ★ **服务器实际在用的那个目录也登记上。** 不登记的话，它上面的会话
+    //   会全部落在「没有工作区」那一类里，而那个分类对用户没有意义 ——
+    //   他明明正在这个目录里干活。
+    await workspaces.create(dir, CWD_ROOT ? basename(dir) : '演示目录')
+  } catch (err) {
+    // 登记不上不该拦住服务启动 —— 它只是个便利，目录本身照样能用
+    console.error(`  ⚠ ${dir} 没能登记成工作区：${(err as Error).message}`)
+  }
+
+  const count = (await workspaces.list().catch(() => [])).length
   console.log(`\n  JevLoop · http://${HOST}:${PORT}`)
   console.log(`  判定后端 : ${resolveProvider().name}`)
   console.log(`  生成后端 : ${resolveGenerator().name}`)
-  console.log(
-    `  工作目录 : ${await workspaceRoot()}${CWD_ROOT ? '' : '  （临时演示目录；设 CWD_ROOT 可换成真实目录）'}`,
-  )
+  console.log(`  工作目录 : ${dir}${CWD_ROOT ? '' : '  （演示目录，已登记为工作区）'}`)
+  console.log(`  工作区   : ${count} 个   会话 ${JEVLOOP_HOME}/sessions/`)
   console.log(
     `  监听地址 : ${HOST}` +
       (HOST === '127.0.0.1' ? '  （仅本机）' : '  ⚠ 已暴露到网络 —— 本服务没有鉴权，任何人都能让它跑任务'),

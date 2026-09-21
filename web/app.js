@@ -126,6 +126,8 @@ const state = {
   workspaces: [],
   /** 会话列表（摘要，不含正文 —— 见 `SessionStore` 的模块头） */
   sessions: [],
+  /** 「其他 N 个会话」那一组展开着吗 */
+  showOthers: false,
 }
 
 /**
@@ -1464,9 +1466,16 @@ function remember(key, value) {
 //     工作区   一个登记过的目录。跑任务时发的是它的 **id**，不是路径
 //     会话     一段对话。挂在哪个工作区下，看它自己的 `cwd`
 //
-// ★ **新建会话选哪个工作区**，抄的是 DSH 那个顺序：显式选中的 → 当前
-//   会话的 → 最近活动的。我们的实现只有「显式选中的」和「服务端演示
-//   目录」两种（会话的 cwd 没回传到界面），但那一条留给以后。
+// **一段会话属于哪个工作区，是查出来的**：会话记着自己的 `cwd`，工作区
+// 记着自己的 `path`，服务端把两边对上（它同时认得两个表），界面拿到的是
+// `session.workspaceId`。
+//
+// ★ 用查的而不是存一份 `sessionIds[]`，因为存的那份会漂移 —— 而漂移的后果
+//   是「这个会话从工作区里消失了」，且没人会报错。DSH 存那份是为了手动
+//   排序，我们还没有排序，所以不存。
+//
+// （上一轮这里写着「会话的 cwd 没回传到界面」—— 那句是错的。`cwd` 一直在
+//   `/api/sessions` 的返回里，只是界面没有用它。）
 // ═══════════════════════════════════════════════════════════
 
 function newSessionId() {
@@ -1516,31 +1525,63 @@ function ago(ms) {
   return `${Math.floor(s / 86400)} 天前`
 }
 
+/**
+ * 读工作区，并决定**当前选哪个**。
+ *
+ * ★ 顺序抄 DSH：**显式选中的 → 当前会话的 → 最近活动的**。
+ *
+ * 第三档不是锦上添花，是修一个实测出来的毛病：以前这里选不出来时
+ * `workspaceId` 就是 `null`，而 `renderWorkspace` 那一栏在 `null` 时**也**
+ * 显示「演示目录」（自动登记的那个工作区刚好叫这个名字）—— 于是
+ * 「没选」和「选了演示目录」两种状态在屏幕上一模一样，而会话列表按
+ * `workspaceId` 筛，两者筛出来的东西完全不同（实测：16 条 vs 1 条）。
+ *
+ * 现在只要有工作区就一定会选中一个，`null` 只可能出现在**一个都没登记**
+ * 的时候，而那种时候屏幕上写的是「未选择工作区」，不会再撞名。
+ */
 async function loadWorkspaces() {
   try {
     const { workspaces } = await api('/api/workspaces')
     state.workspaces = workspaces
-    // 记住的那个可能已经被删了 —— 那就退回「没选」，而不是拿着一个
-    // 服务端不认识的 id 一路 404
-    if (workspaceId && !workspaces.some((w) => w.id === workspaceId)) {
-      workspaceId = null
-      remember('jl-workspace', '')
-    }
+    // 记住的那个可能已经被移除了 —— 别拿着一个服务端不认识的 id 一路 404
+    if (workspaceId && !workspaces.some((w) => w.id === workspaceId)) workspaceId = null
   } catch (err) {
     console.error('读工作区失败', err)
     state.workspaces = []
   }
+
+  /*
+    ★ **别落在一个用不了的工作区上。**
+
+    实测：localStorage 里记着一个工作区，它的目录被删了而登记还在 ——
+    于是每次打开界面都选中它，会话列表空着（那些会话属于别的工作区），
+    一发消息就是 400「目录不在了」。**那个 400 是对的，错的是选中了它。**
+
+    所以「记住的那个」只有在**还能用**的时候才作数；不能用就按下面这个
+    顺序找一个能用的。
+  */
+  const remembered = state.workspaces.find((w) => w.id === workspaceId)
+  if (!remembered?.exists) {
+    const cur = state.sessions.find((s) => s.id === sessionId)
+    const curWs = state.workspaces.find((w) => w.id === cur?.workspaceId)
+    workspaceId =
+      (curWs?.exists ? curWs.id : null) ?? // ① 当前会话那个（还活着的话）
+      state.workspaces.find((w) => w.exists)?.id ?? // ② 最近活动的、还能用的
+      remembered?.id ?? // ③ 一个能用的都没有 —— 用它，但界面会标「目录不在了」
+      null
+  }
+  remember('jl-workspace', workspaceId ?? '')
   renderWorkspace()
 }
 
 function renderWorkspace() {
   const cur = state.workspaces.find((w) => w.id === workspaceId)
-  $('ws-name').textContent = cur ? cur.title : '演示目录'
-  // 没选工作区时**不假装**它是一个工作区 —— 服务端自己造了个临时目录，
-  // 那不是用户选的，说清楚
+  // 「没选」要**看起来就是没选** —— 以前这里回退成「演示目录」，而自动登记
+  // 的那个工作区也叫这个名字，两种状态就撞在一起了（见 `loadWorkspaces`）
+  $('ws-name').textContent = cur ? cur.title : '未选择工作区'
   $('ws-path').textContent = cur
     ? `${cur.path}${cur.exists ? '' : '  ⚠ 目录不在了'}`
-    : '服务端自动创建，未登记'
+    : '会话不会归到任何工作区下'
   renderWsMenu()
 }
 
@@ -1583,7 +1624,8 @@ function renderWsMenu() {
                   remember('jl-workspace', w.id)
                   menu.hidden = true
                   $('ws-current').setAttribute('aria-expanded', 'false')
-                  renderWorkspace()
+                state.showOthers = false
+                renderWorkspace()
                   void loadSessions()
                 },
               },
@@ -1630,44 +1672,85 @@ async function loadSessions() {
   renderSessions()
 }
 
+/**
+ * 一段会话一行。
+ */
+function sessionRow(s) {
+  return h(
+    'div',
+    {
+      class: `sess-item${s.id === sessionId ? ' on' : ''}`,
+      role: 'button',
+      tabindex: '0',
+      onclick: () => void openSession(s.id),
+      onkeydown: (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') void openSession(s.id)
+      },
+    },
+    h(
+      'div',
+      { class: 'sess-body' },
+      h('span', { class: 'sess-title' }, s.firstPrompt || '（空会话）'),
+      h('span', { class: 'sess-meta' }, `${s.turns} 轮 · ${ago(s.updatedAt)}${s.skipped ? ' · ⚠ 有读不出的行' : ''}`),
+    ),
+    h('button', {
+      class: 'sess-del',
+      type: 'button',
+      title: '删除这个会话',
+      'aria-label': '删除这个会话',
+      onclick: (ev) => {
+        ev.stopPropagation()
+        void removeSession(s.id)
+      },
+    }, '×'),
+  )
+}
+
+/**
+ * 会话列表。**按当前工作区筛**，不属于它的收在「其他」里。
+ *
+ * ★ 以前这里是**全部会话平铺**，和上面选的工作区没有任何关系。实测那意味着
+ *   16 条混在一起，其中大多数属于已经不存在的临时目录 —— 你选了工作区 A，
+ *   屏幕上的会话却是 B、C、D 的。**界面上两处互相矛盾**，而没有任何东西会说。
+ *
+ * 「其他」那一组**不删掉**是有意的：那里面是你真的聊过的内容，只是它的目录
+ * 没被登记（被删了，或者以前是每次重启都换的临时目录）。藏起来比混在一起更糟。
+ */
 function renderSessions() {
   const box = $('sess-list')
   if (!state.sessions.length) {
     box.replaceChildren(h('div', { class: 'empty' }, '还没有会话'))
     return
   }
-  box.replaceChildren(
-    ...state.sessions.map((s) =>
+
+  // 没选工作区时，「我的」= 也没有工作区的那些（目录没被登记）
+  const key = (s) => s.workspaceId ?? null
+  const mine = state.sessions.filter((s) => key(s) === (workspaceId ?? null))
+  const others = state.sessions.filter((s) => key(s) !== (workspaceId ?? null))
+
+  const kids = mine.length
+    ? mine.map(sessionRow)
+    : [h('div', { class: 'empty' }, workspaceId ? '这个工作区下还没有会话' : '没有未归属的会话')]
+
+  if (others.length) {
+    kids.push(
       h(
-        'div',
+        'button',
         {
-          class: `sess-item${s.id === sessionId ? ' on' : ''}`,
-          role: 'button',
-          tabindex: '0',
-          onclick: () => void openSession(s.id),
-          onkeydown: (ev) => {
-            if (ev.key === 'Enter' || ev.key === ' ') void openSession(s.id)
+          class: 'sess-more',
+          type: 'button',
+          onclick: () => {
+            state.showOthers = !state.showOthers
+            renderSessions()
           },
         },
-        h(
-          'div',
-          { class: 'sess-body' },
-          h('span', { class: 'sess-title' }, s.firstPrompt || '（空会话）'),
-          h('span', { class: 'sess-meta' }, `${s.turns} 轮 · ${ago(s.updatedAt)}${s.skipped ? ' · ⚠ 有读不出的行' : ''}`),
-        ),
-        h('button', {
-          class: 'sess-del',
-          type: 'button',
-          title: '删除这个会话',
-          'aria-label': '删除这个会话',
-          onclick: (ev) => {
-            ev.stopPropagation()
-            void removeSession(s.id)
-          },
-        }, '×'),
+        `${state.showOthers ? '▾' : '▸'} 其他 ${others.length} 个会话`,
       ),
-    ),
-  )
+    )
+    if (state.showOthers) kids.push(...others.map(sessionRow))
+  }
+
+  box.replaceChildren(...kids)
 }
 
 /**
@@ -1680,6 +1763,17 @@ async function openSession(id) {
   if (state.running || id === sessionId) return
   sessionId = id
   remember('jl-session', id)
+
+  // ★ **跟着切工作区。** 不切的话屏幕上两处是矛盾的：对话属于目录 A，
+  //   而上面那一栏写着 B —— 接着发一句就会在 B 里跑，和眼前这段对话无关。
+  const s = state.sessions.find((x) => x.id === id)
+  const wsId = s?.workspaceId ?? null
+  if (wsId !== (workspaceId ?? null)) {
+    workspaceId = wsId
+    remember('jl-workspace', wsId ?? '')
+    renderWorkspace()
+  }
+
   await restoreConversation()
   renderSessions()
 }
@@ -1926,8 +2020,17 @@ selectView(VIEWS.includes(savedView) ? savedView : 'chat')
 loadSpec()
 renderLegend()
 syncToBottom()
-// 工作区和会话都要**从服务端读回来**。以前这两样刷新就没了 ——
-// 会话一直在盘上，只是界面从来没去读
-void loadWorkspaces()
-void loadSessions()
-void restoreConversation()
+/*
+  顺序有依赖，所以不能并行：
+    ① 先读会话 —— 选哪个工作区要看当前这段会话属于哪个
+    ② 再读工作区 —— 它据此决定 `workspaceId`
+    ③ 最后恢复对话
+  （以前三个都是 `void` 并行，于是 `loadWorkspaces` 读 `state.sessions`
+    时它还是空的，第三档选取永远走不到。）
+*/
+void (async () => {
+  await loadSessions()
+  await loadWorkspaces()
+  await restoreConversation()
+  renderSessions()
+})()
