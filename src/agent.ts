@@ -147,7 +147,22 @@ export interface AgentResult {
  * 迭代上限、`input_unclear` 就是选不出输入、`denied` 就是授权被拒 ——
  * 不要把这些折叠成一句「失败了」，因为排查方向完全不同。
  *
- * 不会抛：判定后端挂掉会记 `degraded` 并走到 `escalate`（见 `Decider.decide`）。
+ * ── 会不会抛：分两半，别只记前半句 ──────────────────────────
+ *
+ * **判定后端挂掉不会抛**：会记 `degraded` 并走到 `escalate`（见 `Decider.decide`）。
+ *
+ * ⚠️ **但生成后端挂掉会抛。** 两处 `generator.generate()` 没有 try，
+ *    异常原样穿出去。这不是漏了 —— 判定那条线每一步都有兜底（不确定就别猜），
+ *    而生成这条线**没有可用的兜底**：它只有一次调用，兜底等于回答
+ *    「用一个不存在的回答」这个没有答案的问题。
+ *
+ *    代价落在调用方身上：**必须自己接住**。实测（2026-09-21，写标定台时踩的）：
+ *    一次 `UND_ERR_CONNECT_TIMEOUT` 直接穿出 `runAgent`，把整轮 21 次测量
+ *    带走了。服务端那条路径本来就接住了（`server.ts` 的 catch 合成一条
+ *    `halt: 'error'` 的 `run:end`，并把真实原因写进 answer）。
+ *
+ *    改动前这里只写了「不会抛：判定后端…」—— 理由只覆盖一半，结论却写成了
+ *    全称。照着这句话写调用方的人不会去接，然后就会撞上。
  */
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const { decider, generator } = opts

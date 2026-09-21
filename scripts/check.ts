@@ -37,7 +37,7 @@
  */
 
 import { readFileSync, globSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename } from 'node:path'
 import ts from 'typescript'
 
 interface Violation {
@@ -47,7 +47,7 @@ interface Violation {
   detail: string
 }
 
-const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts']
+const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts']
 
 /**
  * `dir` 下的全部 TS 文件，**含子目录**。
