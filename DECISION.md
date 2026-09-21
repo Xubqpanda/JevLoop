@@ -187,10 +187,10 @@ when: 生成之后，回答发出去之前
 
 ### deliverable
 
-ask: The answer is complete and correct for the task, and can be returned to the user as-is
+ask: The answer carries out what the task asked for, and reports it accurately
 
-- true — it addresses the task and is consistent with what the tools returned
-- false — it is incomplete, off-topic, or contradicts the tool output
+- true — the task's request has been carried out and the answer describes it consistently with what the tools returned
+- false — the task's request has not been carried out, or the answer misreports what happened
 
 ### unsupported
 
@@ -203,6 +203,30 @@ policy:
   - prob:unsupported >= 0.5 → revise
   - prob:deliverable >= 0.6 → deliver
   - else → revise
+
+★★ **「把任务要求的事做了、并如实报告」—— 这是交付闸门，不是质量评审。**
+
+旧措辞是「complete and correct for the task, and can be returned as-is」。它
+把**回答额外提出的顾虑**也算成了「不完整」。实测（2026-09-21，帧一动不动、
+只换这一句）：
+
+    任务「把 alpha.ts 里的 totalOf 抄到一个新文件 summary.ts 里」
+
+    回答 A：已完成……注意：只写入了 totalOf，没有写入 Order 接口
+            → 旧措辞 d=0.28~0.50 → revise   新措辞 d=0.77~0.92 → **deliver**
+    回答 B：（修订版）不能只写 totalOf，应为：```import type { Order } …```
+            → 旧措辞 revise              新措辞 **仍然 revise** ✓
+
+**关键是它没有把该拒的一起放进来**：回答 B 提议的是**从未写入盘上的内容**，
+`unsupported` 照样 0.59~0.88，照样拦下。旧措辞过 0/8，新措辞过 4/8，
+而**多过的那四个正是该过的**。
+
+为什么这件事要紧：任务只说「抄那个函数」，**没要求那个文件能独立编译**。
+回答 A 如实报告了「它不能独立编译」——那是**有用的额外信息**，不是没完成。
+旧措辞把它读成「有问题 → 不交付 → 再试一次」，而**再试只会更糟**：
+修订版开始提议改写文件内容，而那正是闸门该拦的。
+
+§8.10 的「不假装成功」在这里的另一面：**也不要把说真话的判成不合格。**
 
 以前生成完直接返回，靠事后人工抽查。现在每条输出都过一遍闸门。
 
