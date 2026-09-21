@@ -190,7 +190,10 @@ const LAYER: Record<string, number> = {
   tools: 2,
   // L3 —— 编译器
   frame: 3,
-  decisiondoc: 3,
+  // 层号按**拆出来那半的依赖面有多小**定（同 context-prune 的先例）：
+  // 解析段只 import vocab.ts → L0；编译段依赖 policy.ts（L1）→ L2。
+  decisiondoc: 0,
+  'decision-compile': 2,
   // L4 —— 判定节点
   decisions: 4,
   // L5 —— 循环

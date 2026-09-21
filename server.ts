@@ -31,7 +31,8 @@ import { Meter } from './src/meter.ts'
 import { runAgent } from './src/agent.ts'
 import { resolveProvider, resolveGenerator } from './src/backends.ts'
 import { loadEnv } from './src/env.ts'
-import { parseDecisionDoc, summarize, headline, isGate, compilePredicate } from './src/decisiondoc.ts'
+import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc.ts'
+import { compilePredicate } from './src/decision-compile.ts'
 import type { AgentEvent } from './src/events.ts'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))

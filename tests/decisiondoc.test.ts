@@ -17,16 +17,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import {
-  parseDecisionDoc,
-  compileQuestions,
-  compilePolicy,
-  compilePredicate,
-  summarize,
-  headline,
-  isGate,
-  type DocBlock,
-} from '../src/decisiondoc.ts'
+import { parseDecisionDoc, summarize, headline, isGate, type DocBlock } from '../src/decisiondoc.ts'
+import { compileQuestions, compilePolicy, compilePredicate } from '../src/decision-compile.ts'
 import { ACTIONS, type DecisionSpec } from '../src/vocab-decision.ts'
 import { resolvePolicy } from '../src/policy.ts'
 import type { QuestionSet, AnswerSet } from '../src/vocab.ts'
