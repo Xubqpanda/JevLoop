@@ -17,7 +17,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -31,7 +31,7 @@ async function withTree(
   build: (root: string) => Promise<void>,
   fn: (root: string) => Promise<void>,
 ): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'jevws-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'jevws-')))
   try {
     await build(root)
     await fn(root)
@@ -224,7 +224,7 @@ test('createDir 的父目录必须是绝对路径', async () => {
 // ═══════════════════════════════════════════════════════════
 
 async function withStore(fn: (store: WorkspaceStore, root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'jevws-store-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'jevws-store-')))
   try {
     await fn(new WorkspaceStore(join(root, 'workspaces.json')), root)
   } finally {
