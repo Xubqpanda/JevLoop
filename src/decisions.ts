@@ -496,8 +496,23 @@ export const canDeliver = defineDecision({
     // 截太短会让闸门正确地判出「回答里有证据不支持的内容」——
     // 那是帧的问题，不是回答的问题（实测在 100 字符预算下误报）
     evidence: (ctx.history ?? []).slice(-3).map((h, i, all) => {
-      const budget = i === all.length - 1 ? 600 : 200
-      return `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, budget)}`
+      /*
+        ★ **预算跟着载荷走，不跟着位置走。**
+
+        以前是「最后一条 600、其余 200」，而**输入一律 clip 到 60**。
+        那个分配对 `read_file` 是对的（输入是文件名，结果才是内容），
+        对 `write_file` **两样都反了**：写操作的载荷是**输入**
+        （`路径\n内容`），而结果只有一句「已写入 X（N 字符）」。
+
+        实测（2026-09-21）：交付闸门核对一份如实报告「写进去的和原文不一样」
+        的回答时，`unsupported` 判 **0.70**；把写操作的输入给到 600、
+        结果压到 60 之后，同一个回答判 **0.21**。**那个「有证据不支持的内容」
+        完全是因为内容在帧里看不见**（§8.2：帧里没有的，它判不出来）。
+      */
+      const writes = h.tool === 'write_file'
+      const inputBudget = writes ? 600 : 60
+      const resultBudget = writes ? 60 : i === all.length - 1 ? 600 : 200
+      return `${h.tool}(${clip(h.input, inputBudget)}) → ${clip(h.result, resultBudget)}`
     }),
   }),
 

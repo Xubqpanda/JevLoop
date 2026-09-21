@@ -189,8 +189,19 @@ export const TASKS: BenchTask[] = [
       { tool: 'write_file', input: 'summary.ts' },
     ],
     // 路径和内容都由台子给（两者都是生成，不属于判定 —— 三分法）。
-    // ★ 格式就是 `write_file` 的输入：第一行路径，其余内容
-    writeInput: 'summary.ts\nexport function totalOf(orders: { total: number }[]): number {\n  return orders.reduce((n, o) => n + o.total, 0)\n}\n',
+    // ★ 格式就是 `write_file` 的输入：第一行路径，其余内容。
+    //
+    // ⚠️ **必须和夹具里那一段逐字一致。** 这里曾经写的是
+    //    `totalOf(orders: { total: number }[])`，而夹具 `ALPHA` 里是
+    //    `totalOf(orders: Order[])` —— 台子一边说「抄」一边递过去一份
+    //    **改写过的**内容。
+    //
+    //    后果实测（2026-09-21）：写进盘上的确实不是忠实副本，模型注意到了
+    //    并在回答里如实报告，`canDeliver` 判定这轮不算交付（对），而判据机
+    //    只看回答里有没有出现 `summary.ts` 就说「草稿合格」（错）。
+    //    于是**这个节点被记成 8% 命中率，而它其实每一轮都判对了** ——
+    //    一处夹具和台子不一致，让整个节点看起来是坏的。
+    writeInput: 'summary.ts\n/** 汇总一批订单的金额 */\nexport function totalOf(orders: Order[]): number {\n  return orders.reduce((n, o) => n + o.total, 0)\n}\n',
     answerMust: [/summary\.ts/],
     // ★ 光看回答不够 —— 写没写出来要看盘上有没有那个文件
     artifacts: [{ path: 'summary.ts', must: /totalOf/ }],

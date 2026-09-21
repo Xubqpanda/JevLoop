@@ -477,6 +477,31 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const EVIDENCE_INPUT_CHARS = 120
 
   /**
+   * `write_file` 的输入预算 —— **比别的工具宽得多**。
+   *
+   * ══════════════════════════════════════════════════════════════
+   *  ★ **预算要跟着载荷走，不能对所有输入一视同仁。**
+   * ══════════════════════════════════════════════════════════════
+   *
+   * 对 `read_file` 来说输入是**文件名**（本来就短），内容在**结果**里；
+   * 对 `write_file` 正好相反 —— 输入是 `路径\n内容`，结果只有一句
+   * 「已写入 X（N 字符）」。用同一个 120 去切，切掉的正是**唯一有信息的那半**。
+   *
+   * 实测（2026-09-21）这条链是怎么塌的：
+   *
+   *   ① 写入的内容约 131 字符 → 被切成 `…[+22]`
+   *   ② 生成器看到的是**残缺的**写入记录，于是写出一份诚实的、带保留的回答：
+   *      「写入内容在记录中被截断，因此不能确认 `summary.ts` 的完整内容」
+   *   ③ `canDeliver` 判这份回答没完成任务 → `revise` —— **它判得没错**
+   *   ④ 修订那版更保守 → 更不像交付 → 再 revise → 停机
+   *
+   * 表面上是 `canDeliver` 的命中率只有 9%，**而它每一轮都判对了**。
+   * 病在它上游：喂给生成器的那份证据是残缺的（§8.2 的老问题，
+   * 只不过这次是**生成**的帧而不是**判定**的帧）。
+   */
+  const EVIDENCE_WRITE_INPUT_CHARS = 600
+
+  /**
    * 备好证据，并把账目**一起返回**。
    *
    * ★ 以前它只返回文本，账目写进一个外层的 `let lastEvidence`。那是
@@ -487,7 +512,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const buildEvidence = (): { text: string; report: ContextReport } => {
     // `label` 是给折叠摘要用的短名字 —— `context.ts` 不认识工具，所以由这里给
     const parts = (ctx.history ?? []).map((x) => ({
-      text: `${x.tool}(${clip(x.input, EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
+      // 写操作的载荷在**输入**里（见上面那个常量的说明）
+      text: `${x.tool}(${clip(x.input, x.tool === 'write_file' ? EVIDENCE_WRITE_INPUT_CHARS : EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
       label: x.input ? `${x.tool}(${clip(x.input, 60)})` : x.tool,
     }))
     const { text, folds, report } = foldEvidence(parts, EVIDENCE_POLICY)
