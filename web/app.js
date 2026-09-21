@@ -264,7 +264,8 @@ const LANE = { decide: 0, tool: 1, model: 2 }
  */
 const EVENT_META = {
   decision: { label: '判定', cls: 'decide', lane: LANE.decide },
-  authorize: { label: '授权', cls: 'decide', lane: LANE.decide },
+  // 授权单独一类 —— 它是**停下来等人**，不是一次判定，也不该像出错
+  authorize: { label: '授权', cls: 'authorize', lane: LANE.decide },
   audit: { label: '审计', cls: 'audit', lane: LANE.decide },
   // 工具那两行用等宽字体：它们的内容是命令和输出，不是句子
   'tool:call': { label: '工具', cls: 'tool', lane: LANE.tool, mono: true },

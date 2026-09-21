@@ -180,16 +180,16 @@ body {
 
 /* 四个计数各用自己的语义色 —— 和轨迹里卡片的左边框是同一套 */
 .tally-item.decide b {
-  color: var(--jl-alias-brand-primary);
+  color: var(--jl-kind-decide-fg);
 }
 .tally-item.rule b {
   color: var(--jl-alias-label-tertiary);
 }
 .tally-item.tool b {
-  color: var(--jl-alias-state-warn-label);
+  color: var(--jl-kind-tool-fg);
 }
 .tally-item.model b {
-  color: var(--jl-model-violet);
+  color: var(--jl-kind-model-fg);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -295,10 +295,11 @@ body {
   corner-shape: round;
   background: var(--jl-alias-label-caption);
 }
-.prow.decide .pdot { background: var(--jl-alias-state-business-primary); }
-.prow.tool   .pdot { background: var(--jl-alias-state-warn-label); }
-.prow.model  .pdot { background: var(--jl-model-violet); }
-.prow.audit  .pdot { background: var(--jl-alias-label-caption); }
+.prow.decide    .pdot { background: var(--jl-kind-decide-fg); }
+.prow.tool      .pdot { background: var(--jl-kind-tool-fg); }
+.prow.model     .pdot { background: var(--jl-kind-model-fg); }
+.prow.audit     .pdot { background: var(--jl-kind-rule-fg); }
+.prow.authorize .pdot { background: var(--jl-kind-authorize-fg); }
 
 .pkind {
   flex: none;
@@ -326,8 +327,8 @@ body {
   color: var(--jl-alias-label-tertiary);
 }
 /* 模型那一步用紫罗兰 —— 整个过程里只有它该扎眼 */
-.prow.model .pdetail { color: var(--jl-model-violet); font-weight: 500; }
-.prow.model .pname { color: var(--jl-model-violet); }
+.prow.model .pdetail { color: var(--jl-kind-model-fg); font-weight: 500; }
+.prow.model .pname { color: var(--jl-kind-model-fg); }
 
 .ptime {
   flex: none;
@@ -639,19 +640,22 @@ body {
   opacity: 0.78;
 }
 .span.decide {
-  background: var(--jl-alias-state-business-primary);
+  background: var(--jl-kind-decide-fg);
 }
 .span.tool {
-  background: var(--jl-alias-state-warn-label);
+  background: var(--jl-kind-tool-fg);
   opacity: 1;
 }
 /* 模型生成用 DSH 给 assistant message 的紫罗兰 —— 整条时间轴上只有它该扎眼 */
 .span.model {
-  background: var(--jl-model-violet);
+  background: var(--jl-kind-model-fg);
   opacity: 1;
 }
 .span.audit {
-  background: var(--jl-alias-label-caption);
+  background: var(--jl-kind-rule-fg);
+}
+.span.authorize {
+  background: var(--jl-kind-authorize-fg);
 }
 
 .plot-empty {
@@ -774,23 +778,28 @@ body {
 
 /* 判定 = DSH 的 user 蓝 */
 .kind-tag.decide {
-  color: var(--jl-alias-state-business-primary);
-  background: var(--jl-alias-state-business-tertiary);
+  color: var(--jl-kind-decide-fg);
+  background: var(--jl-kind-decide-bg);
 }
 /* 工具 = DSH 的 toolAmber */
 .kind-tag.tool {
-  color: var(--jl-alias-state-warn-label);
-  background: var(--jl-alias-state-warn-tertiary);
+  color: var(--jl-kind-tool-fg);
+  background: var(--jl-kind-tool-bg);
 }
 /* 模型生成 = DSH 的 assistantVioletBright */
 .kind-tag.model {
-  color: var(--jl-model-violet);
-  background: var(--jl-model-violet-bg);
+  color: var(--jl-kind-model-fg);
+  background: var(--jl-kind-model-bg);
 }
 /* 审计 = DSH 的 systemNeutral */
 .kind-tag.audit {
-  color: var(--jl-alias-label-secondary);
-  background: var(--jl-alias-bg-module-platform);
+  color: var(--jl-kind-rule-fg);
+  background: var(--jl-kind-rule-bg);
+}
+/* 授权 = 棕。停下来等人是个正常状态，不是故障 —— 所以不用红 */
+.kind-tag.authorize {
+  color: var(--jl-kind-authorize-fg);
+  background: var(--jl-kind-authorize-bg);
 }
 
 .event-id {
@@ -1056,10 +1065,10 @@ body {
 .spec-block.k-noul,
 .spec-block.k-score,
 .spec-block.k-mixed {
-  border-left-color: var(--jl-alias-brand-primary);
+  border-left-color: var(--jl-kind-decide-fg);
 }
 .spec-block.k-rule {
-  border-left-color: var(--jl-alias-label-caption);
+  border-left-color: var(--jl-kind-rule-fg);
 }
 
 .spec-id {
@@ -1077,7 +1086,7 @@ body {
 .spec-gate {
   margin-left: 6px;
   font-size: 11px;
-  color: var(--jl-alias-state-error-primary);
+  color: var(--jl-kind-authorize-fg);
 }
 
 .spec-when {
@@ -1116,19 +1125,19 @@ body {
 }
 
 .swatch.decide {
-  background: var(--jl-alias-brand-primary);
+  background: var(--jl-kind-decide-fg);
 }
 .swatch.rule {
-  background: var(--jl-alias-label-caption);
+  background: var(--jl-kind-rule-fg);
 }
 .swatch.tool {
-  background: var(--jl-alias-state-warn-label);
+  background: var(--jl-kind-tool-fg);
 }
 .swatch.model {
-  background: var(--jl-model-violet);
+  background: var(--jl-kind-model-fg);
 }
 .swatch.authorize {
-  background: var(--jl-alias-state-error-primary);
+  background: var(--jl-kind-authorize-fg);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1158,10 +1167,10 @@ body {
 }
 
 .metric-v.decide {
-  color: var(--jl-alias-brand-primary);
+  color: var(--jl-kind-decide-fg);
 }
 .metric-v.model {
-  color: var(--jl-model-violet);
+  color: var(--jl-kind-model-fg);
 }
 
 /* 头条数字：判定 : 模型 */

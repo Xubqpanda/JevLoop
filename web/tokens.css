@@ -826,21 +826,53 @@ body {
    */
   --jl-content-font-size: var(--jl-font-size);
 
-  /*
-   * 模型生成的紫罗兰。
-   *
-   * DSH 用它标 assistant message：品牌蓝 60% 混错误红 —— 得到的是一个
-   * 既不像"成功"也不像"失败"的颜色，符合它「这不是状态，是产物」的定位。
-   * 这里沿用同一套混法，因为它同样不该被读成一种状态。
-   */
-  --jl-model-violet: color-mix(
+  /* ═══════════════════════════════════════════════════════════
+     五类事件的颜色 —— **只在这里定义一次**
+
+     图例、顶栏计数、过程行、时间轴、轨迹徽章、判定规格，六处都从
+     这里取。以前它们各写各的，于是改一个颜色要改六个地方，而漏掉
+     任何一个都不会报错 —— 只会让同一件事在两个视图里颜色不同。
+
+     ── 和「状态色」的分工 ─────────────────────────────────────
+
+     这五个是**类别**，不是状态：一个判定既没成功也没失败，它只是发生了。
+     所以它们一律用清淡的色，不用红。
+
+     红色（`--jl-alias-state-error-primary`）留给真正的故障：
+     连接断开、策略没编译出来。**「停下来等人」不是故障** ——
+     把它画成红的会让人以为自己哪里做错了。
+
+     棕色是混出来的：DSH 的调色板里没有棕，用琥珀压向中性灰得到一个
+     低饱和的暖色，亮暗两套都成立（混的是随主题变的 label-tertiary）。
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 判定 —— 蓝。这是这一层最该被看见的东西，也是数量最多的 */
+  --jl-kind-decide-fg: var(--jl-alias-state-business-primary);
+  --jl-kind-decide-bg: var(--jl-alias-state-business-tertiary);
+
+  /* 规则 —— 灰。代码做的决定，不花任何模型 */
+  --jl-kind-rule-fg: var(--jl-alias-label-tertiary);
+  --jl-kind-rule-bg: var(--jl-alias-bg-module-platform);
+
+  /* 工具 —— 绿。唯一有真实副作用的地方，用"动作发生了"的颜色 */
+  --jl-kind-tool-fg: var(--jl-alias-state-success-primary);
+  --jl-kind-tool-bg: var(--jl-alias-state-success-tertiary);
+
+  /* 模型生成 —— 紫罗兰。沿用 DSH 给 assistant message 的混法：
+     品牌蓝 60% 混错误红，得到一个既不像成功也不像失败的颜色 ——
+     生成是**产物**，不是状态。 */
+  --jl-kind-model-fg: color-mix(
     in srgb,
     var(--jl-alias-brand-primary-new-colorprimary-new-color) 60%,
     var(--jl-alias-state-error-secondary)
   );
-  --jl-model-violet-bg: color-mix(
+  --jl-kind-model-bg: color-mix(in srgb, var(--jl-kind-model-fg) 15%, var(--jl-alias-bg-layer-1));
+
+  /* 授权 —— 棕。停下来等人是一个**正常**状态，不该像出错 */
+  --jl-kind-authorize-fg: color-mix(
     in srgb,
-    var(--jl-model-violet) 15%,
-    var(--jl-alias-bg-layer-1)
+    var(--jl-static-amber-600) 62%,
+    var(--jl-alias-label-tertiary)
   );
+  --jl-kind-authorize-bg: color-mix(in srgb, var(--jl-kind-authorize-fg) 14%, var(--jl-alias-bg-layer-1));
 }
