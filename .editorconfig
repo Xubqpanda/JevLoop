@@ -1,0 +1,20 @@
+# 编辑器和 git 都遵守的文本约定。
+# .gitattributes 管 git 产出什么，这份管编辑器写什么 —— 两条路都要堵上。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.ts]
+indent_style = space
+indent_size = 2
+
+[*.{json,md,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
