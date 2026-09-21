@@ -48,7 +48,20 @@ export const TOOLS = {
         .filter((e) => !e.name.startsWith('.'))
         .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
         .sort()
-      return out.length ? out.join('\n') : '(目录为空)'
+      // ★ 空目录返回**空串**，不是「(目录为空)」这种给人看的文案。
+      //
+      //   这个函数的返回值不只是给人读的：`agent.ts` 会把它
+      //   `split('\n').filter(l => l && !l.endsWith('/'))` 当成**文件列表**解析
+      //   （写进 `ctx.files`，再进 `pickInput` 的候选）。
+      //   返回文案时那句文案本身就成了"文件名"：实测空目录下 `ctx.files = ['(目录为空)']`、
+      //   `hasFileOptions` 为 true、`read_file` 去读它得到 ENOENT；
+      //   更糟的是**写路径** —— `write_file` 会在用户目录里创建一个真名叫
+      //   `(目录为空)` 的文件并报告「已写入」。
+      //
+      //   代价：界面上看不到「目录为空」这句话了。那是**显示层**该说的话，
+      //   等 `Tool.run()` 有了结构化返回（见 REVIEWS-round6 的移交）再挪过去 ——
+      //   在返回值还是散文的情况下，任何非空文案都会被解析成一个文件。
+      return out.join('\n')
     },
   },
 

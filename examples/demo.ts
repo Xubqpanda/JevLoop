@@ -21,7 +21,7 @@ import { Decider, Meter, runAgent, loadEnv, resolveProvider, resolveGenerator, f
 import { RuleJudge } from './rule-judge.ts'
 
 // 先加载 .env（有 TYPESAFE_API_KEY 就会自动用官方 Jev）
-const loaded = loadEnv()
+const env = loadEnv()
 const argv = process.argv.slice(2)
 const has = (f: string) => argv.includes(`--${f}`)
 const prefer: 'jev' | 'laya' | 'mock' | 'rule' | 'scripted' | undefined =
@@ -108,7 +108,13 @@ console.log(C.dim(`  task      : ${TASK}`))
 console.log(C.dim(`  cwd       : ${cwd}`))
 console.log(C.dim(`  判定后端  : ${provider.name}`))
 console.log(C.dim(`  生成后端  : ${generator.name}${generator.name === 'scripted' ? '（脚本化，设 DEEPSEEK_API_KEY 可换真实 LLM）' : ''}`))
-if (loaded.length) console.log(C.dim(`  .env      : 已加载 ${loaded.join(', ')}`))
+if (env.loaded.length) console.log(C.dim(`  .env      : 已加载 ${env.loaded.join(', ')}`))
+// 认不出来的行进 `skipped`，**必须显示** —— 一行 `.env` 写错就悄悄退回 Mock 的话，
+// 排查方向会被完全带偏（以前 `export KEY=VALUE` 就是这个下场）。
+if (env.skipped.length) {
+  console.log(C.yellow(`  .env      : ⚠ 跳过了 ${env.skipped.length} 行不认识的写法`))
+  for (const line of env.skipped) console.log(C.dim(`              ${line}`))
+}
 console.log('')
 console.log(C.bold('  ── loop trace ──────────────────────────────────────────'))
 

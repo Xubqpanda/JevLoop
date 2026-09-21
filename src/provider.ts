@@ -220,7 +220,16 @@ export class MockProvider implements Provider {
       model: 'mock',
       latencyMs: performance.now() - t0,
       degraded: true,
-      warnings: ['未接真实判定后端：返回的是保守占位答案，策略会因置信度不足而交回上层'],
+      // ★ 这句以前说「策略会因置信度不足而交回上层」—— **那是过度承诺**。
+      //   实测跑全部七个节点，只有 3 个真的交回上层（pickTool / gradeRisk / stepOk），
+      //   另外 4 个（needsTool / pickInput / isDone / canDeliver）会继续往下走，
+      //   因为 0.5 恰好**越过**任何阈值为 0.5 的门（`>=` 是闭区间）。
+      //   警告的用处就是别让人误以为 Mock 的行为是判定结果，所以它必须说实测到的那个。
+      warnings: [
+        '未接真实判定后端：返回的是保守占位答案（noul 恒 0.5、choice 取第一个、score 取中间档）。' +
+          '各节点落在自己的兜底分支上，但**不是**全部交回上层 —— 0.5 会越过阈值为 0.5 的门，' +
+          '所以 7 个节点里只有 pickTool / gradeRisk / stepOk 会停下。用 Mock 跑出来的结果不是判定质量的证据。',
+      ],
     }
   }
 }

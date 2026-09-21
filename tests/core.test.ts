@@ -500,3 +500,94 @@ test('R1: 没有内容来源时，目标文件的内容一个字节都不变', a
     await rm(cwd, { recursive: true, force: true })
   }
 })
+
+// ═══════════════════════════════════════════════════════════
+// A1：`list_dir` 的返回值会被当成**文件列表**解析
+//
+// 它的返回类型是 `Promise<string>`，装的是渲染好的文本；而 `agent.ts` 会
+// `split('\n').filter(...)` 当结构化数据用。空目录那句「(目录为空)」于是
+// 变成了一个"文件名"：进 `ctx.files`、进 `pickInput` 的候选，
+// 写路径下还会在用户目录里**真的创建一个叫 `(目录为空)` 的文件**。
+// ═══════════════════════════════════════════════════════════
+
+test('A1: 空目录不能变成一个叫「(目录为空)」的文件', async () => {
+  const { callTool } = await import('../src/tools.ts')
+  const { fileOptions, hasFileOptions, unreadFiles } = await import('../src/frame.ts')
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-empty-'))
+  try {
+    const result = await callTool('list_dir', '.', cwd)
+    // 这是 agent.ts 的解析方式，原样照抄 —— 测的就是「它解析出什么」
+    const files = result.split('\n').filter((l) => l && !l.endsWith('/'))
+    assert.deepEqual(files, [], `空目录不该解析出文件，实际 ${JSON.stringify(files)}`)
+
+    const ctx = { task: 't', cwd, files } as never
+    assert.equal(hasFileOptions(ctx), false, '空目录里没有可挑的输入')
+    assert.deepEqual(unreadFiles(ctx), [])
+    // 写路径最严重：候选里出现幻影文件名时，write_file 会真的把它建出来
+    const writeTargets = Object.keys(fileOptions({ ...(ctx as object), lastTool: 'write_file' } as never))
+    assert.deepEqual(writeTargets, [], '写操作的候选里不能有幻影文件')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('A1: 非空目录仍然逐行返回文件名，子目录带 /', async () => {
+  const { callTool } = await import('../src/tools.ts')
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-list-'))
+  try {
+    await writeFile(join(cwd, 'b.ts'), '', 'utf8')
+    await writeFile(join(cwd, 'a.ts'), '', 'utf8')
+    await mkdir(join(cwd, 'sub'))
+    assert.equal(await callTool('list_dir', '.', cwd), 'a.ts\nb.ts\nsub/')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+// ═══════════════════════════════════════════════════════════
+// E1：`.env` 的解析边界
+// ═══════════════════════════════════════════════════════════
+
+test('E1: `export KEY=VALUE` 要设上 KEY，不能造出一个叫 `export KEY` 的垃圾键', async () => {
+  const { loadEnv } = await import('../src/env.ts')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const dir = mkdtempSync(join(tmpdir(), 'JevLoop-env-'))
+  // 用一个很少见的键名，免得和真实环境串味
+  const KEY = 'JEVLOOP_TEST_EXPORTED'
+  delete process.env[KEY]
+  delete process.env[`export ${KEY}`]
+  try {
+    writeFileSync(
+      join(dir, '.env'),
+      `export ${KEY}=hello\nPLAIN_KEY=world\nQUOTED="q v"\nEMPTY=\nBAD KEY=1\nnonsense\n`,
+      'utf8',
+    )
+    const r = loadEnv({ cwd: dir })
+    // 修之前：`export KEY=VALUE` 被当成键名的一部分，于是 KEY 没设上，
+    // 反而多了一个 `export KEY`，而且返回值里把它报成「已加载」。
+    assert.equal(process.env[KEY], 'hello')
+    assert.equal(process.env[`export ${KEY}`], undefined, '不能凭空造出带空格的键')
+    assert.ok(!r.loaded.includes(`export ${KEY}`), '垃圾键不能出现在 loaded 里')
+    // 键名不合法的行要**跳过并报出来**，不能静默
+    assert.deepEqual(r.skipped, ['BAD KEY=1', 'nonsense'])
+    // 其余三种写法不受影响
+    assert.deepEqual(r.loaded, [KEY, 'PLAIN_KEY', 'QUOTED', 'EMPTY'])
+  } finally {
+    delete process.env[KEY]
+    delete process.env.PLAIN_KEY
+    delete process.env.QUOTED
+    delete process.env.EMPTY
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
