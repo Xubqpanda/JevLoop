@@ -37,8 +37,10 @@ export { clip, pick, estimateTokens, validate, LIMITS } from './budget.ts'
 export type { BudgetWarning, Checkpoint } from './budget.ts'
 
 // ── 后端 ─────────────────────────────────────────────────────
-export { HttpProvider, MockProvider, FallbackProvider, normalizeAnswers } from './provider.ts'
-export type { HttpProviderOptions } from './provider.ts'
+export { HttpProvider, normalizeAnswers } from './provider-http.ts'
+export { MockProvider } from './provider-mock.ts'
+export { FallbackProvider } from './provider-fallback.ts'
+export type { HttpProviderOptions } from './provider-http.ts'
 
 // ── 记账 ─────────────────────────────────────────────────────
 export { Meter, formatRatio } from './meter.ts'

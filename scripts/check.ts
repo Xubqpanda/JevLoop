@@ -184,7 +184,10 @@ const LAYER: Record<string, number> = {
   estimate: 0,
   // L2 —— 接缝
   'seam-provider': 2,
-  provider: 2,
+  // 按 §12 拆成三件事，各自 L2（都只依赖 seam-provider / vocab）：
+  'provider-http': 2,
+  'provider-mock': 2,
+  'provider-fallback': 2,
   decide: 2,
   llm: 2,
   tools: 2,

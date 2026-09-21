@@ -14,7 +14,9 @@
  * @module JevLoop/backends
  */
 
-import { HttpProvider, MockProvider, FallbackProvider } from './provider.ts'
+import { HttpProvider } from './provider-http.ts'
+import { MockProvider } from './provider-mock.ts'
+import { FallbackProvider } from './provider-fallback.ts'
 import { HttpGenerator, ScriptedGenerator } from './llm.ts'
 import type { Provider } from './seam-provider.ts'
 import type { Generator } from './llm.ts'
