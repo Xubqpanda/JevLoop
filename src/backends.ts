@@ -17,6 +17,7 @@
 import { HttpProvider } from './provider-http.ts'
 import { MockProvider } from './provider-mock.ts'
 import { FallbackProvider } from './provider-fallback.ts'
+import { RetryingProvider, type RetryOptions } from './provider-retry.ts'
 import { HttpGenerator, ScriptedGenerator } from './llm.ts'
 import type { Provider } from './seam-provider.ts'
 import type { Generator } from './llm.ts'
@@ -47,6 +48,13 @@ export interface ProviderChoice {
    * 所以由调用方注入，比如 `examples/rule-judge.ts`。
    */
   lastResort?: Provider
+  /**
+   * 每一跳的重试参数。缺省见 `provider-retry.ts`（3 次 / 300ms 起 / 上限 5s）。
+   *
+   * ★ 有了它，托管后端的一次**瞬时**过载（429 / 5xx / 超时）不会立刻把
+   *   整轮打到兜底上。实测代价：那时 bench 报出来的数字全是 mock 的。
+   */
+  retry?: RetryOptions
 }
 
 /**
@@ -86,11 +94,40 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
     ...(apiKey ? { apiKey } : {}),
   })
 
+  /*
+    ★ **重试在链里面，包住每一个会瞬时失败的后端。**
+
+    重试和降级是两件事：
+
+        RetryingProvider   这一跳**暂时**不行 → 等一下再问**同一个**
+        FallbackProvider   这一跳**就是**不行 → 换下一个
+
+    包在链**外面**是不行的，而且一试就知道：链的最后一级是 mock，
+    它**永远不抛**，所以外面的重试包装器一次也不会触发。
+
+    实测（2026-09-21）：托管 Jev 的 `529 system_overloaded` 因为当时
+    没有这一层，直接把整轮判定打到 mock 的恒定 0.5 上。
+
+    `last`（mock / 规则判定）不包 —— 它是本地兜底，不会瞬时失败。
+  */
+  const retry = (p: Provider): Provider =>
+    new RetryingProvider(p, {
+      ...(choice.retry ?? {}),
+      // 重试**要说出来**：不说的话，界面上只表现为「这一次特别慢」，
+      // 而真实情况是主后端在过载 —— 那两件事的排查方向完全不同
+      onRetry: (info) =>
+        notice?.(
+          new Error(`${info.code}，等 ${Math.round(info.delayMs)}ms 后重试${info.fromServer ? '（服务端要求的）' : ''}`),
+          info.provider,
+          info.provider,
+        ),
+    })
+
   if (choice.prefer === 'jev') {
-    return new FallbackProvider([jev, last], notice)
+    return new FallbackProvider([retry(jev), last], notice)
   }
 
-  const chain = apiKey ? [jev, laya, last] : [laya, last]
+  const chain = apiKey ? [retry(jev), retry(laya), last] : [retry(laya), last]
   return new FallbackProvider(chain, notice)
 }
 

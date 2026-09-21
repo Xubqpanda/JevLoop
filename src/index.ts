@@ -25,6 +25,10 @@ export type {
 } from './vocab.ts'
 export type { PolicyRule, DecisionSpec, DecisionResult } from './vocab-decision.ts'
 export type { Provider, DecideRequest, DecideResponse } from './seam-provider.ts'
+// 失败分类：**按 code 分支，不要解析 message**（见 seam-provider.ts）
+export { ProviderError, isRetryable, RETRYABLE_CODES } from './seam-provider.ts'
+export type { ProviderErrorCode } from './seam-provider.ts'
+export { httpErrorCode, parseRetryAfter } from './provider-http.ts'
 export { noul, choice, score, confidenceOf } from './vocab.ts'
 export { defineDecision, isDecision } from './vocab-decision.ts'
 
@@ -40,6 +44,9 @@ export type { BudgetWarning, Checkpoint } from './budget.ts'
 export { HttpProvider, normalizeAnswers } from './provider-http.ts'
 export { MockProvider } from './provider-mock.ts'
 export { FallbackProvider } from './provider-fallback.ts'
+// 重试：每一跳自己的策略，降级链在外面组合（见 provider-retry.ts 的文件头）
+export { RetryingProvider } from './provider-retry.ts'
+export type { RetryInfo, RetryOptions } from './provider-retry.ts'
 export type { HttpProviderOptions } from './provider-http.ts'
 
 // ── 记账 ─────────────────────────────────────────────────────

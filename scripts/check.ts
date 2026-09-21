@@ -264,6 +264,8 @@ const LAYER: Record<string, number> = {
   'provider-http': 2,
   'provider-mock': 2,
   'provider-fallback': 2,
+  // 有界重试：同层，但它只 import seam-provider（定义角）✓
+  'provider-retry': 2,
   decide: 2,
   llm: 2,
   tools: 2,
