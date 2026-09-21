@@ -273,6 +273,7 @@ body {
   --jl-alias-button-ghost-active-fill: var(--jl-static-neutral-bluish-100);
   --jl-alias-button-ghost-active-hover: var(--jl-static-neutral-bluish-150);
   --jl-alias-button-info-fill: var(--jl-static-deepseek-500);
+  --jl-alias-button-info-text: var(--jl-static-neutral-00);
   --jl-alias-button-info-hover: var(--jl-static-deepseek-400);
   --jl-alias-button-primary-dimmed: var(--jl-static-neutral-bluish-100);
   --jl-alias-button-primary-fill: var(--jl-alias-brand-primary);
@@ -366,6 +367,7 @@ body[data-jl-dark] {
   --jl-alias-button-ghost-active-fill: var(--jl-static-neutral-bluish-750);
   --jl-alias-button-ghost-active-hover: var(--jl-static-neutral-bluish-700);
   --jl-alias-button-info-fill: var(--jl-static-deepseek-400);
+  --jl-alias-button-info-text: var(--jl-static-neutral-00);
   --jl-alias-button-info-hover: var(--jl-static-deepseek-500);
   --jl-alias-button-primary-dimmed: var(--jl-static-neutral-bluish-750);
   --jl-alias-button-primary-fill: var(--jl-alias-brand-primary);

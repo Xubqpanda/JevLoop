@@ -529,8 +529,13 @@ body {
   color: var(--jl-alias-label-caption);
 }
 
-/* 发送：圆形，品牌蓝。用 --jl-static-neutral-00 而不是 #fff ——
-   DSH 那边这里写的是字面 #fff，这个文件不许出现字面颜色。 */
+/* 发送：圆形，品牌蓝。前景色走第 2 层的 `--jl-alias-button-info-text`。
+ *
+ * 以前这里写的是第 1 层的 `--jl-static-neutral-00`，理由是「不许出现字面颜色」——
+ * 那个理由本身没错，但它只满足了**代理**、没满足**规则**：头部的规矩是
+ * 「组件只用第 2 层」，而第 1 层不带语义，换主题时不会跟着变。
+ * 这个 alias 是本次为此补的（上游那一层没覆盖「填充按钮上的前景色」）。
+ * 现在这条规矩由 `scripts/check.ts` 的 `css-tier` 规则机械守着。 */
 .send {
   display: inline-flex;
   align-items: center;
@@ -541,7 +546,7 @@ body {
   border-radius: 999px;
   corner-shape: round;
   background: var(--jl-alias-button-info-fill);
-  color: var(--jl-static-neutral-00);
+  color: var(--jl-alias-button-info-text);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;

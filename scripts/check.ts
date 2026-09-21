@@ -27,6 +27,7 @@
  *   · `src/` 内的 import 方向符合分层（见 DESIGN-layers-2026-09-21.md）
  *   · `src/index.ts` 公开导出的**值**有 JSDoc（类型/接口不查，见下）
  *   · 公开值的签名引用到的本仓库类型也在导出面上（契约不能只导出一半）
+ *   · `web/app.css` 里不出现第 1 层令牌（组件只用第 2 层）
  *
  * **不检查什么**（规则本身不精确，硬查会误伤）：
  *   · 缩进是不是恰好 2 空格 —— 续行、模板字符串、对齐注释都会让逐行判定失真
@@ -446,6 +447,40 @@ function publicTypeSurfaceViolations(dir: string): Violation[] {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════
+// CSS 令牌的**层级**
+//
+// `web/tokens.css` 头部写着三层结构，规矩是「**组件只用第 2 层**」——
+// 直接用第 1 层意味着换主题时那个组件不会跟着变。
+//
+// 第二十六轮 T1 报的是：这条规矩**看起来有检查、实际没有**。
+// 本地的代理是「app.css 里不出现字面颜色值」，而它只挡字面颜色、
+// **挡不住 `var(--jl-static-*)`** —— 一个用第 1 层的组件在旧检查下完全干净。
+// `app.css:544` 就是这么写上去的：注释的推理是「不许字面颜色 → 所以用令牌」，
+// 而它落到了一个第 1 层令牌上。**代理满足、规则未满足。**
+//
+// 这一条把代理从「字面颜色」升级到「层级」。
+// ═══════════════════════════════════════════════════════════
+
+/** 组件样式表里不许出现第 1 层令牌的**用法**（`var(--jl-static-…)`） */
+function cssTierViolations(): Violation[] {
+  const file = 'web/app.css'
+  const out: Violation[] = []
+  readFileSync(file, 'utf8')
+    .split('\n')
+    .forEach((line, i) => {
+      if (line.includes('var(--jl-static-')) {
+        out.push({
+          file,
+          line: i + 1,
+          rule: 'css-tier',
+          detail: '用了第 1 层令牌（`--jl-static-*`）—— 组件只用第 2 层，否则换主题时不会跟着变',
+        })
+      }
+    })
+  return out
+}
+
 const files = ROOTS.flatMap((pattern) => [...globSync(pattern)]).sort()
 if (files.length === 0) {
   console.error('没有匹配到任何文件 —— glob 模式写错了？')
@@ -457,6 +492,7 @@ const violations = [
   ...layerViolations('src'),
   ...publicSurfaceViolations('src'),
   ...publicTypeSurfaceViolations('src'),
+  ...cssTierViolations(),
 ]
 
 if (violations.length === 0) {
