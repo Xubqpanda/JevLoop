@@ -141,7 +141,20 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
   console.log(`  ${bold('decisions : model =')} ${bold(green(formatRatio(s)))}${dim(`   decisions are ${(s.decisionShare * 100).toFixed(1)}% of wall clock`)}`)
   console.log('')
 
-  return result.halt === 'agent_done' || result.halt === 'task_done' ? 0 : 1
+  /*
+    退出码按「**答完了吗**」判，不按「走了哪条路」。
+
+    ★ `answered_directly` 漏了是真 bug（2026-09-21 实测）：它和 `agent_done`
+      / `task_done` 是**并列的成功出口** —— 三条都在 `agent.ts` 里 `break`
+      出来走同一条尾路（生成 → 过交付闸门 → 返回答案）。漏掉的表现是
+      `jevloop run "一句不用查资料的问题"` **打印一个好好的答案然后退出 1**，
+      而退出码是 `jevloop run … && …` 唯一看的东西。
+
+    ⚠️ 带 `+revise` 后缀的不算成功（交付闸门修订过一次后仍然没放行），
+      所以这里精确匹配，不用前缀。
+  */
+  const DONE = new Set(['answered_directly', 'agent_done', 'task_done'])
+  return DONE.has(result.halt) ? 0 : 1
 }
 
 /**
