@@ -43,6 +43,29 @@ export type AgentEvent =
   | { type: 'tool:result'; step: number; tool: string; output: string; ms: number }
   /** 一次生成调用。整个运行里通常只有一次，最多两次（修订） */
   | { type: 'generate'; step: number; kind: string; latencyMs: number; tokens: number }
+  /**
+   * 交给生成器的证据被预算压过。
+   *
+   * **只有真的动了才发**（没超触发线时什么都不做，那没什么可报的）。
+   *
+   * 为什么它是一个事件而不是一行日志：证据被压掉之后，回答里少了东西 ——
+   * 而读的人**看不见少了什么**。没有这个事件，「这次答得不全」会被归因到
+   * 模型身上，而不是归因到预算上（§8.10 不假装成功）。
+   */
+  | {
+      type: 'context'
+      step: number
+      /** 动手前的字符数 */
+      rawChars: number
+      /** 动手后 */
+      keptChars: number
+      /** 有多少条结果被剪了中间 */
+      prunedCount: number
+      /** 有多少条结果被整条丢弃 */
+      droppedCount: number
+      /** 压完仍然超过目标线吗 */
+      overRetain: boolean
+    }
   | { type: 'run:end'; halt: string; steps: number; answer: string; stats: MeterStats }
 
 /** 观察者。返回值被忽略，抛出的异常被隔离。 */

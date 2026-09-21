@@ -55,7 +55,7 @@ export type { AgentEvent, AgentObserver } from './events.ts'
 export { TOOLS, callTool, toolNames, isToolName } from './tools.ts'
 export type { Tool, ToolName } from './tools.ts'
 export { ScriptedGenerator, HttpGenerator } from './llm.ts'
-export type { Generator, GenerateRequest, GenerateResult } from './llm.ts'
+export type { Generator, GenerateRequest, GenerateResult, ConversationTurn } from './llm.ts'
 
 // ── 预设的判定节点 ───────────────────────────────────────────
 export { needsTool, pickTool, pickInput, gradeRisk, stepOk, isDone, canDeliver } from './decisions.ts'

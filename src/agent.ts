@@ -45,7 +45,7 @@ import { assertNever } from './util.ts'
 import { fitEvidence, EVIDENCE_POLICY, type ContextReport } from './context.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
-import type { Generator } from './llm.ts'
+import type { Generator, ConversationTurn } from './llm.ts'
 
 export interface AgentOptions {
   task: string
@@ -72,6 +72,14 @@ export interface AgentOptions {
     file: string,
     ctx: AgentCtx,
   ) => string | undefined | Promise<string | undefined>
+  /**
+   * 之前的轮次。**多轮会话的入口** —— 没有它，每一句都是孤立的任务，
+   * 「再读一遍那个文件」里的"那个"无处可指。
+   *
+   * 只有问答、没有中间过程（见 `llm.ts` 的 `ConversationTurn`）。
+   * 调用方负责给出**有界**的份数。
+   */
+  history?: readonly ConversationTurn[]
   /**
    * 观察者。每次判定、每次工具调用、每次生成都会发一个事件。
    *
@@ -117,9 +125,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const trace = opts.onTrace ?? (() => {})
   const emit: AgentObserver = opts.onEvent ?? (() => {})
 
+  // 上文压成**一句话**进 ctx —— 判定帧是**有界**的（§8.2），把整段对话
+  // 塞进去会把真正要看的东西挤掉。只留每一轮「问过什么」，因为判定需要的是
+  // **指代关系**（"再读一遍那个文件"里的"那个"），不是上一轮的完整过程。
+  const earlier = (opts.history ?? []).map((t) => t.task).join(' / ')
   const ctx: AgentCtx = {
     task: opts.task,
     cwd: opts.cwd,
+    earlier,
     files: [],
     history: [],
     // 没有内容来源时 `write_file` 不进候选（见 AgentOptions.provideWriteContent）
@@ -300,12 +313,24 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     )
     const { text, report } = fitEvidence(parts, EVIDENCE_POLICY)
     lastEvidence = report
+    // 只有真的动了才发 —— 没超触发线时什么都不做，那没什么可报的
+    if (report.acted) {
+      emit({
+        type: 'context',
+        step,
+        rawChars: report.rawChars,
+        keptChars: report.keptChars,
+        prunedCount: report.prunedCount,
+        droppedCount: report.droppedCount,
+        overRetain: report.overRetain,
+      })
+    }
     return text
   }
 
   let genStep = step + 1
   decider.setStep(genStep)
-  const gen = await generator.generate({ task: ctx.task, evidence: evidence() })
+  const gen = await generator.generate({ task: ctx.task, evidence: evidence(), history: opts.history })
   meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,
     latencyMs: gen.latencyMs,
@@ -334,6 +359,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     const retry = await generator.generate({
       task: ctx.task,
       evidence: evidence(),
+      history: opts.history,
       instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
     })
     meter.recordModelCall(genStep, {

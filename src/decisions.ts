@@ -37,6 +37,15 @@ export type { AgentCtx, StepRecord } from './frame.ts'
 // 判定模型出厂往往是未校准的，阈值该用你自己的标注数据算出来。
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 上文进决策帧的字符上限。
+ *
+ * 200 是**背景**的量级：要能说清「前面问过什么」，但不能挤掉这一轮真正
+ * 要看的东西（任务 400、上次结果 300）。帧上下文只有 512/1024，
+ * 多轮的代价必须显式地小（§8.2）。
+ */
+const EARLIER_MAX_CHARS = 200
+
 const T = {
   needsTool: 0.5,
   toolAuto: 0.6,
@@ -88,6 +97,10 @@ export const needsTool = defineDecision({
 
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
+    // ★ 多轮：这一句是「再读一遍那个文件」里的"那个"唯一能落地的地方。
+    //   §8.2：帧里没有的，模型判不出来 —— 不是判错，是压根看不见。
+    //   有界（200 字符）是因为帧本身有预算，而它是**背景**不是主体。
+    earlier: clip(ctx.earlier ?? '', EARLIER_MAX_CHARS),
     steps_done: (ctx.history ?? []).length,
     last: clip(ctx.lastResult ?? '（还没有做过任何动作）', 300),
   }),
@@ -126,6 +139,9 @@ export const pickTool = defineDecision({
 
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
+    // ★ 多轮：同上。挑工具时「上文」尤其重要 ——
+    //   「那个文件」要靠它才能落到一个具体路径上。
+    earlier: clip(ctx.earlier ?? '', EARLIER_MAX_CHARS),
     // ★ 用一句话讲清"已经做过什么"，而不是丢一个数组让模型自己解析。
     //   决策帧的表达方式直接决定判定质量 —— 实测：只放数组时，
     //   模型会重复选已经做过的动作。

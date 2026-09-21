@@ -13,6 +13,22 @@
  * @module JevLoop/llm
  */
 
+/**
+ * 一轮对话。**只有问答，没有中间的工具记录。**
+ *
+ * 中间过程（判定、工具调用、工具结果）故意不进这里：那是**这一轮**的素材，
+ * 由 `evidence` 承载；进了这里的只有「问过什么、答了什么」，
+ * 因为多轮要的是**指代关系**（"再读一遍那个文件"里的"那个"），
+ * 不是把每一轮的完整过程堆进 prompt —— 那是上下文预算的事，
+ * 而预算属于 `context.ts`。
+ */
+export interface ConversationTurn {
+  /** 用户那一句 */
+  task: string
+  /** agent 当时答的那一段 */
+  answer: string
+}
+
 export interface GenerateRequest {
   /** 任务描述 */
   task: string
@@ -20,6 +36,13 @@ export interface GenerateRequest {
   evidence: string
   /** 额外要求 */
   instruction?: string
+  /**
+   * 之前的轮次。**多轮的全部意义就在这里** ——
+   * 没有它，每一句都是孤立的任务，「再读一遍那个文件」里的"那个"无处可指。
+   *
+   * 调用方负责给出**有界**的份数（服务端只保留最近若干轮）。
+   */
+  history?: readonly ConversationTurn[]
 }
 
 export interface GenerateResult {
@@ -55,7 +78,9 @@ export class ScriptedGenerator implements Generator {
     const t0 = performance.now()
     await new Promise((r) => setTimeout(r, this.#latencyMs))
 
+    const prior = req.history ?? []
     const text = [
+      ...(prior.length ? [`（上文 ${prior.length} 轮：${prior.map((t) => t.task).join(' / ')}）`, ``] : []),
       `任务：${req.task}`,
       ``,
       `已完成：`,
@@ -127,6 +152,12 @@ export class HttpGenerator implements Generator {
           model: this.#model,
           messages: [
             { role: 'system', content: req.instruction ?? DEFAULT_INSTRUCTION },
+            // 之前的轮次按 user/assistant 成对铺开 —— 这是模型唯一能
+            // 建立指代关系的方式。只有问答，没有中间过程（见 ConversationTurn）。
+            ...(req.history ?? []).flatMap((t) => [
+              { role: 'user', content: `Task:\n${t.task}` },
+              { role: 'assistant', content: t.answer },
+            ]),
             { role: 'user', content: `Task:\n${req.task}\n\nWhat was done:\n${req.evidence}` },
           ],
         }),

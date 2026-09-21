@@ -50,6 +50,16 @@ export interface AgentCtx {
    * 以前那里填的是一个占位符字符串，它会**真的写进目标文件**（见 agent.ts）。
    */
   canWrite?: boolean
+  /**
+   * 之前几轮**问过什么**，压成一句话。
+   *
+   * 判定帧是**有界**的（§8.2），把整段对话塞进去会把真正要看的东西挤掉。
+   * 所以这里只有每一轮的任务，没有回答、没有中间过程 —— 判定需要的是
+   * **指代关系**（「再读一遍那个文件」里的"那个"），不是上一轮的完整经过。
+   *
+   * 由 `runAgent` 从 `AgentOptions.history` 压出来。
+   */
+  earlier?: string
   lastTool?: string
   lastResult?: string
   draft?: string
