@@ -406,7 +406,23 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   let writes: Promise<void> = Promise.resolve()
 
   try {
-    const provider = resolveProvider()
+    /*
+      ★ **降级和重试都要说出来。**
+
+      以前这里是 `resolveProvider()` —— 一个参数都不传，于是后端从托管 Jev
+      掉到兜底时，**服务端一个字都不打**。实测（2026-09-21）：托管 Jev
+      返回 `529 system_overloaded`，整轮判定静默跑在 mock 的恒定 0.5 上，
+      而界面上只表现为「这一次有点慢」。用那份数字得出的结论全是错的。
+
+      `onFallback` 是这条链唯一的声音。不接它，链就是隐形的。
+    */
+    const provider = resolveProvider({
+      onFallback: (err, from, to) => {
+        // 走 stderr：这是**告警**不是常规输出，而且它不该混进那些
+        // 「服务在哪个端口」的启动信息里
+        console.error(`  ▲ 判定后端降级 ${from} → ${to}：${(err as Error).message}`)
+      },
+    })
     const generator = resolveGenerator()
 
     // 会话就是上文。**在 runAgent 之前读** —— 这一轮自己的事件要边跑边写，
@@ -872,6 +888,8 @@ server.listen(PORT, HOST, async () => {
   const count = (await workspaces.list().catch(() => [])).length
   console.log(`\n  JevLoop · http://${HOST}:${PORT}`)
   console.log(`  decision   : ${resolveProvider().name}`)
+  // 提醒一句：这条链降级时是会打日志的，而**降级意味着数字不能用**
+  console.log(`               （降级会打 ▲；重试说明主后端在过载，不是「这次慢」）`)
   console.log(`  generator  : ${resolveGenerator().name}`)
   console.log(`  cwd        : ${dir}${CWD_ROOT ? '' : '  (temporary demo directory, registered as a workspace)'}`)
   console.log(`  workspaces : ${count}   sessions ${JEVLOOP_HOME}/sessions/`)
