@@ -26,5 +26,35 @@ jobs:
       - run: npm run check
       - run: npm run typecheck
       - run: npm test
+
+      # 为什么需要这一步：`package.json` 的 `exports` 指向 `dist/`，
+      # 而上面每一步（check / typecheck / test，以及下面的 demo）走的都是 `src/`。
+      # 也就是说 —— **使用者唯一会拿到的那一面，恰好是仓库里唯一没人验证的一面。**
+      # `dist/` 在 `.gitignore` 里，所以它过期了不会有任何东西报警。
+      # 实测：一次源码分层重构之后，`dist/` 少了 7 个模块、多了 1 个孤儿（`types.js`），
+      # 而当时的 check / typecheck / test / demo **全部照常全绿**。
+      #
+      # 比的是**运行时导出面**而不是文件名，所以 `src/` 将来拆成目录也不会误报。
+      - name: dist/ 与 src/ 的导出面必须一致
+        run: |
+          npm run build
+          node --input-type=module -e '
+          const load = async (p) => {
+            try { return Object.keys(await import(p)).sort() }
+            catch (e) { console.error(`  无法加载 ${p}：${e.message}`); process.exit(1) }
+          }
+          const a = await load("./dist/index.js")
+          const b = await load("./src/index.ts")
+          const onlyA = a.filter((x) => !b.includes(x))
+          const onlyB = b.filter((x) => !a.includes(x))
+          if (onlyA.length || onlyB.length) {
+            console.error("dist 与 src 的导出面不一致 —— 构建产物已过期，或有模块没被编译进去")
+            if (onlyA.length) console.error("  仅 dist 有:", onlyA.join(", "))
+            if (onlyB.length) console.error("  仅 src  有:", onlyB.join(", "))
+            process.exit(1)
+          }
+          console.log(`  dist 与 src 导出面一致（${a.length} 个运行时导出）`)
+          '
+
       - name: 离线冒烟（loop 能跑完）
         run: DEEPSEEK_API_KEY= npm run demo -- --rule
