@@ -42,6 +42,7 @@ import {
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
+import { fitEvidence, EVIDENCE_POLICY, type ContextReport } from './context.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator } from './llm.ts'
@@ -87,6 +88,14 @@ export interface AgentResult {
   steps: number
   ctx: AgentCtx
   meter: Meter
+  /**
+   * 生成请求的上下文账目。**可能没有** —— 证据没超触发线时不做任何压缩，
+   * 那也是一种结果，但没什么可报的。
+   *
+   * 放在返回值里而不是只打日志：调用方（界面、测试）要能拿到
+   * 「这次压掉了什么」，而不是只能去解析 evidence 末尾那句散文。
+   */
+  context?: ContextReport
 }
 
 /**
@@ -260,38 +269,38 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
    * 最坏能到约 200KB。
    *
    * 为什么没人发现：它进的是**生成请求**（LLM 侧），**不是决策帧**，
-   * 所以 `budget.ts` 的 `validate()` 管不到它 ——
-   * 帧有预算、证据没有。这是个遗漏，不是有意的设计。
+   * 所以 `budget.ts` 的 `validate()` 管不到它 —— 帧有预算、证据没有。
+   * 这是个遗漏，不是有意的设计。
    *
-   * 中文 1 字 ≈ 1 token，所以下面这些预算数大致就是 token 量级。
+   * ── 规则在 `context.ts`，不在这里 ──────────────────────────
+   *
+   * 这里原来有一份内联实现（单阈值 6000 / 每条 800 / 只留头）。它和
+   * `context.ts` 是同一件事的两份实现（AGENTS.md §3.1），已按所有者指示合并：
+   * **位置取这里**（每条工具结果进 history 的那一层，粒度对，而且判定帧
+   * 以后能共用同一份账），**规则取 `context.ts`**。
+   *
+   * 取它那套的三条理由，都是「不报错但一直在错」的情形：
+   *
+   * · **留头也留尾** —— 工具输出最有用的两端是开头（这是什么）和结尾
+   *   （错误、汇总）。只留头会把错误信息砍掉。
+   * · `head + 标记 + tail ≤ 阈值`，**配置期校验** —— 挡「越裁越大」。
+   * · `retain < trigger` 且 `retain ≥ 单条裁剪后的最大体积` ——
+   *   分别挡「每轮都压、永远压不下去」和「目标线永远达不到」。
+   *
+   * 账目（剪了几条、丢了几条、有没有压到目标）由 `fitEvidence` 返回，
+   * 这里存进 `lastEvidence`，随 `AgentResult` 交给调用方显示 ——
+   * §8.10：被丢掉的东西要报出来，否则读起来就像"本来就这些"。
    */
-  const EVIDENCE_MAX_CHARS = 6000
-  const EVIDENCE_PER_STEP = 800
+  const EVIDENCE_INPUT_CHARS = 120
+  let lastEvidence: ContextReport | undefined
 
   const evidence = (): string => {
-    const h = ctx.history ?? []
-    const lines: string[] = []
-    let used = 0
-    let omitted = 0
-    let clipped = 0
-
-    // 从**最近**往回取：最新的结果最可能和当前这一步相关
-    for (let i = h.length - 1; i >= 0; i--) {
-      const x = h[i]!
-      if (x.result.length > EVIDENCE_PER_STEP) clipped++
-      const line = `${x.tool}(${clip(x.input, 120)}) → ${clip(x.result, EVIDENCE_PER_STEP)}`
-      if (used + line.length + 1 > EVIDENCE_MAX_CHARS) {
-        omitted = i + 1
-        break
-      }
-      lines.unshift(line)
-      used += line.length + 1
-    }
-
-    // §8.10：被丢掉/被截断的东西要**报出来**，否则读起来就像"本来就这些"
-    if (omitted > 0) lines.unshift(`（更早的 ${omitted} 步因为预算被省略）`)
-    if (clipped > 0) lines.push(`（其中 ${clipped} 步的工具输出被截断）`)
-    return lines.join('\n')
+    const parts = (ctx.history ?? []).map(
+      (x) => `${x.tool}(${clip(x.input, EVIDENCE_INPUT_CHARS)}) → ${x.result}`,
+    )
+    const { text, report } = fitEvidence(parts, EVIDENCE_POLICY)
+    lastEvidence = report
+    return text
   }
 
   let genStep = step + 1
@@ -349,7 +358,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   }
 
   emit({ type: 'run:end', halt, steps: step, answer: ctx.draft, stats: meter.stats })
-  return { answer: ctx.draft, halt, steps: step, ctx, meter }
+  return { answer: ctx.draft, halt, steps: step, ctx, meter, context: lastEvidence }
 }
 
 /**

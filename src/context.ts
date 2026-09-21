@@ -376,9 +376,13 @@ export function fitEvidence(
   }
 
   const overRetain = size(kept) > policy.retainChars
+  // 措辞沿用 `agent.ts` 原来那份内联实现的两句话：它们更准
+  // （「被截断」说的是单条被剪中间，「因为预算被省略」说的是整条没进来），
+  // 而且已经有一条测试把它当契约钉住了（A3）。合并时保留它们，
+  // 既不用去改那条测试，也不用碰别人正在编辑的文件。
   const notes: string[] = []
-  if (prunedCount > 0) notes.push(`${prunedCount} 条结果剪了中间`)
-  if (droppedCount > 0) notes.push(`${droppedCount} 条最早的结果被整条丢弃`)
+  if (prunedCount > 0) notes.push(`其中 ${prunedCount} 步的工具输出被截断`)
+  if (droppedCount > 0) notes.push(`更早的 ${droppedCount} 步因为预算被省略`)
   if (overRetain) notes.push(`压完仍有 ${size(kept)} 字符，超过目标 ${policy.retainChars}`)
 
   const text = kept.join('\n') + (notes.length ? `\n\n[... context budget: ${notes.join('，')} ...]` : '')
