@@ -51,7 +51,7 @@ import { Decider } from './decide.ts'
 import { Meter } from './meter.ts'
 import { runAgent } from './agent.ts'
 import { parseDecisionDoc, summarize, headline, isGate } from './decisiondoc.ts'
-import { compilePredicate } from './decision-compile.ts'
+import { compilePolicy, compilePredicate } from './decision-compile.ts'
 import type { AgentEvent, GenerateDelta } from './events.ts'
 import { SessionStore, assertSessionId } from './session-store.ts'
 import { migrateLegacyLayout } from './session-migrate.ts'
@@ -59,6 +59,8 @@ import { createDir, listDirs } from './dir-browse.ts'
 import { WorkspaceStore } from './workspace.ts'
 import { WorkspaceError, type WorkspaceErrorCode } from './vocab-workspace.ts'
 import { encodeSse } from './sse.ts'
+import { describeGates } from './gates.ts'
+import { resolveGates } from './decisions.ts'
 // `backends` 和 `env` 都是 L6，和本文件同层 —— §11 只允许 L0 内部互相指涉、
 // 以及 L2 指向定义角，同层直接 import 是违规的。走门面（`index.ts` 不受层约束），
 // 这也是 `cli.ts` 的写法。
@@ -83,6 +85,17 @@ function findRoot(from: string): string {
 
 const ROOT = findRoot(dirname(fileURLToPath(import.meta.url)))
 const WEB_DIR = join(ROOT, 'web')
+
+/**
+ * 门限覆盖（`JEVLOOP_GATES='can_deliver.unsupported=0.7'`）。
+ *
+ * ★ **在模块加载时解析，所以写错了服务根本起不来。** 那是故意的：
+ *   一个拼错的名字如果只是让服务照常跑，你会以为闸门改过了 —— 而它没有，
+ *   并且没有任何东西会告诉你（见 `gates.ts` 文件头）。起不来是响的。
+ *
+ * 启动横幅里会把它印出来，所以「这个界面跑在什么门限上」一眼可见。
+ */
+const GATES = resolveGates(process.env.JEVLOOP_GATES ?? '')
 const DECISION_MD = join(ROOT, 'DECISION.md')
 const PORT = Number(process.env.PORT ?? 7799)
 const HOST = process.env.HOST ?? '127.0.0.1'
@@ -474,6 +487,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       }),
       generator,
       maxSteps,
+      gates: GATES,
       // 界面上「需要授权」一律先批准：这是一个演示环境，
       // 真拒绝会让 loop 在第一步就停，看不到后面的东西。
       // 真实的授权交互应该是前端弹一个确认框再回传。
@@ -786,11 +800,16 @@ async function handleSpec(res: ServerResponse): Promise<void> {
     JSON.stringify({
       headline: headline(doc),
       summary: summarize(doc),
+      /** 这一份规格跑在哪些覆盖门限上。空对象 = 全是 DECISION.md 的默认值 */
+      gates: GATES,
       blocks: doc.blocks.map((b) => {
         // 这里的谓词编译**不是为了用它的结果，是为了它的失败**。
         // 编译不了的谓词会被编成永不命中的规则，那意味着这份规格里有一条
         // 闸门是空的 —— 界面必须把这件事显示出来，否则汇总看起来完全正常，
         // 而实际上少了一条规则（审计第十一轮 S3）。
+        // 传 `GATES`：不传的话，这一页会显示默认门限，而这个进程实际跑在
+        // 覆盖值上 —— 规格页的意义正是「它到底是怎么判的」。
+        const pol = compilePolicy(b, GATES)
         return {
           id: b.id,
           kind: b.kind,
@@ -799,6 +818,13 @@ async function handleSpec(res: ServerResponse): Promise<void> {
           questions: b.questions.map((q) => q.id),
           /** 没编译出来的谓词原文。空数组 = 这个块的策略全部可编译 */
           uncompiled: b.policy.filter((r) => compilePredicate(r.when, b) === null).map((r) => r.when),
+          /**
+           * **生效的**策略（门限已被覆盖替换过）。界面拿它显示实际用的数，
+           * 而不是文件里那个 —— 两者不同时，能看出差别的只有这里。
+           */
+          effective: (pol?.rules ?? []).map((r) => r.reason ?? ''),
+          /** 这个块上被覆盖掉的键 */
+          overridden: pol?.applied ?? [],
         }
       }),
       problems: doc.problems,
@@ -961,6 +987,10 @@ server.listen(PORT, HOST, async () => {
   console.log(`  generator  : ${resolveGenerator().name}`)
   console.log(`  cwd        : ${dir}${CWD_ROOT ? '' : '  (temporary demo directory, registered as a workspace)'}`)
   console.log(`  workspaces : ${count}   sessions ${JEVLOOP_HOME}/sessions/`)
+  // 覆盖过的门限要在这里说 —— 界面上跑出来的数字和默认值**不可比**，
+  // 而看的人不会记得自己设过什么
+  const gateLine = describeGates(GATES)
+  if (gateLine) console.log(`  gates      : ${gateLine}  ⚠ overriding DECISION.md defaults`)
   console.log(
     `  host       : ${HOST}` +
       (HOST === '127.0.0.1'

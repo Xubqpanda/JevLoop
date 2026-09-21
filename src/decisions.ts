@@ -61,6 +61,8 @@ import type { PolicyRule } from './vocab-decision.ts'
 import { clip } from './budget.ts'
 import { TOOLS, isToolName } from './tools.ts'
 import { parseDecisionDoc, type DecisionDoc, type DocBlock } from './decisiondoc.ts'
+import { hasThreshold, predicateQuestion } from './decision-compile.ts'
+import { parseGates, splitGates, type GateOverrides } from './gates.ts'
 import { compilePolicy, compileQuestions } from './decision-compile.ts'
 
 import { toolsFor, fileOptions, pickInputInstructions, describeDone, lastInput } from './frame.ts'
@@ -145,8 +147,8 @@ function block(id: string): DocBlock {
  * 两条策略（`pick_tool` / `pick_input`）的**问题**是运行时算的（候选每步
  * 重建），所以它们不能整块编译 —— 但策略仍然是文件说了算，分开取。
  */
-function policyOf(id: string): { policy: PolicyRule<AnswerSet>[] } {
-  const pol = compilePolicy(block(id))
+function policyOf(id: string, gates: GateOverrides = {}): { policy: PolicyRule<AnswerSet>[]; applied: string[] } {
+  const pol = compilePolicy(block(id), gates)
   if (!pol) throw new Error(`DECISION.md 的 '${id}' 没有 policy —— 一个没有策略的判定节点不会产生任何动作`)
   if (!pol.ok) {
     throw new Error(
@@ -154,7 +156,121 @@ function policyOf(id: string): { policy: PolicyRule<AnswerSet>[] } {
         `「看不懂这个谓词」不能编码成「这条永远命中」，所以只能停下`,
     )
   }
-  return { policy: pol.rules }
+  return { policy: pol.rules, applied: pol.applied }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 门限覆盖
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 七份规格各自对应 `DECISION.md` 里的哪个块。
+ *
+ * 名字对照写在这里、只写一次：规格的 `id` 是 `loop.pickTool`（给事件和界面看），
+ * 块的 id 是 `pick_tool`（文件里的标题）。两者**故意不同** —— 一个是运行时
+ * 身份，一个是文档锚点 —— 但覆盖表用的是后者，因为写覆盖的人手上是那份文件。
+ */
+const SPEC_BLOCKS: ReadonlyArray<readonly [string, string]> = [
+  ['needs_tool', 'loop.needsTool'],
+  ['pick_tool', 'loop.pickTool'],
+  ['pick_input', 'loop.pickInput'],
+  ['grade_risk', 'loop.gradeRisk'],
+  ['step_ok', 'loop.stepOk'],
+  ['is_done', 'loop.isDone'],
+  ['can_deliver', 'loop.canDeliver'],
+]
+
+/**
+ * 覆盖表里可以写哪些键 —— 由 `DECISION.md` **现算**，不是抄一份清单。
+ *
+ * 抄一份的话，文件里改了问题名而清单没改，报错信息就会指着一个不存在的键。
+ */
+export function gateKeys(): string[] {
+  const keys: string[] = []
+  for (const [blockId] of SPEC_BLOCKS) {
+    const b = block(blockId)
+    // 同一个问题上带门限的规则数 —— 决定这个键要不要带下标（见 `compilePolicy`）
+    const tiers = new Map<string, number>()
+    for (const r of b.policy) {
+      // 只列出**带门限**的谓词：`picked:` 没有数可以调，列进去等于骗人
+      if (!hasThreshold(r.when)) continue
+      const q = predicateQuestion(r.when, b)
+      if (q) tiers.set(q, (tiers.get(q) ?? 0) + 1)
+    }
+    for (const [q, n] of tiers) {
+      // 一档的写裸名字（最常见的写法最短）；多档的**逐档列出**，
+      // 因为裸名字只改第 0 档，列一个 `x.q` 会让人以为改的是全部
+      if (n === 1) keys.push(`${blockId}.${q}`)
+      else for (let i = 0; i < n; i++) keys.push(`${blockId}.${q}[${i}]`)
+    }
+  }
+  return [...new Set(keys)].sort()
+}
+
+/**
+ * 覆盖之后，**同一个问题上的多档门限必须还保持可达**。
+ *
+ * ★ 这不是洁癖，是一个真的会静默发生的坑。`grade_risk` 有两条：
+ *
+ *     score:risk >= 2 → ask_human      （先判，严）
+ *     score:risk >= 1 → auto_audit     （后判，宽）
+ *
+ *   `resolvePolicy` 是**顺序求值、第一条命中就返回**。所以把
+ *   `grade_risk.risk` 覆盖成 3 会让两条都变成 `>= 3` —— 第二条**永远不可达**，
+ *   而这个 agent 就少了一道「中等风险也要审计」的闸门，**一个错都不报**。
+ *
+ * 判据：同一个块里、同一个问题上、同样是 `>=` 的规则，门限必须**严格递减**。
+ * 递增或相等都意味着后面那条被前面盖住了。
+ */
+function tierProblems(
+  blockId: string,
+  /**
+   * ⚠️ **已经按块切好的**那张表（`{ 问题 id: 门限 }`），不是整份覆盖表。
+   *
+   * 第一版在这里又 `splitGates()` 了一次 —— 而入参已经没有 `<块>.` 前缀了，
+   * 于是每一项都被当成「没有点」丢进 `unused`，`mine` 恒为空，
+   * **这道校验从来没有生效过**（写测试时才发现）。`splitGates` 只吃整份表。
+   */
+  mine: Readonly<Record<string, number>>,
+): { problems: string[]; keys: string[] } {
+  const b = block(blockId)
+  if (Object.keys(mine).length === 0) return { problems: [], keys: [] }
+  const problems: string[] = []
+  const keys: string[] = []
+  const seen = new Map<string, number>()
+
+  // 同一个问题上带门限的规则有哪些（下标），用来算档位
+  const tierMap = new Map<string, number[]>()
+  b.policy.forEach((r, i) => {
+    if (!hasThreshold(r.when)) return
+    const q = predicateQuestion(r.when, b)
+    if (!q) return
+    tierMap.set(q, [...(tierMap.get(q) ?? []), i])
+  })
+  const tiers = tierMap
+
+  b.policy.forEach((r, index) => {
+    const src = r.when.trim()
+    if (!/^(?:top|prob:[\w.-]+|score:[\w.-]+)\s*>=/.test(src)) return
+    const q = predicateQuestion(src, b)
+    if (!q) return
+    // 第 0 档认裸名字，其余档认下标 —— 和 `compilePolicy` 同一套规则
+    const tier = (tiers.get(q) ?? []).indexOf(index)
+    const override = mine[`${q}[${tier}]`] ?? (tier === 0 ? mine[q] : undefined)
+    const effective = override ?? Number(/[0-9]*\.?[0-9]+$/.exec(src)?.[0] ?? NaN)
+    const prev = seen.get(q)
+    if (prev !== undefined && !(effective < prev)) {
+      problems.push(
+        `${blockId}.${q}：覆盖之后第 ${seen.size} 档是 >= ${prev}、这一档（${r.action}）是 >= ${effective} —— ` +
+          `策略是**顺序求值、第一条命中就返回**，所以这一条**永远不会被求值**，` +
+          `那等于这里少了一道闸门。同一问题上的多档门限必须严格递减`,
+      )
+      // **键由这里给出**，不让调用方回头去切那句话里的字符串
+      keys.push(`${blockId}.${q}`)
+    }
+    seen.set(q, effective)
+  })
+  return { problems, keys }
 }
 
 /**
@@ -569,3 +685,162 @@ export const canDeliver = defineDecision({
   // 问题与策略都来自 DECISION.md 的 can_deliver 块
   ...compiled<{ deliverable: NoulQuestion; unsupported: NoulQuestion }>('can_deliver', ['deliverable', 'unsupported']),
 })
+
+/**
+ * 七个判定节点，**带着某一次运行的门限**。`buildDecisions` 的产物。
+ *
+ * 用具名类型而不是让消费者写 `typeof import('./decisions.ts').pickInput`
+ * 那种东西 —— 后者能过，但读的人要停下来解一遍。
+ */
+export interface DecisionSet {
+  needsTool: typeof needsTool
+  pickTool: typeof pickTool
+  pickInput: typeof pickInput
+  gradeRisk: typeof gradeRisk
+  stepOk: typeof stepOk
+  isDone: typeof isDone
+  canDeliver: typeof canDeliver
+}
+
+/**
+ * 用一组**门限覆盖**把七个节点构建出来。
+ *
+ * ── 为什么是工厂，而不是读环境变量 ──────────────────────────────
+ *
+ * 模块级常量做不到「同一次运行用一个门限」：`decisions.ts` 在 import 时
+ * 就编译完了，而环境变量是**进程**的。做成工厂之后，谁调谁决定 ——
+ * 服务器一次运行一份、测试可以一份一份地建，**顺序无关**。
+ *
+ * 不传 = 一份默认值都不动（和直接 import 那些常量完全等价）。
+ *
+ * ── 覆盖写不对就**当场炸** ──────────────────────────────────────
+ *
+ * 三种写错法全部拦下，因为它们的表现都是「你以为改了一道闸门，其实没有」：
+ *
+ *   ① 块名不认识        → 列出有哪些块
+ *   ② 问题名不认识      → 列出那个块有哪些问题
+ *   ③ 那个问题上没有门限 → 列出**所有能覆盖的键**（`gateKeys()` 现算）
+ *   ④ 覆盖把多档门限压成不可达 → 见 `tierProblems`
+ *
+ * @throws 任何一种写错法
+ */
+export function buildDecisions(gates: GateOverrides = {}): DecisionSet {
+  const { byBlock, unused } = splitGates(gates)
+  const problems: string[] = []
+  /**
+   * 已经报过问题的键。
+   *
+   * ★ 用**集合记账**，不是拿 `problems.some((p) => p.includes(key))` 去反查 ——
+   *   那是按字符串猜自己刚才说过什么。实测第一版就是这么写的，于是同一个
+   *   写错的键被报了两次（一次「没有这个块」，一次「这个键没有可覆盖的门限」），
+   *   而两句说的是同一件事。**记账比反查可靠**。
+   */
+  const blamed = new Set<string>()
+
+  for (const key of unused) {
+    problems.push(`认不出 '${key}'（应当是 块.问题）`)
+    blamed.add(key)
+  }
+
+  const known = new Set(SPEC_BLOCKS.map(([b]) => b))
+  // ★ `byBlock` 的键**就是块 id**（`splitGates` 已经切好了）。
+  //   第一版在这里又对键做了一次 `slice(0, indexOf('.'))` —— 而它已经没有
+  //   点了，`indexOf` 给 -1，`slice(0, -1)` 于是把最后一个字符吃掉：
+  //   每个键都被报成「没有 pick_too 这个块」。**切过一次的东西不要再切。**
+  for (const blockId of Object.keys(byBlock)) {
+    if (known.has(blockId)) continue
+    // 只报「块名不认识」，不报问题名 —— 问题名要等块确定了才说得清
+    problems.push(`没有 '${blockId}' 这个块（可选：${[...known].join('、')}）`)
+    for (const q of Object.keys(byBlock[blockId]!)) blamed.add(`${blockId}.${q}`)
+  }
+
+  const appliedAll = new Set<string>()
+  const patched = new Map<string, PolicyRule<AnswerSet>[]>()
+
+  for (const [blockId, specId] of SPEC_BLOCKS) {
+    if (!known.has(blockId)) continue
+    const b = block(blockId)
+
+    // ② 问题名不认识
+    for (const raw of Object.keys(byBlock[blockId] ?? {})) {
+      // 键可以带档位下标（`risk[1]`）—— 那是**规则的档位**，不是问题名的一部分，
+      // 所以校验之前先剥掉。第一版没剥，于是 `grade_risk.risk[0]` 被报成
+      // 「没有 risk[0] 这个问题」，而这个键**根本没法用**。
+      const q = raw.replace(/\[[0-9]+\]$/, '')
+      if (b.questions.some((x) => x.id === q)) continue
+      problems.push(`${blockId} 里没有 '${q}' 这个问题（可选：${b.questions.map((x) => x.id).join('、')}）`)
+      blamed.add(`${blockId}.${raw}`)
+    }
+    // ④ 档位下标越界：`risk[7]` 这种，既不是问题名也不是有效的档位
+    const tierCounts = new Map<string, number>()
+    for (const r of b.policy) {
+      if (!hasThreshold(r.when)) continue
+      const q = predicateQuestion(r.when, b)
+      if (q) tierCounts.set(q, (tierCounts.get(q) ?? 0) + 1)
+    }
+    for (const raw of Object.keys(byBlock[blockId] ?? {})) {
+      const m = /^(.+)\[([0-9]+)\]$/.exec(raw)
+      if (!m) continue
+      const n = tierCounts.get(m[1]!)
+      if (n !== undefined && Number(m[2]) < n) continue
+      problems.push(
+        `${blockId}.${raw}：'${m[1]}' 上${n === undefined ? '没有带门限的规则' : `只有 ${n} 档`}（能写的是 ${m[1]}[0..${(n ?? 1) - 1}]）`,
+      )
+      blamed.add(`${blockId}.${raw}`)
+    }
+
+    // ⑤ 压成不可达
+    const tiers = tierProblems(blockId, byBlock[blockId] ?? {})
+    problems.push(...tiers.problems)
+    for (const k of tiers.keys) blamed.add(k)
+
+    const pol = policyOf(blockId, gates)
+    for (const k of pol.applied) appliedAll.add(k)
+    patched.set(specId, pol.policy)
+  }
+
+  // ③ 名字对得上、但那个问题上没有门限可调（比如覆盖了一个 `else`）
+  const missing = Object.keys(gates).filter((k) => !appliedAll.has(k) && !blamed.has(k))
+  if (missing.length > 0) {
+    problems.push(`这些键没有可覆盖的门限：${missing.join('、')} —— 能覆盖的是：${gateKeys().join('、')}`)
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`门限覆盖有问题（一条都没生效，所以停下而不是带着一半继续）：\n  ${problems.join('\n  ')}`)
+  }
+
+  const withPolicy = <T extends { id: string }>(spec: T): T => {
+    const p = patched.get(spec.id)
+    return p ? ({ ...spec, policy: p } as T) : spec
+  }
+
+  return {
+    needsTool: withPolicy(needsTool),
+    pickTool: withPolicy(pickTool),
+    pickInput: withPolicy(pickInput),
+    gradeRisk: withPolicy(gradeRisk),
+    stepOk: withPolicy(stepOk),
+    isDone: withPolicy(isDone),
+    canDeliver: withPolicy(canDeliver),
+  }
+}
+
+/**
+ * 一段文本（`--gate` 的值、`JEVLOOP_GATES`）→ **校验过的**覆盖表。
+ *
+ * 解析和校验一次做完，因为调用方（CLI / 服务端）要的永远是同一件事：
+ * 「给我一份能用的覆盖，用不了就告诉我为什么」。分成两步的话，
+ * 每个调用方都要自己记得去 `buildDecisions` 验一遍 —— 而**忘了验的后果
+ * 是静默的**：名字写错的门限不生效，你以为加了一道闸门。
+ *
+ * @throws 解析不了、或者名字对不上（消息里列出所有能覆盖的键）
+ */
+export function resolveGates(spec: string): GateOverrides {
+  const { overrides, problems } = parseGates(spec)
+  if (problems.length > 0) {
+    throw new Error(`门限覆盖解析不了（一条都没生效，所以停下）：\n  ${problems.join('\n  ')}`)
+  }
+  // 建一次就是校验一次：`buildDecisions` 会对每个键追到底
+  buildDecisions(overrides)
+  return overrides
+}

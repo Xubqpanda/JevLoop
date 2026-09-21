@@ -1287,6 +1287,12 @@ body {
   flex: 0 0 auto;
 }
 
+/* 页脚里那一项「门限覆盖 N 项」—— 用 warn 色，因为它意味着**这次的数字
+   和默认值不可比**，而不是一句普通统计 */
+.msg-foot .gated {
+  color: var(--jl-alias-state-warn-label);
+}
+
 /*
   「上一次的输出作废了，正在重写」。
 

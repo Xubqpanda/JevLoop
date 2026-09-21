@@ -364,11 +364,14 @@ const ans = (o: Record<string, unknown>): AnswerSet => o as AnswerSet
 
 test('谓词：prob / score / picked / else', () => {
   const b = block('grade_risk')
-  assert.ok(compilePredicate('prob:needs_auth >= 0.5', b)!(ans({ needs_auth: { type: 'noul', noul: 0.9 } })))
-  assert.ok(!compilePredicate('prob:needs_auth >= 0.5', b)!(ans({ needs_auth: { type: 'noul', noul: 0.1 } })))
-  assert.ok(compilePredicate('score:risk >= 2', b)!(ans({ risk: { type: 'score', score: 2.4 } })))
-  assert.ok(!compilePredicate('score:risk >= 2', b)!(ans({ risk: { type: 'score', score: 1.9 } })))
-  assert.ok(compilePredicate('else', b)!(ans({})))
+  // `compilePredicate` 现在返回 `{ fn, text, applied? }` —— 多出来的 `text` 是
+  // **生效原文**（覆盖过的门限在 reason 里要被如实写出来），所以这里取 `.fn`
+  const fnOf = (when: string) => compilePredicate(when, b)!.fn
+  assert.ok(fnOf('prob:needs_auth >= 0.5')(ans({ needs_auth: { type: 'noul', noul: 0.9 } })))
+  assert.ok(!fnOf('prob:needs_auth >= 0.5')(ans({ needs_auth: { type: 'noul', noul: 0.1 } })))
+  assert.ok(fnOf('score:risk >= 2')(ans({ risk: { type: 'score', score: 2.4 } })))
+  assert.ok(!fnOf('score:risk >= 2')(ans({ risk: { type: 'score', score: 1.9 } })))
+  assert.ok(fnOf('else')(ans({})))
 })
 
 test('谓词：多问题块里 top 是歧义的，必须拒绝', () => {
@@ -471,8 +474,8 @@ test('S2: top >= x 与 top < x 对每种答案类型都恰好一真一假', () =
   ]
 
   for (const [label, b, a] of pairs) {
-    const ge = compilePredicate('top >= 0.6', b)!
-    const lt = compilePredicate('top < 0.6', b)!
+    const ge = compilePredicate('top >= 0.6', b)!.fn
+    const lt = compilePredicate('top < 0.6', b)!.fn
     // 以前 `top < x` 编译成 `probLt`，而 `probLt` 只认 noul、判的还是 p 而不是
     // max(p,1-p)：noul 上 p 偏离 0.5 时两条**同时为真**，
     // choice / score 上 `top < x` **恒假**（写了一道永不触发的闸门）。

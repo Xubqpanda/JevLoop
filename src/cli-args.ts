@@ -26,6 +26,9 @@ run options
   --jev | --laya            force a decision backend
   --max-steps <n>           step limit (default 8)
   --strict                  throw on a budget error before sending the request
+  --gate <k=v,...>          override decision thresholds, e.g.
+                            --gate can_deliver.unsupported=0.7,grade_risk.risk=3
+                            (missing names are fatal; see docs/CODE-STYLE.md)
 
 serve options
   --cwd <dir>               working directory (default: a temporary demo dir)
@@ -34,7 +37,7 @@ serve options
 `.trim()
 
 /** 取值的选项。其余一律当开关（存在即真）。 */
-const VALUE_OPTIONS = new Set(['cwd', 'max-steps', 'port', 'host'])
+const VALUE_OPTIONS = new Set(['cwd', 'max-steps', 'port', 'host', 'gate'])
 
 /** `argv` 解析之后的样子。 */
 export interface Parsed {

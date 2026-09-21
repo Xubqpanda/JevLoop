@@ -588,11 +588,16 @@ function finishAssistant(text, stats, halt) {
   const s = stats ?? {}
   const ratio = ratioText(s)
   current.foot.className = `msg-foot${halt === 'error' ? ' failed' : ''}`
+  const gateKeys = Object.keys(current.gates ?? {}).sort()
   current.foot.replaceChildren(
     h('span', {}, `${s.decisions ?? '?'} 判定`),
     h('span', {}, `${s.modelCalls ?? '?'} 模型`),
     h('span', {}, `${ratio} 判定:模型`),
     h('span', {}, `停于 ${halt}`),
+    // 只在**真的有覆盖**时才出现这一项 —— 默认门限是常态，常态不用标注
+    ...(gateKeys.length > 0
+      ? [h('span', { class: 'gated', title: gateKeys.map((k) => `${k}=${current.gates[k]}`).join(', ') }, `门限覆盖 ${gateKeys.length} 项`)]
+      : []),
   )
   followTail()
 }
@@ -1455,7 +1460,15 @@ function run(task) {
       console.error('事件解析失败', err, msg.data)
       return
     }
-    if (e.type === 'run:start') return
+    /*
+      `run:start` 上带着**这一轮的门限覆盖**（服务端 `JEVLOOP_GATES` 那份）。
+      记下来，收尾时写进页脚 —— 两次运行结果不同时，读的人会先怀疑模型，
+      除非这里明确告诉他「这一次跑的不是默认门限」（见 `src/gates.ts` 文件头）。
+    */
+    if (e.type === 'run:start') {
+      if (current) current.gates = e.gates ?? null
+      return
+    }
 
     // ★ 收尾标记必须设在 `onEvent` **之前**。
     //

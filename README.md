@@ -198,6 +198,30 @@ policy:
 
 **A predicate aimed at the wrong kind of question is rejected, not compiled.** Left alone it would become a rule that never fires — the author believes they wrote a gate, there is no gate, and it fails open. Actions are a closed list too, and an unknown one is reported with its line number. Nothing is ever silently dropped: everything unrecognised lands in `problems`, with the line it came from.
 
+### Overriding the thresholds
+
+The numbers in those predicates (`>= 2`, `>= 0.5`) are **defaults**, measured against a pinned Jev version. They are a starting point, not a law — so they can be overridden without editing the file:
+
+```sh
+jevloop run "..." --gate can_deliver.unsupported=0.7
+JEVLOOP_GATES='can_deliver.unsupported=0.7,grade_risk.risk=4' jevloop serve
+```
+
+A key is `<block>.<question>` — the names as they appear in `DECISION.md`.
+
+**A name that resolves to nothing is fatal, on purpose.** `--gate can_deliver.unsupport=0.7` (one letter short) stops with the list of keys that do exist, and a server started with a bad `JEVLOOP_GATES` does not come up at all. The alternative — accepting it quietly — means you believe you tightened a gate and you did not, with nothing anywhere to tell you.
+
+**Where a question has several tiers, the bare name changes the first one** and later tiers need an index, because applying one value to both would make the second unreachable:
+
+```sh
+--gate grade_risk.risk=4        # score:risk >= 4 → ask_human   (the second tier stays at 1)
+--gate grade_risk.risk[1]=1.5   # score:risk >= 1.5 → auto_audit
+```
+
+That unreachability is checked, not trusted: tiers on one question must stay **strictly decreasing**, since the policy is evaluated in order and the first match wins. `--gate grade_risk.risk=0.5` is refused — it would put the "ask a human" bar below the "audit" bar and silently delete a rung.
+
+**The override is recorded, and it never lies about itself.** The effective number — not the file's — goes into the rule's `reason`, which is what the journal stores and what the delivery gate quotes back to the model. `run:start` carries the override map, so a stored run says which thresholds it ran on; the server banner and the CLI accounting print it; the spec page shows the effective predicates. Two runs of the same task that disagree are otherwise indistinguishable in the log, and the first thing you would blame is the model.
+
 ## How it works
 
 ```

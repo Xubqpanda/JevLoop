@@ -297,6 +297,10 @@ const LAYER: Record<string, number> = {
   // SSE 的帧编解码：零 import、零 IO，两端共用（写：server.ts / 读：llm.ts）。
   // 抽出来的理由是**不抽就测不了**，见该文件头。
   sse: 0,
+  // 门限覆盖：解析 `块.问题=数值`，零 import、零 IO。
+  // 放 L0 是因为**连词汇层都要用它**（`events.ts` 的 `run:start` 要带覆盖表，
+  // 好让那一轮用了什么门限能被持久化）；放高了 L1 就依赖不了。
+  gates: 0,
   // 重试机制：唯一的杂质是可注入的等待（setTimeout 是定时器不是 IO）
   retry: 1,
   'session-log': 0,

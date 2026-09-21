@@ -38,16 +38,8 @@ import type { DecisionResult, DecisionSpec } from './vocab-decision.ts'
 import type { AnswerMap, QuestionSet } from './vocab.ts'
 import { Meter } from './meter.ts'
 import { clip } from './budget.ts'
-import {
-  needsTool,
-  pickTool,
-  pickInput,
-  gradeRisk,
-  stepOk,
-  isDone,
-  canDeliver,
-  GENERATOR_INSTRUCTION,
-} from './decisions.ts'
+import { buildDecisions, GENERATOR_INSTRUCTION, type DecisionSet } from './decisions.ts'
+import type { GateOverrides } from './gates.ts'
 import { hasFileOptions, type AgentCtx, type StepRecord } from './frame.ts'
 import { callTool, isToolName, type ToolName } from './tools.ts'
 import { assertNever } from './util.ts'
@@ -129,6 +121,15 @@ export interface AgentOptions {
    * 不传 = 不流式，行为和不加这个选项时一样。
    */
   onDelta?: (d: RunDelta) => void
+  /**
+   * **门限覆盖**：`<块 id>.<问题 id>` → 新门限，例如
+   * `{ 'can_deliver.unsupported': 0.7 }`。
+   *
+   * 不传 = 全用 `DECISION.md` 里的默认值。名字写错会**当场抛**，
+   * 而且覆盖用的那个数会一路带进 `reason`（日志里写的是真正用过的值）
+   * 和 `run:start`（这一轮用了哪些覆盖）—— 见 `gates.ts` 文件头。
+   */
+  gates?: GateOverrides
 }
 
 /**
@@ -213,6 +214,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
   const emit: AgentObserver = opts.onEvent ?? (() => {})
+
+  /**
+   * 七个判定节点，**带着这次运行的门限**。
+   *
+   * 在 `runAgent` 开头建一次，之后整个 loop 用同一组 —— 判定节点是纯数据
+   * （问题 + 策略），构建很便宜，但**一次运行必须是同一份**：中途换门限会
+   * 让日志里的「为什么这么判」前后对不上。
+   */
+  const specs = buildDecisions(opts.gates ?? {})
 
   /**
    * 把**步号**注进增量再交出去。
@@ -308,7 +318,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   let step = 0
   let halt = 'max_steps'
 
-  emit({ type: 'run:start', task: opts.task, cwd: opts.cwd, at: Date.now() })
+  // 门限覆盖**进这一轮的第一条事件** —— 它是持久化的，所以事后翻日志能
+  // 看出「这一轮跑在什么门限上」。没有它，一次跑在 0.7 上的运行和一个跑在
+  // 默认值上的运行在日志里长得一模一样（§8.10）。
+  const gates = opts.gates && Object.keys(opts.gates).length > 0 ? opts.gates : undefined
+  emit({ type: 'run:start', task: opts.task, cwd: opts.cwd, at: Date.now(), ...(gates ? { gates } : {}) })
 
   // 上文被折过就说出来。它发生在 loop 之前，所以步号是 0。
   // **只有真的动了才发** —— 没超触发线时什么都不做，那没什么可报的。
@@ -404,7 +418,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       下面仍然**先看 needsTool** —— 顺序在代码里，模型看不见彼此。
     */
-    const [need, pick] = await askMany([needsTool, pickTool])
+    const [need, pick] = await askMany([specs.needsTool, specs.pickTool])
     if (need.action === 'answer') {
       halt = 'answered_directly'
       trace(`  answering directly (no tool needed)`)
@@ -438,7 +452,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // 工具参数是一次**判定**，不是写死的代码（审计 N3）
-    const input = await resolveInput(tool, ctx, ask, writeInput)
+    const input = await resolveInput(tool, ctx, ask, writeInput, specs.pickInput)
     if (input === undefined) {
       halt = 'input_unclear'
       trace(`  could not choose an input for ${tool} → stopping`)
@@ -449,7 +463,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.history = [...(ctx.history ?? []), pending]
 
     // ↗ 这个操作多危险
-    const risk = await ask(gradeRisk, ctx)
+    const risk = await ask(specs.gradeRisk, ctx)
     if (risk.escalate || risk.action === 'ask_human') {
       const approved = opts.onAskHuman ? await opts.onAskHuman(risk.reason, tool) : false
       emit({ type: 'authorize', step, tool, reason: risk.reason, approved })
@@ -519,7 +533,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       **条数**，`isDone` 放的是**清单**。同一个字段名两种东西 —— 那本身也是
       个该修的毛病，记在案。）
     */
-    const ok = await ask(stepOk, ctx)
+    const ok = await ask(specs.stepOk, ctx)
     if (ok.action !== 'continue') {
       halt = 'step_failed'
       trace(`  this step did not succeed → stopping (${ok.reason})`)
@@ -527,7 +541,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     }
 
     // ↗ 做完了吗
-    const done = await ask(isDone, ctx)
+    const done = await ask(specs.isDone, ctx)
     if (done.action === 'finish') {
       halt = 'task_done'
       break
@@ -680,7 +694,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   ctx.draft = gen.text
 
   // ↗ 能交付吗
-  let deliver = await ask(canDeliver, ctx)
+  let deliver = await ask(specs.canDeliver, ctx)
 
   // `revise` 承诺了「修订」，那修订就必须真的发生 ——
   // 以前它只是被拼进 halt 字符串，草稿原样返回。
@@ -723,7 +737,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       estimatedInputTokens: evidenceEstimate.controlTokens,
     })
     ctx.draft = retry.text
-    deliver = await ask(canDeliver, ctx)
+    deliver = await ask(specs.canDeliver, ctx)
   }
 
   if (deliver.action !== 'deliver') {
@@ -871,7 +885,13 @@ async function resolveInput(
   tool: ToolName,
   ctx: AgentCtx,
   ask: Ask,
-  writeInput?: AgentOptions['provideWriteInput'],
+  writeInput: AgentOptions['provideWriteInput'] | undefined,
+  /**
+   * `pick_input` 那个节点**带门限传进来**，不再 import 模块级的那个常量 ——
+   * 否则覆盖在这一步会静默失效：`pick_input` 也有门限（`top >= 0.5`），
+   * 而它是七个节点里唯一不在 `runAgent` 身体里问的。
+   */
+  pickInputSpec: DecisionSet['pickInput'],
 ): Promise<string | undefined> {
   switch (tool) {
     case 'list_dir':
@@ -882,7 +902,7 @@ async function resolveInput(
     case 'read_file': {
       // 没有候选就**不要问** —— criteria 为空的 choice 是无效问题
       if (!hasFileOptions(ctx)) return undefined
-      const d = await ask(pickInput, ctx)
+      const d = await ask(pickInputSpec, ctx)
       if (d.escalate || d.action !== 'use') return undefined
       return d.answers.file.choice
     }

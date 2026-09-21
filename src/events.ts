@@ -28,13 +28,27 @@
  * @module JevLoop/events
  */
 
+import type { GateOverrides } from './gates.ts'
 import type { DecisionResult } from './vocab-decision.ts'
 import type { QuestionSet, AnswerSet } from './vocab.ts'
 import type { AuditRecord, MeterStats } from './vocab-records.ts'
 
 /** 每一步里发生的一件事。判别式联合，新增成员时编译器会逼消费者处理。 */
 export type AgentEvent =
-  | { type: 'run:start'; task: string; cwd: string; at: number }
+  | {
+      type: 'run:start'
+      task: string
+      cwd: string
+      at: number
+      /**
+       * 这一轮用的**门限覆盖**（`<块>.<问题>` → 值）。没有覆盖时**整个字段不出现**。
+       *
+       * ★ 它必须在这里，因为它是**持久化**的那一份记录：同样的任务跑在默认门限
+       *   和跑在覆盖门限上，日志里别的地方一个字节都不差 —— 少了这一条，
+       *   事后没有任何办法分辨那一轮到底用了哪个数（§8.10 不假装成功）。
+       */
+      gates?: GateOverrides
+    }
   /** 一次判定完成 —— 这是界面最主要的信息来源 */
   | {
       type: 'decision'

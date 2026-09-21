@@ -17,6 +17,21 @@
  * `spec` 是只有这里能做的那一个 —— 它打印 `DECISION.md` 编译成了什么，
  * 包括**哪些谓词没编译出来**（那意味着一条不存在的闸门）。
  *
+ * ── 为什么不能再拆 ──────────────────────────────────────────────
+ *
+ * **一句话说得完：把 argv 变成一个动作，把结果印出来。** 上面那三个子命令
+ * **共用同一套输出词汇** —— 颜色、对齐、`── xxx ──` 那种分隔标题、
+ * `dim()` / `bold()` 的用法。按子命令切开，那套词汇要再切出第三个文件，
+ * 而读的人得从三个地方拼出「这个 CLI 能做什么」，恰恰丢掉了入口文件唯一的
+ * 用处：**一眼看全**。
+ *
+ * 消费者也是同一个（终端前的人），而 §12 给的两条接缝（「输入输出形状变了」
+ * 或「消费者不是同一批人」）在这里都不成立。
+ *
+ * ⚠️ 真正撑大它的是 `runTask` 里那段**给人看的账目**（约 50 行
+ *    `console.log`）。哪天真要拆，接缝在那里 —— 把它做成一个「把 result
+ *    印成账目」的函数，不是按子命令切。
+ *
  * @module JevLoop/cli
  */
 
@@ -29,6 +44,8 @@ import { USAGE, parseArgv } from './cli-args.ts'
 import { Decider, Meter, formatRatio, loadEnv, resolveGenerator, resolveProvider, runAgent } from './index.ts'
 import { compilePolicy, compileQuestions } from './decision-compile.ts'
 import { headline, parseDecisionDoc, isGate, summarize } from './decisiondoc.ts'
+import { describeGates, type GateOverrides } from './gates.ts'
+import { resolveGates } from './decisions.ts'
 
 /** 包根目录。编译后 `dist/cli.js` 与源码 `src/cli.ts` 都指回包根。 */
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -117,6 +134,18 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
   console.log('')
   console.log(bold('  ── loop trace ──────────────────────────────────────────'))
 
+  /*
+    门限覆盖。**在任何模型调用之前验完** —— 名字写错是致命的（见 `gates.ts`
+    文件头：静默无效等于你以为加了一道闸门），而在这里验意味着写错不花钱。
+  */
+  let gates: GateOverrides = {}
+  try {
+    gates = resolveGates(options.get('gate') ?? process.env.JEVLOOP_GATES ?? '')
+  } catch (err) {
+    console.error(`✗ ${(err as Error).message}`)
+    return 1
+  }
+
   const result = await runAgent({
     task,
     cwd,
@@ -124,6 +153,7 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
     generator,
     maxSteps: Number(options.get('max-steps') ?? 8),
     onTrace: (line) => console.log(dim(line)),
+    gates,
   })
 
   const s = meter.stats
@@ -139,6 +169,10 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
   console.log(`  model     ${String(s.modelCalls).padStart(3)}     ${dim(`${s.modelMs}ms`)}`)
   console.log('')
   console.log(`  ${bold('decisions : model =')} ${bold(green(formatRatio(s)))}${dim(`   decisions are ${(s.decisionShare * 100).toFixed(1)}% of wall clock`)}`)
+  // 覆盖过的门限**必须出现在给人看的那份账上**，不只在日志里 ——
+  // 否则两次结果不同时，读的人会去怀疑模型，而不是怀疑自己改过的那个数
+  const gateLine = describeGates(gates)
+  if (gateLine) console.log(yellow(`  gates     : ${gateLine}  （覆盖了默认值）`))
   console.log('')
 
   /*
