@@ -62,6 +62,16 @@ interface Sample {
   shape: 'JevLoop' | 'ReAct'
   task: string
   modelCalls: number
+  /**
+   * **判定次数**（ReAct 那一边恒为 0 —— 它没有判定）。
+   *
+   * ★ 它和 `modelCalls` 放在同一张表里，是因为**两者的比值才是关键**：
+   *   一次判定比一次生成快好几倍（实测 329ms vs 2036ms），但这条 loop
+   *   每个任务要问十几次，而 ReAct 只调三四次 —— 端到端谁快，取决于
+   *   「快几倍」和「多几次」谁赢。少了这一列，那张表会被读成
+   *   「JevLoop 慢」，而真正的结论是「**单次快 6 倍，次数多 4 倍**」。
+   */
+  decisions: number
   inputTokens: number
   outputTokens: number
   latencyMs: number
@@ -178,6 +188,7 @@ async function runJev(task: BenchTask): Promise<Sample> {
       task: task.id,
       // **只数生成**：判定不花这个钱，那正是这条 loop 的主张
       modelCalls: s.modelCalls,
+      decisions: s.decisions,
       // `MeterStats` 上的是**生成器**报的真值。判定那一边的记录里没有 token ——
       // 因为判定不花生成的钱，那正是这条 loop 的主张（判定模型那边确实也发
       // token，但走的是另一个后端、另一个价目表，不计在这一列里）
@@ -201,6 +212,7 @@ async function runReAct(task: BenchTask): Promise<Sample> {
         shape: 'ReAct' as const,
         task: task.id,
         modelCalls: r.modelCalls,
+        decisions: 0,
         inputTokens: r.inputTokens,
         outputTokens: r.outputTokens,
         latencyMs: r.latencyMs,
@@ -216,6 +228,7 @@ async function runReAct(task: BenchTask): Promise<Sample> {
       shape: 'ReAct' as const,
       task: task.id,
       modelCalls: r.modelCalls,
+      decisions: 0,
       inputTokens: r.inputTokens,
       outputTokens: r.outputTokens,
       latencyMs: r.latencyMs,
@@ -267,7 +280,7 @@ async function main(): Promise<void> {
   console.log(C.bold('  ── 逐任务 ──────────────────────────────────────────────'))
   console.log(
     C.dim(
-      `  ${pad('任务', 22)}${pad('形状', 9)}${pad('大模型调用', 11)}${pad('墙钟', 8)}${pad('输出token', 10)}验收`,
+      `  ${pad('任务', 22)}${pad('形状', 9)}${pad('判定', 6)}${pad('大模型调用', 11)}${pad('墙钟', 8)}${pad('输出token', 10)}验收`,
     ),
   )
   for (const task of tasks) {
@@ -276,6 +289,7 @@ async function main(): Promise<void> {
       if (!xs.length) continue
       console.log(
         `  ${pad(shape === 'JevLoop' ? task.id : '', 22)}${pad(shape, 9)}` +
+          pad(median(xs.map((s) => s.decisions)), 6) +
           pad(median(xs.map((s) => s.modelCalls)), 11) +
           pad(secs(median(xs.map((s) => s.latencyMs))), 8) +
           pad(Math.round(median(xs.map((s) => s.outputTokens))), 10) +
@@ -307,7 +321,7 @@ async function main(): Promise<void> {
   // ── 汇总 ──
   console.log(C.bold('  ── 汇总 ────────────────────────────────────────────────'))
   console.log(
-    C.dim(`  ${pad('形状', 10)}${pad('大模型调用/任务', 16)}${pad('墙钟/任务', 12)}${pad('输出token/任务', 16)}验收`),
+    C.dim(`  ${pad('形状', 10)}${pad('判定/任务', 10)}${pad('大模型调用/任务', 16)}${pad('墙钟/任务', 12)}${pad('输出token/任务', 16)}验收`),
   )
   for (const shape of ['JevLoop', 'ReAct'] as const) {
     const xs = all.filter((s) => s.shape === shape)
@@ -315,6 +329,7 @@ async function main(): Promise<void> {
     const okCount = xs.filter((s) => s.passed).length
     console.log(
       `  ${pad(shape, 10)}` +
+        pad(median(xs.map((s) => s.decisions)).toFixed(1), 10) +
         pad(median(xs.map((s) => s.modelCalls)).toFixed(1), 16) +
         pad(secs(median(xs.map((s) => s.latencyMs))), 12) +
         pad(Math.round(median(xs.map((s) => s.outputTokens))), 16) +
@@ -327,14 +342,30 @@ async function main(): Promise<void> {
   const jc = median(j.map((s) => s.modelCalls))
   const rc = median(r.map((s) => s.modelCalls))
   console.log('')
+  const jd = median(j.map((s) => s.decisions))
   console.log(
     C.bold(`  同一个任务：大模型调用 JevLoop ${jc} 次 vs ReAct ${rc} 次`) +
       C.dim(`   （比值 ${(rc / jc).toFixed(1)}×）`),
   )
+  /*
+    ★ **把「单次快几倍」和「次数多几次」分开写。**
+
+      只报「JevLoop 1 次 vs ReAct 4 次」会被读成「Jev 快」。而端到端
+      墙钟上 JevLoop 反而是慢的那个（实测 5.5s vs 4.1s），因为判定要往返
+      `jd` 次、单次约 330ms，而 ReAct 的三四次生成每次一千多毫秒。
+      **单次快，不等于这件事快。**
+  */
   console.log(
     C.dim(
-      '  ★ 这个比值说的是「大模型调用少了几倍」，**不是** README 里那个「14:1」——\n' +
-        '    那个是**判定次数 : 生成次数**，量的是「有多少岔路口不花生成的钱」。',
+      `  ★ JevLoop 每个任务还要 ${jd.toFixed(0)} 次**判定**（ReAct 一次都没有）。\n` +
+        '    单次判定比一次生成快好几倍（实测 330ms vs 2000ms），但次数多 —— 端到端谁快\n' +
+        '    取决于这两件事谁赢。上表的墙钟就是答案，别只看调用次数。',
+    ),
+  )
+  console.log(
+    C.dim(
+      '  ★ 而「判定 : 生成」那个比值（README 里的 13:1）说的是**这条 loop 里有多少岔路口\n' +
+        '    不花生成的钱**，不是「省了 13 次大模型调用」—— 同样任务 ReAct 只要 3–4 次。',
     ),
   )
   console.log('')

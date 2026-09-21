@@ -335,18 +335,36 @@ The obvious sweet spot is a strong decision model served locally. Neither of the
 
 So we measured it. `npm run compare` runs the same seven tasks twice: once through this loop, once through a ReAct loop that asks the LLM at every branch point. Same model, same tools (literally the same `callTool`), same fixture, same `maxSteps`, same acceptance checks.
 
-| | LLM calls / task | wall clock / task | output tokens / task | accepted |
-|---|---:|---:|---:|---:|
-| JevLoop | **1** | 5.5 s | **96** | 6 / 7 |
-| ReAct | **4** | 4.1 s | **495** | 7 / 7 |
+| | decisions / task | LLM calls / task | wall clock / task | output tokens / task | accepted |
+|---|---:|---:|---:|---:|---:|
+| JevLoop | 12 | **1** | 5.9 s | **105** | 6 / 7 |
+| ReAct | 0 | **3** | 3.4 s | **360** | 7 / 7 |
 
 *Hosted Jev for decisions, `deepseek-flash` for generation, 7 tasks × 1 run each.*
 
-Including the parts that do not flatter the project:
+### Is Jev fast? Yes per call, and no per task — and the two are worth keeping apart
 
-- **Four times fewer model calls, five times fewer output tokens.** This is where the claim actually lands: picking a tool is a closed question, and a closed question does not need tokens generated one at a time. On the write task it is **1 call against 8**.
-- **Not faster.** Over the hosted API the wall clock is slightly *worse* — 5.5 s against 4.1 s — because thirteen network round-trips cost more than three LLM calls. Same finding as the table above, now measured end-to-end against a real alternative instead of asserted.
-- **It also paid for a revision.** On the `direct` task this loop made **2** generation calls: the delivery gate rejected the first answer, and the revision still missed what the task asked for. The gate is real work that ReAct does not do, and it is counted here rather than averaged away.
+Measured directly, one call at a time (no loop around it):
+
+| | median |
+|---|---:|
+| one decision, hosted Jev | **329 ms** |
+| one generation, a one-line answer | 2036 ms |
+| one generation, ~300 words | 4371 ms |
+
+So a decision really is **3–6× faster than a generation call**, which is where the "5–8× faster" in the backend table comes from. But that is a *per-call* number, and the loop does not make one call:
+
+- **JevLoop: 12 decisions × ~330 ms ≈ 4 s, plus one generation ≈ 1.5 s → 5.9 s.**
+- **ReAct: 3 generations × ~1.1 s → 3.4 s.**
+
+Fewer, cheaper calls lose to more, dearer ones when there are four times as many of them. **Per call Jev wins; per task it currently loses on wall clock**, and saying only the first would be the same sleight of hand as reading `13 : 1` as "thirteen LLM calls saved".
+
+Where it flips is the decision backend, not the loop. At the 30–85 ms per decision a locally-served model gives, the same 12 decisions cost ~0.6 s instead of ~4 s and the whole thing lands around 2 s against ReAct's 3.4 s. That is the configuration the design is actually for; the hosted API is the one that makes round-trips the bottleneck.
+
+The rest of the comparison, including what does not flatter the project:
+
+- **Three times fewer model calls, three times fewer output tokens.** This is where the claim lands on its own terms: picking a tool is a closed question, and a closed question does not need tokens generated one at a time. On the write task it is **1 call against 6**.
+- **The gate is real work.** On the `direct` task this loop made **2** generation calls because the delivery gate rejected the first answer, and the revision still missed what the task asked for. ReAct answers in one call and got it. Counted here rather than averaged away.
 - **One sample per task.** An acceptance failure of 1 in 7 is not a quality claim in either direction. `--repeat` exists; the medians above are one run each.
 
 The ReAct side is not a straw man: it is given the JSON protocol in its system prompt, it may recover from a malformed reply (and that costs it a call), and it works in the same fixture with the same tools. `npm run compare` prints its system prompt verbatim so you can judge that rather than take our word for it.
