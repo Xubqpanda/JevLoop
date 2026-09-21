@@ -53,7 +53,30 @@ Zero dependencies. Zero build step. Runs offline with no API key.
 
 ## The problem
 
-Take a task that needs two tool calls. A conventional agent burns a model call on each of these:
+Take a task that needs a few tool calls. **Both loops make the same calls — the difference is what sits in the cycle.**
+
+```
+Conventional loop — the model is inside it
+
+   ┌─────────────────────────────────────────┐
+   │                                         │
+   ▼                                         │
+[ LLM call ] ── pick a tool ──▶ [ tool ] ────┘
+   │
+   └──▶ answer
+
+
+JevLoop — the model is outside it
+
+   ┌─────────────────────────────────────────┐
+   │                                         │
+   ▼                                         │
+[ Jev ] ── decide ──▶ [ tool ] ──────────────┘
+   │
+   └──▶ [ LLM call ] ── write ──▶ [ Jev ] ── gate ──▶ answer
+```
+
+The conventional agent asks the model at every turn of the loop — *should I act? which tool? is this safe? did it work? am I done?* — and pays a full generation for each answer. JevLoop answers those inside the loop and calls the model **once**, to write.
 
 | Question the loop asks | Conventional agent | JevLoop |
 |---|---|---|
