@@ -195,6 +195,8 @@ const LAYER: Record<string, number> = {
   frame: 3,
   // 层号按**拆出来那半的依赖面有多小**定（同 context-prune 的先例）：
   // 解析段只 import vocab.ts → L0；编译段依赖 policy.ts（L1）→ L2。
+  // 形状（纯类型，零行为依赖）独立成 L0；解析段也 L0，同层互相指涉是允许的。
+  'decision-shape': 0,
   decisiondoc: 0,
   'decision-compile': 2,
   // L4 —— 判定节点
