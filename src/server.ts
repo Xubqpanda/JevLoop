@@ -52,12 +52,13 @@ import { Meter } from './meter.ts'
 import { runAgent } from './agent.ts'
 import { parseDecisionDoc, summarize, headline, isGate } from './decisiondoc.ts'
 import { compilePredicate } from './decision-compile.ts'
-import type { AgentEvent } from './events.ts'
+import type { AgentEvent, GenerateDelta } from './events.ts'
 import { SessionStore, assertSessionId } from './session-store.ts'
 import { migrateLegacyLayout } from './session-migrate.ts'
 import { createDir, listDirs } from './dir-browse.ts'
 import { WorkspaceStore } from './workspace.ts'
 import { WorkspaceError, type WorkspaceErrorCode } from './vocab-workspace.ts'
+import { encodeSse } from './sse.ts'
 // `backends` 和 `env` 都是 L6，和本文件同层 —— §11 只允许 L0 内部互相指涉、
 // 以及 L2 指向定义角，同层直接 import 是违规的。走门面（`index.ts` 不受层约束），
 // 这也是 `cli.ts` 的写法。
@@ -328,13 +329,23 @@ function workspaceRoot(): Promise<string> {
 // ═══════════════════════════════════════════════════════════
 
 /**
+ * 这条 SSE 线上会出去的东西。
+ *
+ * 是**两者**，而不是 `AgentEvent` 一个 —— 因为这条线上跑的确实有两种东西：
+ * 事件（进日志、进轨迹）和流式增量（**不进**，见 `events.ts`）。
+ * 写成 `AgentEvent` 的话，类型在说谎，而说谎的类型会被绕过去
+ * （`as any` 或者改 `openStream` 的签名）。
+ */
+type WireMessage = AgentEvent | GenerateDelta
+
+/**
  * 开一条 SSE 通道。
  *
  * 每条事件单独一行 `data:`，用空行分隔 —— SSE 的帧格式。
  * **不做事件名分类**（`event:` 字段）：前端只需要一个 `onmessage`，
  * 分流交给 JSON 里的 `type`，这样加新事件类型时前端不用改协议层。
  */
-function openStream(res: ServerResponse): (e: AgentEvent) => void {
+function openStream(res: ServerResponse): (e: WireMessage) => void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
@@ -349,7 +360,7 @@ function openStream(res: ServerResponse): (e: AgentEvent) => void {
   res.write(': connected\n\n')
   return (e) => {
     if (res.writableEnded || res.destroyed) return
-    res.write(`data: ${JSON.stringify(e)}\n\n`)
+    res.write(encodeSse(e))
   }
 }
 
@@ -467,6 +478,19 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
       // 真拒绝会让 loop 在第一步就停，看不到后面的东西。
       // 真实的授权交互应该是前端弹一个确认框再回传。
       onAskHuman: async () => true,
+      /*
+        ★ **增量走这里，不走 `onEvent`。**
+
+        它是独立的一条通道（见 `events.ts` 的 `GenerateDelta`），所以它
+        **结构上不可能**被写进日志 —— 下面那段 `writes` 链里根本没有它。
+        靠 `if (e.type === 'generate:delta') return` 过滤是会被忘掉的，
+        而且忘掉的表现是日志悄悄涨几十倍、没有任何东西会报错。
+
+        `step` 由 `runAgent` 注进来 —— 生成器不知道自己跑在第几步。
+      */
+      onDelta: (d) => {
+        if (!clientGone) send({ type: 'generate:delta', ...d })
+      },
       onEvent: (e) => {
         if (!clientGone) send(e)
         /*

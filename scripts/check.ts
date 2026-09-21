@@ -294,6 +294,9 @@ const LAYER: Record<string, number> = {
   'session-path': 0,
   // 两条缝共用的失败分类：零 IO、零 import（同 context-prune 的先例）
   'http-error': 0,
+  // SSE 的帧编解码：零 import、零 IO，两端共用（写：server.ts / 读：llm.ts）。
+  // 抽出来的理由是**不抽就测不了**，见该文件头。
+  sse: 0,
   // 重试机制：唯一的杂质是可注入的等待（setTimeout 是定时器不是 IO）
   retry: 1,
   'session-log': 0,

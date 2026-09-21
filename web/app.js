@@ -31,7 +31,7 @@
  * 要摘的话先摘它。
  */
 
-import { renderMarkdown } from './markdown.js'
+import { renderMarkdown, createStreamRenderer } from './markdown.js'
 
 // ═══════════════════════════════════════════════════════════
 // DOM 小工具（不引框架：这个界面只有两种交互，画卡片和切视图）
@@ -360,7 +360,20 @@ function assistantTurn() {
   const el = h('div', { class: 'msg-assistant' }, list, running, answer, foot)
   chat.append(el)
   followTail()
-  return { el, list, running, answer, foot, rows: 0, finished: false, stopped: false }
+  return {
+    el,
+    list,
+    running,
+    answer,
+    foot,
+    rows: 0,
+    finished: false,
+    stopped: false,
+    // 回答是**边生成边长**的：`draft` 是到目前为止收到的全文，
+    // `stream` 只重画尾部（见 `markdown.js` 的 `createStreamRenderer`）。
+    draft: '',
+    stream: createStreamRenderer(answer),
+  }
 }
 
 /** 事件 → 过程里的一行 */
@@ -1149,6 +1162,32 @@ let sawEnd = false
 let replaying = false
 
 function onEvent(e) {
+  /*
+    ══════════════════════════════════════════════════════════════
+      ★ 增量**最先处理，而且处理完就 return** —— 它不是「事件」。
+    ══════════════════════════════════════════════════════════════
+
+    它不进 `current.events`（那是重放用的），不占过程列表的一行，不进右栏
+    的账本。一次回答有**上千段**，混进去会把这轮那十几条**决定**淹掉 ——
+    而「判定 13 次、模型 1 次」正是这个界面要给人看的唯一一件事。
+
+    服务端那条路上它同样没进日志（见 `src/events.ts` 的 `GenerateDelta`），
+    所以「实时看到的」和「刷新之后重放的」是同一个口径。
+
+    `e.reset` 为真时丢掉已经收到的 —— 生成重试会重新开始（见 `llm.ts`）。
+    渲染器自己也会发现「文本不是接着上一帧」，所以这里即使漏了也不会画错。
+  */
+  if (e.type === 'generate:delta') {
+    if (!current || replaying) return
+    if (e.reset) current.stream.reset()
+    current.draft = (e.reset ? '' : current.draft) + e.text
+    current.stream.update(current.draft)
+    // 秒数从头数起：**它在动**，不是在卡住
+    touch()
+    followTail()
+    return
+  }
+
   if (current) current.events.push(e)
 
   // 对话侧：**追加**一行到过程列表，不覆盖。
@@ -1233,7 +1272,15 @@ function abortedTurn() {
   current.finished = true
   stopTicker()
   current.el.removeChild(current.running)
-  current.answer.textContent = '（这一轮没有跑完）'
+  /*
+    ★ 流过的正文**留着**。
+
+    以前这里无条件写 `（这一轮没有跑完）`。没有流式时那句话是对的（本来就
+    什么都没有），有流式之后它等于**把已经生成出来的几百字擦掉** ——
+    而那些字是真的、是花过钱换来的，而且正是排查「它断在哪」唯一能看的
+    东西。下面那句 `msg-foot` 已经说清楚了这一轮没跑完。
+  */
+  if (!current.answer.childNodes.length) current.answer.textContent = '（这一轮没有跑完）'
   current.foot.className = 'msg-foot failed'
   current.foot.replaceChildren(h('span', {}, '没有 run:end —— 这一轮中途断了，上面是它走到的位置'))
   followTail()

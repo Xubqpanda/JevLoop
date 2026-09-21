@@ -31,7 +31,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { renderMarkdown } from '../web/markdown.js'
+import { renderMarkdown, unstableFrom, createStreamRenderer } from '../web/markdown.js'
 
 // ═══════════════════════════════════════════════════════════
 // DOM 桩
@@ -40,11 +40,35 @@ import { renderMarkdown } from '../web/markdown.js'
 /** 桩节点的基类。它存在的**唯一**理由是 `el()` 里那句 `c instanceof Node`。 */
 class DomNode {
   kids: DomNode[]
+  parent: DomNode | null
+  text: string | null
   constructor() {
     this.kids = []
+    this.parent = null
+    this.text = null
   }
   append(...cs: DomNode[]): void {
-    for (const c of cs) this.kids.push(c)
+    for (const c of cs) {
+      // 真实 DOM 里 append 一个已有的子节点是**移动**，不是复制
+      if (c.parent) c.parent.drop(c)
+      c.parent = this
+      this.kids.push(c)
+    }
+  }
+  drop(c: DomNode): void {
+    const k = this.kids.indexOf(c)
+    if (k >= 0) this.kids.splice(k, 1)
+    c.parent = null
+  }
+  remove(): void {
+    if (this.parent) this.parent.drop(this)
+    else this.parent = null
+  }
+  replaceChildren(...cs: DomNode[]): void {
+    for (const c of this.kids) c.parent = null
+    this.kids = []
+    this.text = null
+    this.append(...cs)
   }
 }
 
@@ -62,13 +86,11 @@ class DomEl extends DomNode {
   tag: string
   cls: string
   attrs: Record<string, string>
-  text: string | null
   constructor(tag: string) {
     super()
     this.tag = tag
     this.cls = ''
     this.attrs = {}
-    this.text = null
   }
   set className(v: string) {
     this.cls = v
@@ -217,7 +239,27 @@ test('行内：代码 / 粗 / 斜 / 链接', () => {
 // 不可信输入
 // ═══════════════════════════════════════════════════════════
 
-test('HTML 是文本，不是节点 —— 全程没有 innerHTML', () => {
+test('中文紧挨着的粗体和斜体 —— 答案大多是中文，这是最常见的形状', () => {
+  // ★ DSH 为此专门写了一个 `cjkFriendlyStrong` 语法扩展（CommonMark 的
+  //   flanking 规则按空格判词边界，而中文没有空格）。这边**不需要**它：
+  //   这个渲染器压根不实现完整的 flanking 规则。所以这条测试是**守着
+  //   那个简化**的 —— 哪天有人把规则补全，中文的粗体会当场失效。
+  assert.equal(html('这是**粗体**文字'), '<p class="md-p">这是<strong>粗体</strong>文字</p>')
+  assert.equal(html('中文**粗体**。句号'), '<p class="md-p">中文<strong>粗体</strong>。句号</p>')
+  assert.equal(html('**开头就粗**后面'), '<p class="md-p"><strong>开头就粗</strong>后面</p>')
+  assert.equal(html('中文*斜体*中文'), '<p class="md-p">中文<em>斜体</em>中文</p>')
+})
+
+test('标记内侧有空格就不算强调 —— `2 * 3 * 4` 不该变成斜体', () => {
+  // 少了这条，乘法式会渲染成 `2 <em> 3 </em> 4`。那是**错的输出**，
+  // 不是「不支持的语法」，所以它不能靠「原样显示」那条兜底。
+  assert.equal(html('2 * 3 * 4'), '<p class="md-p">2 * 3 * 4</p>')
+  assert.equal(html('a ** b ** c'), '<p class="md-p">a ** b ** c</p>')
+  // 但正常的还是正常
+  assert.equal(html('2 * 3 和 *斜*'), '<p class="md-p">2 * 3 和 <em>斜</em></p>')
+})
+
+test('不支持内联 HTML —— 全程没有 innerHTML', () => {
   // 这是这个文件的**安全性质**：靠 createElement + textContent 在结构上成立，
   // 不是靠一个 sanitizer 去追。所以 `<img onerror>` 只会被读出来。
   assert.equal(
@@ -253,4 +295,131 @@ test('没有收尾围栏的代码块把剩下的都吃掉，不吞掉自己', ()
     html('```\n甲\n乙'),
     '<pre class="md-pre"><code class="md-block">甲\n乙</code></pre>',
   )
+})
+
+// ═══════════════════════════════════════════════════════════
+// 流式渲染
+//
+// ★ 这一节里最重要的是一条**不变量**：流式渲染的结果必须和一次性渲染
+//   **逐字相同**。冻结尾部是个优化，优化错了的表现是「流式时看到的和
+//   跑完之后看到的不一样」—— 那种错不会有任何东西报错，只有人眼能发现。
+// ═══════════════════════════════════════════════════════════
+
+/** 一个能当 `host` 用的容器 */
+function container(): DomEl {
+  return new DomEl('div')
+}
+
+/** host 里现在是什么 */
+function inHost(host: DomEl): string {
+  return host.kids.map(shape).join('')
+}
+
+test('逐字喂进去，结果和一次性渲染**完全相同**', () => {
+  const src = [
+    '## 怎么跑',
+    '',
+    '```bash',
+    'git clone git@github.com:zjunlp/JevLoop && cd JevLoop',
+    'npm run demo',
+    '```',
+    '',
+    '要点：',
+    '',
+    '- 先 `npm install`',
+    '- 再 `npm run demo`',
+    '',
+    '> 需要 Node 22',
+    '',
+    '| 命令 | 作用 |',
+    '| --- | --- |',
+    '| `npm test` | 跑测试 |',
+    '',
+    '收尾。',
+  ].join('\n')
+
+  const once = html(src)
+  const host = container()
+  const stream = createStreamRenderer(host)
+  // 每个字符一帧 —— 比真实流式（按 token）还碎，是最坏情况
+  for (let i = 1; i <= src.length; i++) stream.update(src.slice(0, i))
+
+  assert.equal(inHost(host), once)
+})
+
+test('按 token 大小的块喂，结果也一样', () => {
+  const src = '# 标题\n\n一段话。\n\n- 甲\n- 乙\n\n```\n码\n```\n\n表格：\n\n| A | B |\n| --- | --- |\n| 1 | 2 |'
+  const once = html(src)
+  const host = container()
+  const stream = createStreamRenderer(host)
+  for (let i = 3; i < src.length; i += 3) stream.update(src.slice(0, i))
+  stream.update(src)
+
+  assert.equal(inHost(host), once)
+})
+
+test('已经定稿的块**不重建** —— 同一个节点对象还在那儿', () => {
+  // 这是「冻结」这件事本身的证据。只断言输出相同是看不出差别的：
+  // 整篇重画也能得到相同的输出，只是每帧抖一次、而且代价对最终长度是平方级的。
+  //
+  // 12 个段落 → 24 个块，尾部只留 2 个不稳定，所以前面 11 个必须原样留着。
+  const head = `${Array.from({ length: 12 }, (_, i) => `第 ${i} 段`).join('\n\n')}\n`
+  const host = container()
+  const stream = createStreamRenderer(host)
+  stream.update(head)
+
+  const before = host.kids.slice()
+  assert.equal(before.length, 12, '12 个段落各出一个节点')
+
+  stream.update(`${head}\n收尾那一段`)
+
+  // 第 0..9 段离定稿线远得很，必须**一个对象都没换**
+  for (let k = 0; k < 10; k++) {
+    assert.equal(host.kids[k], before[k], `第 ${k} 段应当是同一个节点对象（不是重建的）`)
+  }
+  assert.equal(shape(host.kids[12]), '<p class="md-p">收尾那一段</p>')
+})
+
+test('尾部那一块每帧重画 —— 列表接着长的时候看得见', () => {
+  const host = container()
+  const stream = createStreamRenderer(host)
+  stream.update('- 甲')
+  assert.equal(inHost(host), '<ul class="md-ul"><li>甲</li></ul>')
+  stream.update('- 甲\n- 乙')
+  assert.equal(inHost(host), '<ul class="md-ul"><li>甲</li><li>乙</li></ul>')
+  stream.update('- 甲\n- 乙\n- 丙')
+  assert.equal(inHost(host), '<ul class="md-ul"><li>甲</li><li>乙</li><li>丙</li></ul>')
+})
+
+test('文本**不是追加**时自己发现并重来（不靠对端发 reset）', () => {
+  // 重试重新发起生成时，文本会从头再来。`generate:delta` 上带 `reset`，
+  // 但界面正确性不该**只**依赖对端记得发它 —— 这里验的是自己看得出来。
+  const host = container()
+  const stream = createStreamRenderer(host)
+  stream.update('第一版：这是半句话')
+  stream.update('第二版：完全换了一句')
+  assert.equal(inHost(host), '<p class="md-p">第二版：完全换了一句</p>')
+})
+
+test('reset() 清空，重来一遍不带上一版的残留', () => {
+  const host = container()
+  const stream = createStreamRenderer(host)
+  stream.update('# 甲\n\n一段\n\n又一段')
+  stream.reset()
+  assert.equal(inHost(host), '')
+  stream.update('# 乙')
+  assert.equal(inHost(host), '<h1 class="md-h">乙</h1>')
+})
+
+test('unstableFrom：块太少时一行都不冻结', () => {
+  assert.equal(unstableFrom(''), 0)
+  assert.equal(unstableFrom('就一段'), 0)
+  assert.equal(unstableFrom('# 标题'), 0)
+})
+
+test('unstableFrom 指向倒数第二个块的起点', () => {
+  // 行：甲 / 空 / 乙 / 空 / 丙 / 空 —— 六个块，倒数第二个从第 4 行开始
+  assert.equal(unstableFrom('甲\n\n乙\n\n丙\n'), 4)
+  // 追加只可能让这条线**往后**走，不会往回退
+  assert.ok(unstableFrom('甲\n\n乙\n\n丙\n\n丁') >= 4)
 })

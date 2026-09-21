@@ -10,11 +10,35 @@
  * 想接 OpenAI / Anthropic / 本地模型都随意 —— 换的是这个文件，
  * 内核和判定一行都不用动。
  *
+ * ── 待拆 ────────────────────────────────────────────────────────
+ *
+ * **这个文件确实还能拆，接缝也清楚**，只是那一步比加流式大，不该混在
+ * 同一次改动里做。拆法：
+ *
+ *     seam-generate.ts   L2  **定义角**：GenerateRequest / GenerateResult /
+ *                            Generator / DEFAULT_INSTRUCTION
+ *     llm-scripted.ts    L2  ScriptedGenerator（离线路径）
+ *     llm-http.ts        L2  HttpGenerator（含 #readStream）
+ *     llm.ts             L2  RetryingGenerator（装饰器）+ 再导出旧名字
+ *
+ * **为什么现在没拆**：三个实现都要 import 契约类型，而 §11 不许同层互相
+ * 依赖 —— 解法是先切出一个「定义角」（同 `seam-provider.ts` 之于那三个
+ * provider 文件的先例，层表里写着）。所以那不是「移动代码」，而是**先决定
+ * 契约住哪**，值得单独一次改动来做。
+ *
+ * 已经先切走的那一块是**线协议**（SSE 帧编解码 → `sse.ts`，L0）：它不
+ * 属于任何一个后端，而且两端共用。
+ *
+ * 「待拆」的登记在伞仓库 `AGENTS.md` §9 —— 上游文件头写「待拆」而没有
+ * 登记处，就等于自我豁免（那条规矩本身写在该节里）。
+ *
  * @module JevLoop/llm
  */
 
 import type { ConversationTurn } from './conversation.ts'
-import { httpFailure, transportFailure } from './http-error.ts'
+import type { GenDelta } from './events.ts'
+import { ProviderError, httpFailure, transportFailure } from './http-error.ts'
+import { decodeSse } from './sse.ts'
 import { resolveRetry, retryCall, type RetryOptions } from './retry.ts'
 
 /**
@@ -70,6 +94,22 @@ export interface GenerateRequest {
    * 对话记录，进而引用一段从未逐字出现过的话。所以它进 **system**。
    */
   historyDigest?: string
+  /**
+   * **要不要边生成边把文本给我们。**
+   *
+   * ★ 它放在请求上，不是 `Generator` 接口上，有两个原因：
+   *
+   *   1. 接口保持「进一段 state、出一段文本」这个窄形状 —— 加一个方法就是
+   *      两套调用路径，而重试、降级、记账都得各写两遍。
+   *   2. **给不给是调用方的事。** 终端里只想要最后那一段，不需要流式；
+   *      浏览器里最慢的那一步恰恰不能是黑的。同一个后端两种用法，
+   *      差别就该在参数上。
+   *
+   * 不传 = 一次拿完整结果（**行为和不支持流式时完全一样**）。
+   * 传了也只是「尽力」：后端不吐流式的时候不报错，照样把完整结果给你 ——
+   * 所以调用方**不能**依赖回调一定被调用过。
+   */
+  onDelta?: (d: GenDelta) => void
 }
 
 export interface GenerateResult {
@@ -101,12 +141,10 @@ export class ScriptedGenerator implements Generator {
     this.#latencyMs = opts.latencyMs ?? 600
   }
 
-  async generate(req: GenerateRequest): Promise<GenerateResult> {
-    const t0 = performance.now()
-    await new Promise((r) => setTimeout(r, this.#latencyMs))
-
+  /** 拼出这次要「生成」的文本。分出来是为了能**分块发**（见 `generate`）。 */
+  #compose(req: GenerateRequest): string {
     const prior = req.history ?? []
-    const text = [
+    return [
       ...(prior.length ? [`(earlier turns: ${prior.length} — ${prior.map((t) => t.task).join(' / ')})`, ``] : []),
       // 折叠摘要也摆出来 —— 脚本生成器要让「上文被折过」这件事**看得见**，
       // 否则它的输出和一个没折过的会话长得一模一样（§8.10）。
@@ -123,6 +161,40 @@ export class ScriptedGenerator implements Generator {
     ]
       .join('\n')
       .trim()
+  }
+
+  async generate(req: GenerateRequest): Promise<GenerateResult> {
+    const t0 = performance.now()
+    const text = this.#compose(req)
+
+    /*
+      ★ **分块吐出去**，而不是等完了再一次性给。
+      
+      让离线路径（没 key、没网络）也能看见流式 —— 否则这个能力只有在
+      配了真后端时才存在，而「clone 下来就能看到全部形状」是这个项目的
+      立身之本（README）。总耗时仍然是 `#latencyMs`，只是切成了若干段。
+
+      ⚠️ `size` 至少 1 是**防御性的，今天到不了**：`#compose` 任何情况下
+         都至少产出 `task: ` 和 `done:`，所以文本不会是空的。
+         留着它是因为 `for (i += size)` 里 size 为 0 就是死循环，而
+         `Math.ceil(0 / n)` 恰好是 0 —— 同一天在 `markdown.js` 里刚踩过
+         一模一样的坑（三个收集循环不推进游标）。**这个形状的错误在每一层
+         都会重新出现一次**，所以宁可留一句不会被执行到的保护。
+         （测试没有假装覆盖它 —— 覆盖不到，见 tests/llm-stream.test.ts。）
+    */
+    const onDelta = req.onDelta
+    if (onDelta) {
+      const chunks = Math.max(1, Math.ceil(text.length / 24))
+      const size = Math.max(1, Math.ceil(text.length / chunks))
+      const gap = this.#latencyMs / chunks
+      onDelta({ text: '', reset: true })
+      for (let i = 0; i < text.length; i += size) {
+        await new Promise((r) => setTimeout(r, gap))
+        onDelta({ text: text.slice(i, i + size), reset: false })
+      }
+    } else {
+      await new Promise((r) => setTimeout(r, this.#latencyMs))
+    }
 
     return {
       text,
@@ -197,6 +269,9 @@ export class HttpGenerator implements Generator {
         },
         body: JSON.stringify({
           model: this.#model,
+          // 不给 `onDelta` 就**一个字节都不加** —— 这条路径的行为和加流式之前
+          // 逐字一样，风险为零（见 `GenerateRequest.onDelta`）。
+          ...(req.onDelta ? { stream: true, stream_options: { include_usage: true } } : {}),
           messages: [
             { role: 'system', content: system },
             // 之前的轮次按 user/assistant 成对铺开 —— 这是模型唯一能
@@ -223,6 +298,16 @@ export class HttpGenerator implements Generator {
       //   状态码只活在给人看的那句话里，于是「这个 529 该不该重试」在两条缝上
       //   会得出不同的答案，而它们连的是同一类后端。
       if (!res.ok) throw httpFailure(this.name, res.status, await res.text(), res.headers.get('retry-after'))
+
+      // ★ 按**响应的 content-type** 分流，不是按我们请求里写了什么。
+      //
+      //   有些部署会忽略 `stream: true`（网关、代理、不认识这个字段的服务端），
+      //   那时它照常返回一个完整的 JSON —— 也能用，而且**不该报错**。
+      //   判据放在响应上，这两种情况就都走得通。
+      if (req.onDelta && res.headers.get('content-type')?.includes('text/event-stream')) {
+        return await this.#readStream(req, res, t0)
+      }
+
       const body: any = await res.json()
       const text = body?.choices?.[0]?.message?.content ?? ''
 
@@ -237,6 +322,112 @@ export class HttpGenerator implements Generator {
       throw transportFailure(this.name, err, ctrl.signal.aborted, this.#timeoutMs)
     } finally {
       clearTimeout(timer)
+    }
+  }
+
+  /**
+   * 读一条 OpenAI 兼容的流式响应。
+   *
+   * 帧格式（就是 SSE）：
+   *
+   *     data: {"choices":[{"delta":{"content":"你"}}]}
+   *     data: {"choices":[{"delta":{"content":"好"}}]}
+   *     data: {"choices":[],"usage":{"prompt_tokens":…}}     ← 最后一个，只要 `include_usage`
+   *     data: [DONE]
+   *
+   * ★ **开头先发一个 `reset`。** 每次 `generate()` 进来都发 —— 重试会再进来
+   *   一次，而上次可能已经吐了半句。不重置的话界面上会是两次尝试的文本
+   *   首尾相接，而那句话模型**从来没说过**（§8.10 不假装成功）。
+   *   修订那条路径（`agent.ts` 的第二次 generate）同样受益。
+   */
+  async #readStream(req: GenerateRequest, res: Response, t0: number): Promise<GenerateResult> {
+    const onDelta = req.onDelta
+    if (!onDelta) throw new Error('readStream 只在给了 onDelta 时调用')
+    if (!res.body) throw new Error(`流式响应没有 body（content-type 说是流，但读不到）`)
+
+    onDelta({ text: '', reset: true })
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let text = ''
+    let usage: any
+    let sawDone = false
+
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      // 帧的切分交给 `sse.ts` —— 两端共用一份，「一次 read 正好切在帧中间」
+      // 在那里是常态而不是异常。
+      const { payloads, rest } = decodeSse(buf + decoder.decode(value, { stream: true }))
+      buf = rest
+
+      for (const payload of payloads) {
+        // `[DONE]` 是 **OpenAI 的哨兵，不是 SSE 的东西** —— 所以它归这里管，
+        // 不归 `sse.ts`。
+        if (payload === '[DONE]') {
+          sawDone = true
+          continue
+        }
+
+        let chunk: any
+        try {
+          chunk = JSON.parse(payload)
+        } catch {
+          /*
+            吞的是：**一行解析不了的载荷**。
+            
+            为什么没有别的东西会到这里：能进这个循环的只有 `data:` 行的内容，
+            而这条流是我们自己请求的、内容是 JSON。剩下的可能就两种 ——
+            服务端夹带的非 JSON 行、以及被切断的尾帧。
+            
+            为什么不用 throw：这时 `text` 里通常已经有几百字的正文了，
+            为一个畸形的尾帧把整次生成判失败是更坏的选择。真的少了内容，
+            下一步的交付闸门（`canDeliver`）会看见「回答和证据对不上」
+            并要求修订 —— 那是能修的那种失败，比整轮作废好。
+          */
+          continue
+        }
+
+        // `usage` 在**最后一个** chunk 上，那时 `choices` 是空的 ——
+        // 所以这两件事要分开取，不能只读 `choices[0]`。
+        if (chunk.usage) usage = chunk.usage
+        const piece: unknown = chunk.choices?.[0]?.delta?.content
+        if (typeof piece === 'string' && piece) {
+          text += piece
+          onDelta({ text: piece, reset: false })
+        }
+      }
+    }
+
+    /*
+      ★ **没见到 `[DONE]` 就是被截断了，不许当成功返回。**
+
+      这是流式特有的一种失败：连接**干净地**结束（FIN），而不是断开（RST）。
+      前者在 `reader.read()` 上表现为 `done: true`，和「正常读完」长得一模一样 ——
+      于是半个回答会被当成完整的回答交出去，而交付闸门拿到的是**残缺的证据**，
+      它甚至可能判过。这正是 §8.10 说的「不假装成功」。
+
+      为什么判据是 `[DONE]` 而不是「结束得早不早」：`[DONE]` 是 OpenAI 兼容
+      流式的**明确终止符**，而「多长算短」是猜的。代价写在明处 ——
+      **如果你的服务端不发 `[DONE]`，这条路会每次都失败**，而错误信息就写着
+      这一句，所以它指着原因，不是一团迷雾。重试是可用的（TRANSPORT 可重试）：
+      真正的截断是瞬时的，重试一次通常就好了。
+    */
+    if (!sawDone) {
+      throw new ProviderError(
+        `${this.name}: the stream ended without [DONE] after ${text.length} chars — the answer is truncated`,
+        'TRANSPORT',
+      )
+    }
+
+    return {
+      text,
+      latencyMs: performance.now() - t0,
+      inputTokens: usage?.prompt_tokens ?? 0,
+      outputTokens: usage?.completion_tokens ?? 0,
+      model: this.#model,
     }
   }
 }
@@ -257,6 +448,11 @@ export class HttpGenerator implements Generator {
  *
  * 和判定那条缝的区别：生成没有降级链，所以重试是唯一的补救；用尽之后
  * 原样抛出（`agent.ts` 的两处 `generate()` 没有 try，见那里的说明）。
+ *
+ * ★ **重试和流式并存是安全的，靠的是 `reset`。** 这里原样重放同一个 `req`
+ *   （包括 `onDelta`），于是第二次尝试会再发一个 `reset: true` ——
+ *   界面把上一次的半句话丢掉重画。所以「重试」在界面上表现为文案**重来一遍**，
+ *   而不是两段拼在一起。代价是第一次那半句的 token 白花了，那是真的。
  */
 export class RetryingGenerator implements Generator {
   readonly name: string

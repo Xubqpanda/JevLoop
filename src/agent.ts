@@ -58,8 +58,15 @@ import {
   type ContextReport,
   type RequestEstimate,
 } from './context.ts'
-import { decisionEvent, type AgentObserver, type BudgetLine, type RunBudget } from './events.ts'
-export type { AgentEvent, AgentObserver } from './events.ts'
+import {
+  decisionEvent,
+  type AgentObserver,
+  type BudgetLine,
+  type GenDelta,
+  type RunDelta,
+  type RunBudget,
+} from './events.ts'
+export type { AgentEvent, AgentObserver, GenerateDelta } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
 import { foldConversation, type ConversationReport } from './conversation.ts'
 import { writeInputVia } from './write-content.ts'
@@ -107,6 +114,21 @@ export interface AgentOptions {
    * 给界面、测试、日志消费。两者可以同时用。
    */
   onEvent?: AgentObserver
+  /**
+   * 生成过程中的增量文本。
+   *
+   * ★ **这是和 `onEvent` 平行的一条通道，不是它的一个新事件类型。**
+   *   理由见 `events.ts` 的 `GenerateDelta`：一次回答有上千段，而轨迹和日志
+   *   记的是决定（判定了几次、选了哪个工具）—— 混在一起，那 13 行会被
+   *   1000 行淹掉，而「判定 13 次、模型 1 次」正是这个项目要给人看的东西。
+   *
+   * 分开还买到一个结构上的保证：**日志不可能收到增量**，因为写日志的那条
+   * 路上根本没有它。靠 `if (e.type === …) return` 过滤是会被忘掉的。
+   *
+   * 步号由这里注入（生成器不知道自己跑在第几步，那是 loop 的事）。
+   * 不传 = 不流式，行为和不加这个选项时一样。
+   */
+  onDelta?: (d: RunDelta) => void
 }
 
 /**
@@ -191,6 +213,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
   const emit: AgentObserver = opts.onEvent ?? (() => {})
+
+  /**
+   * 把**步号**注进增量再交出去。
+   *
+   * 生成器只产出 `{ text, reset }` —— 它不知道自己跑在第几步，也不该知道
+   * （那是 loop 的事，见 `events.ts` 的 `GenDelta`）。所以拼接发生在这里，
+   * 而且**只在这里**：两处 `generate()` 调用都用它，接错一步是不可能的。
+   */
+  const onDelta = opts.onDelta
+  const deltaFor = (s: number): ((d: GenDelta) => void) | undefined =>
+    onDelta ? (d) => onDelta({ ...d, step: s }) : undefined
 
   // 上文压成**一句话**进 ctx —— 判定帧是**有界**的（§8.2），把整段对话
   // 塞进去会把真正要看的东西挤掉。只留每一轮「问过什么」，因为判定需要的是
@@ -627,6 +660,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     //   而下面的测试原本看不见这次分叉（见那条测试的注释）。
     history: genHistory,
     historyDigest: genDigest,
+    onDelta: deltaFor(genStep),
   })
   meter.recordModelCall(genStep, {
     kind: `generate (${generator.name})`,
@@ -663,6 +697,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       history: genHistory,
       historyDigest: genDigest,
       instruction: `上一次的回答没有通过交付闸门：${deliver.reason}。请据此修正，不要重复同样的写法。`,
+      onDelta: deltaFor(genStep),
     })
     meter.recordModelCall(genStep, {
       kind: `generate/revise (${generator.name})`,
