@@ -8,22 +8,40 @@
 
 **这份只管「东西放哪、叫什么名、怎么跑」。**
 
+| 要做什么 | 看哪份 |
+|---|---|
+| 东西放哪、文件叫什么 | **这份**（§1–§3）|
+| 结果长什么样 | **这份** §4 |
+| **怎么跑、留下什么 log** | **`PROTOCOL.md`** ← ★ 跑之前必读 |
+| 数据从哪来、什么版本 | **`dataset/MANIFEST.md`** |
+| 为什么选这些数据集 / baseline | 伞仓库 `docs/PLAN-*.md` §0–§2 |
+
+> ## ★ 一条不能破的：**没有 log 的运行 = 没跑过。**
+> 见 `PROTOCOL.md` §0。**拿不出 log 的数字不许进 `result/`。**
+
 ---
 
 ## 1. 六个目录
 
 | 目录 | 放什么 | 进 git？ |
 |---|---|---|
-| `dataset/` | 数据集、Wikipedia 索引、下载缓存。**上百 GB** | ❌ **绝不** |
+| `dataset/` | 数据集、Wikipedia 索引、下载缓存。**上百 GB** | ❌ **只有 `MANIFEST.md` + `.gitkeep` 进** |
 | `benchmark/` | 每个 benchmark 一个 loader / adapter，产出统一的 `Result[]` | ✅ |
 | `baseline/` | 每个范式**一份**实现（Direct / Act / ReAct / Reflexion / Plan / ReWOO） | ✅ |
 | `scripts/` | 入口命令：跑一个数据集、跑一张表、出图 | ✅ |
-| `log/` | 每次运行的原始产物（逐条 JSONL、stderr、耗时） | ❌ |
+| `log/` | 每次运行的原始产物（见 `PROTOCOL.md` §1） | ❌ |
 | `result/` | 汇总后的表与图 —— **论文里的数字从这里出** | ✅ |
+
+**`dataset/` 里只放索引，不放数据。** 数据下落不明没关系，
+`dataset/MANIFEST.md` 写清了**每一个数据集的 id / 版本 / 划分 / Wikipedia dump 版本**，
+照着能重建。**拿不准的标 `待核`，不许用记忆里的数字填。**
 
 **为什么 `dataset/` 和 `log/` 不进 git**：一个 Wikipedia 索引 + 19 个数据集是上百 GB，
 一次跑出来的逐条日志是几十 MB。**仓库不是硬盘。**
 **为什么 `result/` 进 git**：它是**论文的数字本身** —— 必须能 diff、能追溯是哪次改动改出来的。
+
+⚠️ **log 不进 git ≠ log 可以不存** —— 跑完要打包归档，见 `PROTOCOL.md` §3.6。
+
 
 ---
 
