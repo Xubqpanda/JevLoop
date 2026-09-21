@@ -121,14 +121,23 @@ when: 每次工具执行之后
 
 ### ok
 
-ask: The tool call succeeded and produced a usable result for the task; there is no error or empty output that blocks progress
+ask: This tool call itself completed and returned output this step can use. Judge only this call; whether the whole task is finished is a different question, decided elsewhere.
 
-- true — the output contains what the task needed
-- false — the output is an error, empty, or clearly not what was asked for
+- true — the tool ran and returned content — no error, no empty result, and the target it names is the one that was requested
+- false — the call did not work: an error, an empty result, a missing file, or output that clearly did not come from this tool
 
 policy:
   - prob:ok >= 0.5 → continue
   - else → stop
+
+**它判的是这一步，不是这个任务。** 决策帧里**故意没有 `task`** —— 这是修出来的：
+以前帧带着 `task`、问题写着 "for the task"、判据写着 "what the task needed"，
+三处一起把它拉到了任务级。实测任务「读一下 invoice.ts」时，第一步 `list_dir`
+返回文件列表，它确实**成功**了，但没回答「这个文件定义了哪些函数」，
+于是 `ok=0.470` 判否 → 动作 `stop` → **整个循环结束**。
+任何需要多于一个工具的任务都跑不完。
+
+「任务完成了吗」是 `isDone` 的职责，两者判错了层就会互相打架。
 
 动作名只承诺实际发生的事。它以前叫 `retry_or_stop`，但**重试需要一个错误
 分类策略，而那个策略不存在** —— 所以「retry」不能写进动作名里。

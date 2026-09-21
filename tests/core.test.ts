@@ -745,3 +745,43 @@ test('E3: decisionEvent 只接受一个参数，步号取自 DecisionResult', as
   } as never)
   assert.equal((e as { step: number }).step, 7)
 })
+
+// ═══════════════════════════════════════════════════════════
+// stepOk 必须只判「这一步」，不判「这个任务」
+//
+// 实测的 bug：帧里带着 task，问题写「a usable result **for the task**」，
+// 判据写「contains **what the task needed**」—— 三处一起把它拉到了任务级。
+// 任务「读一下 invoice.ts」第一步 `list_dir` 返回文件列表：它**确实成功**了，
+// 但没回答「这个文件定义了哪些函数」，于是 `ok=0.470` 判否 → 动作 `stop`
+// → **整个循环结束**。任何需要多于一个工具的任务都跑不完。
+//
+// 这组测试是机械的：数字对不对要靠模型，但「该问哪一级」是结构，能断言。
+// ═══════════════════════════════════════════════════════════
+
+test('★ stepOk 的帧里没有 task —— 有它就会去判任务完成度', async () => {
+  const { stepOk } = await import('../src/decisions.ts')
+  const frame = stepOk.state({
+    task: '读一下 invoice.ts，说明它定义了哪些函数',
+    cwd: '/tmp',
+    lastTool: 'list_dir',
+    lastResult: 'invoice.ts\nnotes.md\nretry.ts',
+    history: [],
+  }) as Record<string, unknown>
+
+  assert.equal(frame.task, undefined, 'stepOk 的帧不该带 task —— 那是 isDone 的问题')
+  assert.equal(frame.tool, 'list_dir', '它要看的仍然是这次调用本身')
+  assert.ok(frame.output, '工具输出在')
+})
+
+test('★ stepOk 的问题与判据都在说「这次调用」，不是「这个任务」', async () => {
+  const { stepOk } = await import('../src/decisions.ts')
+  const q = (stepOk.questions as Record<string, { instructions: string; criteria: { true: string; false: string } }>).ok!
+  const all = `${q.instructions} ${q.criteria.true} ${q.criteria.false}`
+
+  // 这几种措辞就是把判定拉错层的原因，任何一种回来都应当让这条测试红
+  for (const bad of [/for the task/i, /what the task needed/i, /the task requires/i]) {
+    assert.ok(!bad.test(all), `措辞 \`${bad}\` 会把 stepOk 拉回任务级`)
+  }
+  assert.match(q.instructions, /this tool call/i, '要明说判的是这次调用')
+  assert.match(q.instructions, /decided elsewhere/i, '要明说任务完成度在别处判')
+})

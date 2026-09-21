@@ -295,15 +295,30 @@ export const stepOk = defineDecision({
     tool: ctx.lastTool ?? 'unknown',
     input: clip(lastInput(ctx), 200),
     output: clip(ctx.lastResult ?? '', 500),
-    task: clip(ctx.task, 300),
+    // ★ **没有 `task`**，而且这是修出来的，不是一开始就这么写的。
+    //
+    //   帧里带着 task，问题又写着「produced a usable result **for the task**」、
+    //   判据写着「the output contains **what the task needed**」—— 三处一起
+    //   把这一步的判定拉到了**任务级**。而「任务完成了吗」是 `isDone` 的职责。
+    //
+    //   实测（这个 bug 就是这么发现的）：任务「读一下 invoice.ts」，
+    //   第一步 `list_dir` 返回文件列表 —— 它**确实成功**了，但它没有回答
+    //   「这个文件定义了哪些函数」，于是 `ok=0.470 < 0.6` 判否，
+    //   动作是 `stop`，**整个循环结束**。任何需要多于一个工具的任务都跑不完。
+    //
+    //   `stepOk` 的 `describe` 一直写的是「刚才那次**工具调用**是否达到预期效果」。
+    //   越界的是帧和措辞，不是这个节点的意图。
+    already_read: (ctx.readFiles ?? []).length,
   }),
 
   questions: {
     ok: noul(
-      'The tool call succeeded and produced a usable result for the task; there is no error or empty output that blocks progress',
+      'This tool call itself completed and returned output this step can use. Judge only this call; whether the whole task is finished is a different question, decided elsewhere.',
       {
-        true: 'the output contains what the task needed',
-        false: 'the output is an error, empty, or clearly not what was asked for',
+        true:
+          'the tool ran and returned content — no error, no empty result, and the target it names is the one that was requested',
+        false:
+          'the call did not work: an error, an empty result, a missing file, or output that clearly did not come from this tool',
       },
     ),
   },
