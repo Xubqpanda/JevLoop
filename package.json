@@ -8,6 +8,8 @@
     "node": ">=22.6"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "demo": "node --experimental-strip-types examples/demo.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test \"tests/*.test.ts\""
@@ -23,5 +25,26 @@
   "devDependencies": {
     "typescript": "5.7.2",
     "@types/node": "^22.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xubqpanda/nanojev.git"
+  },
+  "homepage": "https://github.com/Xubqpanda/nanojev",
+  "bugs": {
+    "url": "https://github.com/Xubqpanda/nanojev/issues"
   }
 }

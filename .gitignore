@@ -7,3 +7,6 @@ package-lock.json
 # 密钥：绝不提交
 .env
 .env.local
+
+# 构建产物：不进仓库（源码面 vs 产物面）
+dist/
