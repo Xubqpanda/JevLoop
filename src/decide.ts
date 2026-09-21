@@ -106,6 +106,8 @@ export class Decider {
     let provider = this.provider.name
     let model: string | undefined
     let degraded = false
+    // 后端报的问题。**会随 DecisionResult 交出去**（见下面的 `warnings`）——
+    // 它会进 `decision` 事件，所以轨迹里查得到 `degraded` 的原因
     const notes: string[] = []
     const t0 = performance.now()
 
@@ -138,6 +140,9 @@ export class Decider {
         provider, // 记**原计划用的**，不覆盖成 "none"
         degraded: true,
         escalate: true,
+        // 异常文本同时进 `reason` 和 `warnings`：前者是给人看的一句话，
+        // 后者是**可枚举**的那一份。降级链上的每一跳都在里面。
+        warnings: [`${provider} 不可用：${(err as Error).message}`],
       }
       this.meter.recordDecision(step, result as DecisionResult<unknown>)
       return result
@@ -161,6 +166,14 @@ export class Decider {
       ...(model !== undefined ? { model } : {}),
       degraded: degraded || policyWarnings.length > 0,
       escalate: outcome.action === 'escalate',
+      // ★ 后端报的问题**和**策略警告一起带上。
+      //
+      //   它们本来就被算出来了（`notes` / `policyWarnings`），只是**没有
+      //   一个消费者** —— 于是 `degraded: true` 在轨迹上是一句没有下文的话。
+      //   实测某个会话的每一次判定都 degraded，而没人说得出缺了什么。
+      ...(notes.length || policyWarnings.length
+        ? { warnings: [...notes, ...policyWarnings.map((w) => w.message)] }
+        : {}),
     }
 
     // ⑥ 记账

@@ -149,8 +149,13 @@ export class Oracle {
 
   /** 兑现掉一条待办。找不到就什么都不做 —— 多做的那次由对应判定点自己判错 */
   #advance(tool: string, input: string): void {
+    // ★ `write_file` 的输入是 `路径\n内容`，而夹具里写的是目标路径 ——
+    //   所以按**第一行**比。写路径的名字现在是**生成**的（`write-content.ts`），
+    //   夹具说不出完整输入，但它说得出「该写哪个文件」。
     const i = this.#remaining.findIndex(
-      (c) => c.tool === tool && (c.input === undefined || c.input === input),
+      (c) =>
+        c.tool === tool &&
+        (c.input === undefined || c.input === input || input.startsWith(`${c.input}\n`)),
     )
     if (i >= 0) this.#remaining.splice(i, 1)
   }

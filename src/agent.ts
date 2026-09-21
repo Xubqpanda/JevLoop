@@ -62,7 +62,7 @@ import { decisionEvent, type AgentObserver, type BudgetLine, type RunBudget } fr
 export type { AgentEvent, AgentObserver } from './events.ts'
 import type { Generator, ConversationTurn } from './llm.ts'
 import { foldConversation, type ConversationReport } from './conversation.ts'
-import { writeContentVia } from './write-content.ts'
+import { writeInputVia } from './write-content.ts'
 
 export interface AgentOptions {
   task: string
@@ -74,22 +74,24 @@ export interface AgentOptions {
   onAskHuman?: (reason: string, tool: string) => Promise<boolean>
   onTrace?: (line: string) => void
   /**
-   * `write_file` 的内容来源。**不提供时 `write_file` 根本不会进候选**，
-   * 于是判定模型没有机会去选一个 loop 兑现不了的动作。
+   * `write_file` 的**输入来源**（`路径\n内容`）。**不提供时 `write_file`
+   * 根本不会进候选**，于是判定模型没有机会去选一个 loop 兑现不了的动作。
    *
-   * 「写什么内容」是**生成**，按三分法不属于判定模型（docs/CODE-STYLE.md §8.1）——
-   * 判定只负责挑「写哪个文件」。以前这里没有这个钩子，`resolveInput`
-   * 只能返回一句占位符 `（内容由调用方提供）`，而它是**真的会被写到盘上的**：
-   * 实测一次运行把目标文件的全部内容替换成了这句话，然后因为
-   * `write_file` 仍在候选里而连续重写了 5 次，最后 `halt: max_steps`。
+   * 路径和内容都是**生成**，按三分法不属于判定模型（`docs/CODE-STYLE.md`
+   * §8.1）。以前这里只提供「内容」，路径由 `pickInput` 从**已存在的文件**
+   * 里挑 —— 于是「写进一个**新建的** SUMMARY.md」这种任务没有任何地方能
+   * 产生那个名字（见 `write-content.ts` 的文件头）。
    *
    * 返回 `undefined` 表示这次写不了 → loop 停机，而不是写个占位符交差。
+   * （以前没有这个钩子时，`resolveInput` 返回的是占位符
+   * `（内容由调用方提供）`，而它**真的会被写到盘上**：实测一次运行把目标
+   * 文件的全部内容替换成了那句话，还连写了 5 次，最后 `halt: max_steps`。）
    *
    * ⚠️ **不传 = 用生成器现造**（缺省，见下面那段）。**传 `null` = 明确不要
    *   写入能力** —— 那道门会关上，`write_file` 不进候选。这两种情况的区别
    *   是有意的：不传是「我没想过这件事」，`null` 是「我知道，我不要」。
    */
-  provideWriteContent?: null | ((file: string, ctx: AgentCtx) => string | undefined | Promise<string | undefined>)
+  provideWriteInput?: null | ((ctx: AgentCtx) => string | undefined | Promise<string | undefined>)
   /**
    * 之前的轮次。**多轮会话的入口** —— 没有它，每一句都是孤立的任务，
    * 「再读一遍那个文件」里的"那个"无处可指。
@@ -224,12 +226,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const genDigest = folded.digest.length > 0 ? folded.digest : undefined
 
   /*
-    ★ **内容来源有缺省值：用生成器现造。**
+    ★ **输入来源有缺省值：用生成器现造。**
 
-    在这之前 `provideWriteContent` 是**可选的**，而 `src/server.ts`、
-    `src/cli.ts`、`examples/` **一个都没传** —— 于是 `write_file` 在每一次
-    网页 / CLI 运行里都不进候选（见 `frame.ts` 那道门），**通过这个服务
-    永远写不出文件**，而唯一的信号是一个看起来像「判定不确定」的停机。
+    在这之前它是**可选的**，而 `src/server.ts`、`src/cli.ts`、`examples/`
+    **一个都没传** —— 于是 `write_file` 在每一次网页 / CLI 运行里都不进候选
+    （见 `frame.ts` 那道门），**通过这个服务永远写不出文件**，而唯一的信号
+    是一个看起来像「判定不确定」的停机。
 
     实测（2026-09-21）：任务「把两个文件里的函数写进新建的 SUMMARY.md」，
     21 次判定、读完两个源文件之后，第 18 步 `pickTool` 的候选里**只有**
@@ -238,14 +240,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
     所以缺省值补在这里，而不是让每个调用方各接一次：这个钩子对「能用的
     agent」不是可选项，把它当可选就是那个窟窿的成因（N 个调用方、0 个接）。
-    `opts.provideWriteContent` 仍然可以覆盖 —— 想用别的内容来源（模板、
-    固定文件、从别处取）的调用方照样能换。
+    `opts.provideWriteInput` 仍然可以覆盖 —— 想用别的来源（模板、固定
+    文件、从别处取）的调用方照样能换。
   */
   // ⚠️ **不能用 `??`** —— `null ?? x` 会走缺省，于是「明确不要写入」
   //    就没有任何表达方式了。`undefined`（没传）= 用缺省；`null` = 关掉。
-  const writeContent =
-    opts.provideWriteContent === undefined
-      ? writeContentVia(opts.generator, GENERATOR_INSTRUCTION, (g) => {
+  const writeInput =
+    opts.provideWriteInput === undefined
+      ? writeInputVia(opts.generator, GENERATOR_INSTRUCTION, (g) => {
           // 和主回答那两处同一个形状（`kind` 里写明是哪一种生成），
           // 所以界面、账本、计数都不用为它加特例
           emit({
@@ -258,7 +260,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
             estimatedInputTokens: g.estimatedInputTokens,
           })
         })
-      : opts.provideWriteContent
+      : opts.provideWriteInput
 
   const earlier = folded.recent.slice().reverse().map((t) => t.task).join(' / ')
   const ctx: AgentCtx = {
@@ -268,7 +270,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     files: [],
     history: [],
     // `null` = 调用方明确不要写入 → 门关上，`write_file` 不进候选（见 `frame.ts`）
-    canWrite: typeof writeContent === 'function',
+    canWrite: typeof writeInput === 'function',
   }
   let step = 0
   let halt = 'max_steps'
@@ -364,7 +366,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ctx.lastTool = tool
 
     // 工具参数是一次**判定**，不是写死的代码（审计 N3）
-    const input = await resolveInput(tool, ctx, ask, writeContent)
+    const input = await resolveInput(tool, ctx, ask, writeInput)
     if (input === undefined) {
       halt = 'input_unclear'
       trace(`  could not choose an input for ${tool} → stopping`)
@@ -719,20 +721,30 @@ function noteForConversation(r: ConversationReport): string {
  * 只能触发一次、且只能读第一个文件 —— 「读取全部 TypeScript 文件」
  * 这类任务不可能完成。
  *
- * 按三分法，「读哪个文件」是**挑选**，交给判定；「写什么内容」是**生成**，
- * 仍由调用方提供。`list_dir` 没有有意义的输入选择，不占用一次判定。
+ * ── 读和写在这里**分了家**，因为它们的输入来源不一样 ──────────────
+ *
+ * **`read_file`：「读哪个文件」是挑选。** 候选是一个真的闭集 ——
+ * 「还没读过的那些」，由 `fileOptions` 每步重建。交给判定（`pickInput`）。
+ *
+ * **`write_file`：写哪个文件是生成。** 最常见的情形是**建一个新文件**，
+ * 而那个名字不在任何候选里、也不可能在：它还不存在。实测（2026-09-21）
+ * 用「已存在的文件」当候选时，判定模型只能从不相关的三个文件里挑一个，
+ * 然后内容生成正确地说「证据里没有它」→ 停机。所以路径和内容一起生成，
+ * 见 `write-content.ts` 的文件头。
+ *
+ * `list_dir` 没有有意义的输入选择，不占用一次判定。
  *
  * @param tool 已经过 `isToolName` 校验的工具名
  * @param ctx 当前上下文，`pickInput` 的候选从这里构造
  * @param ask 问一次判定的唯一入口（见 `Ask`）—— 它负责播报 phase 和记 decision
- * @param writeContent `write_file` 的内容来源，见 `AgentOptions.provideWriteContent`
+ * @param writeInput `write_file` 的输入来源，见 `AgentOptions.provideWriteInput`
  * @returns 工具的输入字符串；无法确定时返回 `undefined`（调用方应停机，不要猜）
  */
 async function resolveInput(
   tool: ToolName,
   ctx: AgentCtx,
   ask: Ask,
-  writeContent?: AgentOptions['provideWriteContent'],
+  writeInput?: AgentOptions['provideWriteInput'],
 ): Promise<string | undefined> {
   switch (tool) {
     case 'list_dir':
@@ -740,24 +752,17 @@ async function resolveInput(
       return '.'
     case 'done':
       return ''
-    case 'read_file':
-    case 'write_file': {
+    case 'read_file': {
       // 没有候选就**不要问** —— criteria 为空的 choice 是无效问题
       if (!hasFileOptions(ctx)) return undefined
       const d = await ask(pickInput, ctx)
       if (d.escalate || d.action !== 'use') return undefined
-      const file = d.answers.file.choice
-      if (tool === 'read_file') return file
-
-      // ★ 内容必须由调用方提供。拿不到就**停机**，绝不退化成占位符：
-      //   这里以前返回的是 `${file}\n（内容由调用方提供）`，而 `write_file`
-      //   会把第二行起的内容原样写进目标文件 —— 一次调用就把文件替换成了
-      //   那句说明，且循环会继续选中 `write_file` 反复重写（实测 5 次）。
-      //   「写不了」是一个诚实的结果；写一句假内容不是。
-      const content = await writeContent?.(file, ctx)
-      if (content === undefined) return undefined
-      return `${file}\n${content}`
+      return d.answers.file.choice
     }
+    case 'write_file':
+      // 路径和内容一起生成。拿不到就**停机**，绝不退化成占位符 ——
+      // 那个占位符会被真的写到盘上（见 `AgentOptions.provideWriteInput`）
+      return writeInput?.(ctx)
     default:
       return assertNever(tool)
   }

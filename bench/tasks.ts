@@ -70,10 +70,10 @@ export interface BenchTask {
    * 这条任务需要 `write_file` 时，写进去的内容。
    *
    * 不给就说明这条任务不该写文件 —— 而 `runAgent` 在没有内容来源时
-   * **根本不会把 `write_file` 放进候选**（见 `AgentOptions.provideWriteContent`），
+   * **根本不会把 `write_file` 放进候选**（见 `AgentOptions.provideWriteInput`），
    * 于是判定模型没有机会去选一个 loop 兑现不了的动作。
    */
-  writeContent?: string
+  writeInput?: string
 }
 
 // ── 夹具：两个 TypeScript 文件 + 一个诱饵 markdown ─────────────
@@ -188,8 +188,9 @@ export const TASKS: BenchTask[] = [
       { tool: 'read_file', input: 'alpha.ts' },
       { tool: 'write_file', input: 'summary.ts' },
     ],
-    // 内容由台子提供（「写什么」是生成，不属于判定 —— 三分法）
-    writeContent: 'export function totalOf(orders: { total: number }[]): number {\n  return orders.reduce((n, o) => n + o.total, 0)\n}\n',
+    // 路径和内容都由台子给（两者都是生成，不属于判定 —— 三分法）。
+    // ★ 格式就是 `write_file` 的输入：第一行路径，其余内容
+    writeInput: 'summary.ts\nexport function totalOf(orders: { total: number }[]): number {\n  return orders.reduce((n, o) => n + o.total, 0)\n}\n',
     answerMust: [/summary\.ts/],
     // ★ 光看回答不够 —— 写没写出来要看盘上有没有那个文件
     artifacts: [{ path: 'summary.ts', must: /totalOf/ }],

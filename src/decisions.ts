@@ -257,7 +257,22 @@ export const needsTool = defineDecision({
     //   §8.2：帧里没有的，模型判不出来 —— 不是判错，是压根看不见。
     //   有界（200 字符）是因为帧本身有预算，而它是**背景**不是主体。
     earlier: clip(ctx.earlier ?? '', EARLIER_MAX_CHARS),
-    steps_done: (ctx.history ?? []).length,
+    /*
+      ★ **「已经做过什么」是一个清单，不是一个数。**
+
+      这里原本是 `steps_done: history.length` —— 只有条数。实测代价
+      （2026-09-21）：任务「把 alpha.ts 里的 totalOf 抄到一个新文件
+      summary.ts 里」，读完 alpha.ts 之后这个节点判了「不需要工具」，
+      于是 loop 直接去生成回答，**文件从没被写出来**。
+
+      它当时看得到的是：任务、`steps_done: 2`、以及最后那个工具的输出。
+      而「读过」和「写过」在那三个字段里**长得一样** —— 没有任何东西告诉它
+      **写还没发生**（§8.2：帧里没有的，它判不出来）。
+
+      `pickTool` 一直用的是 `describeDone(ctx)`（一行清单），这里少的就是它。
+      同一个事实两处写法不同，两边就会给出不一致的判断。
+    */
+    already_done: describeDone(ctx),
     last: clip(ctx.lastResult ?? '（还没有做过任何动作）', 300),
   }),
 

@@ -34,6 +34,22 @@ export type AgentEvent =
       provider: string
       degraded: boolean
       escalate: boolean
+      /**
+       * 后端自己报的问题 —— 缺了哪几个答案、丢了哪几个、它那边的警告。
+       *
+       * ★ **`degraded: true` 必须能查到为什么。**
+       *
+       *   这个字段本来不存在，于是实测（2026-09-21）撞上：某个会话的
+       *   **每一次**判定都是 `degraded: true`，而轨迹里、服务端日志里、
+       *   事件里**都没有任何地方说缺了什么** —— 排查只能靠手工再发一次请求。
+       *
+       *   provider 那边一直算着这份清单（`provider-http.ts` 的 `notes`），
+       *   `FallbackProvider` 也往里写「主 Provider 失败，降级到 X」。它们
+       *   在 `DecideResponse` 上，只是**没有一个消费者**。
+       *
+       * §8.10：被丢掉的东西要报出来，否则读起来就像「本来就这些」。
+       */
+      warnings?: string[]
     }
   /**
    * 一步操作**开始了**。
@@ -253,6 +269,9 @@ export function decisionEvent(d: DecisionResult<unknown>): AgentEvent {
     provider: d.provider,
     degraded: d.degraded,
     escalate: d.escalate,
+    // `degraded` 和它的理由必须**一起**到 —— 分开送的话，读的人拿到一个
+    // true 而没有任何下文（这正是它此前缺失的原因）
+    ...(d.warnings ? { warnings: d.warnings } : {}),
   }
 }
 

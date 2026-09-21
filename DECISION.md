@@ -17,14 +17,28 @@
 kind: noul
 when: 每个 step 的开头。判否就直接跳到生成，整个工具循环省掉
 
-ask: The agent still needs to call a tool before it can answer the task; no tool call now would mean answering with information it does not have yet
+ask: The agent still has work to do before it can answer the task — an action the task requires that has not been taken yet
 
-- true — the task requires reading, listing, writing or running something first
-- false — there is already enough information to answer directly
+- true — the task still requires an action that has not happened: reading something, listing something, writing something, running something
+- false — every action the task asks for has already been taken, and there is enough information to answer
 
 policy:
   - prob:needs_tool >= 0.5 → use_tool
   - else → answer
+
+★ **判据是「任务还有没有没做的动作」，不是「还有没有没拿到的信息」。**
+这两个在只读任务上恰好一致，而在**写任务**上分道扬镳 —— 实测
+（2026-09-21）：任务「把 alpha.ts 里的 totalOf 抄到一个新文件 summary.ts
+里」，读完 alpha.ts 之后这个节点判了 `answer`（0.36），于是 loop 直接去
+生成回答，**文件从没被写出来**。
+
+它当时看到的是：任务、`already_done: "list_dir, read_file"`、以及 alpha.ts
+的完整内容。**信息确实齐了** —— 按旧措辞「no tool call now would mean
+answering with information it does not have yet」，答案就是「不需要工具」，
+它判得没错。**是措辞把「写」这件事排除在问题之外了。**
+
+配套：帧里必须有 `already_done`（一份**清单**，不是一个计数）——
+`steps_done: 2` 那种写法分不出「读过了」和「写过了」（§8.2）。
 
 常规 agent 也「判断」这件事，但方式是让大模型输出一段话来表达它 ——
 于是这个只需一次前向的是非题，付了生成的价格。

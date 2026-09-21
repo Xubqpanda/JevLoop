@@ -127,6 +127,15 @@ export interface DecisionResult<A = AnswerSet> {
   provider: string
   model?: string
   degraded: boolean
+  /**
+   * 后端自己报的问题：缺了哪几个答案、丢了哪几个、它那边的警告。
+   *
+   * ★ **`degraded: true` 必须能查到为什么。** 这份清单本来被算了、也被
+   *   收进了一个局部变量，然后**没有任何消费者** —— 实测某个会话的每一次
+   *   判定都是 `degraded: true`，而轨迹、日志、事件里都没说缺了什么，
+   *   排查只能靠手工再发一次请求（§8.10）。
+   */
+  warnings?: string[]
   /** true = 无人接住，该走兜底路径了 */
   escalate: boolean
 }

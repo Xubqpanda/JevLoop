@@ -167,9 +167,9 @@ async function runTask(task: BenchTask): Promise<TaskRun> {
       // 台子上授权一律放行：这里量的是**判定的分级对不对**，
       // 不是「有没有人来点确认」。`gradeRisk` 该问而没问照样判错。
       onAskHuman: async () => true,
-      // 「写什么内容」是生成，不属于判定 —— 由台子给（三分法）
-      ...(task.writeContent !== undefined
-        ? { provideWriteContent: () => task.writeContent }
+      // 写哪个文件、写什么内容，两者都是生成，不属于判定 —— 由台子给（三分法）
+      ...(task.writeInput !== undefined
+        ? { provideWriteInput: () => task.writeInput }
         : {}),
         onEvent: (e: AgentEvent) => {
           const j = oracle.feed(e)

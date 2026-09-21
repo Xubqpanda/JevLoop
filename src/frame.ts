@@ -141,17 +141,26 @@ export const MAX_FILE_OPTIONS = 20
 /**
  * 给 `pickInput` 构造候选。**每步重建** —— 读过的文件不再出现。
  *
- * criteria 写成条件句而不是名词标签：`read_file` 的每个候选都要说清
- * 「为什么还需要读它」。这是 Jev Engineering 规则 2 的落地
- * （问题 ID 不会到达模型，判据必须写进指令和选项里）。
+ * criteria 写成条件句而不是名词标签：每个候选都要说清「为什么还需要读
+ * 它」。这是 Jev Engineering 规则 2 的落地（问题 ID 不会到达模型，判据
+ * 必须写进指令和选项里）。
+ *
+ * ── 为什么只服务 `read_file` ────────────────────────────────────
+ *
+ * 这里曾经还有一个 `write_file` 分支：候选是**已经存在的文件**，criteria
+ * 是 `The task requires creating or changing ${f}.`。两个毛病：
+ *
+ *   · **它说不出一个新文件的名字。** 建新文件时那个名字不在候选里、也不
+ *     可能在 —— 它还不存在。实测判定模型只能从三个不相关的已有文件里
+ *     挑一个（见 `write-content.ts` 的文件头）。
+ *   · **那些 criteria 是肯定句，不是判据。** 每个选项都声称「任务要求改
+ *     它」，于是没有区分度 —— 实测模型给选中项 1.00 的把握，而它选错了。
+ *
+ * 现在 `write_file` 的路径和内容一起**生成**（`write-content.ts`），
+ * 所以这里只剩 `read_file` —— 它挑的是真的闭集（「还没读过的那些」）。
  */
 export function fileOptions(ctx: AgentCtx): Record<string, string> {
   const out: Record<string, string> = {}
-  if (ctx.lastTool === 'write_file') {
-    for (const f of (ctx.files ?? []).slice(0, MAX_FILE_OPTIONS))
-      out[f] = `The task requires creating or changing ${f}.`
-    return out
-  }
   for (const f of unreadFiles(ctx).slice(0, MAX_FILE_OPTIONS)) {
     out[f] = `The task still needs the contents of ${f}, and it has not been read yet.`
   }

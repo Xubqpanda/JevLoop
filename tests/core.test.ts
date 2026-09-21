@@ -505,13 +505,13 @@ test('R1: 没有内容来源时，目标文件的内容一个字节都不变', a
       onAskHuman: async () => true,
       // ★ **`null` = 明确不要写入能力**，不是「不传」。
       //
-      //   不传的话 `runAgent` 会用生成器现造一个内容来源（那是缺省，理由见
+      //   不传的话 `runAgent` 会用生成器现造一个输入来源（那是缺省，理由见
       //   `agent.ts` 里那段）—— 于是 `write_file` 进候选，而这个测试里那个
       //   「只要它在候选里就一定选它」的判定器会真的把 note.md 改掉。
       //
       //   实测：改缺省那次这条测试当场红了，而它红得对 —— 门确实被绕过了。
       //   `null` 和 `undefined` 的区别就是为这件事留的。
-      provideWriteContent: null,
+      provideWriteInput: null,
     })
 
     // 修之前：这里会变成「（内容由调用方提供）」—— 一句占位符把真实内容整个替换掉，
@@ -522,18 +522,16 @@ test('R1: 没有内容来源时，目标文件的内容一个字节都不变', a
   }
 })
 
-test('★ 不传内容来源时，缺省会用生成器现造 —— 而且**真的写到盘上**', async () => {
+test('★ 缺省会用生成器现造输入 —— 而且能建一个**还不存在**的文件', async () => {
   const { Decider } = await import('../src/decide.ts')
   const { runAgent } = await import('../src/agent.ts')
-  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
 
   const cwd = await mkdtemp(join(tmpdir(), 'JevLoop-w2-'))
   try {
-    const wpath = join(cwd, 'note.md')
-    const original = '# 原内容\n'
-    await writeFile(wpath, original, 'utf8')
+    await writeFile(join(cwd, 'alpha.ts'), 'export const a = 1\n', 'utf8')
 
     // 只要 write_file 在候选里就选它 —— 和 R1 同一个最坏调用方
     const insistWrite = {
@@ -556,26 +554,28 @@ test('★ 不传内容来源时，缺省会用生成器现造 —— 而且**真
       },
     }
 
-    // ★ 这是一次**真跑**：素材来自 list_dir 的真实输出，内容是生成器产出的
+    // ★ **目标文件还不存在** —— 这正是这次改动要覆盖的情形。
+    //   在这之前 `pickInput` 的候选只能来自已经存在的文件，所以
+    //   「新建一个 SUMMARY.md」这种任务没有任何地方能产生那个名字。
+    const target = join(cwd, 'SUMMARY.md')
     let sawEvidence = ''
     await runAgent({
-      task: '把工作目录里有什么写进 note.md',
+      task: '把 alpha.ts 导出了什么写进一个新建的 SUMMARY.md',
       cwd,
       decider: new Decider({ provider: insistWrite as never, meter: new Meter() }),
       generator: {
         name: 'capture',
         generate: async (req: { evidence: string }) => {
           sawEvidence = req.evidence
-          return { text: '```\n# 生成的内容\n```', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
+          // 第一行路径、其余内容 —— 这就是 `write_file` 的输入格式
+          return { text: '```\nSUMMARY.md\n# 导出的东西\n\n- `a`\n```', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'capture' }
         },
       },
       maxSteps: 8,
       onAskHuman: async () => true,
     })
 
-    const after = await readFile(wpath, 'utf8')
-    assert.notEqual(after, original, '★ 这一次**应该**被写 —— 有内容来源')
-    assert.equal(after, '# 生成的内容\n', '围栏被剥掉了，写进去的是内容本身')
+    assert.equal(await readFile(target, 'utf8'), '# 导出的东西\n\n- `a`\n', '★ 新文件被建出来了，围栏也剥掉了')
     assert.match(sawEvidence, /list_dir/, '生成时拿到的素材里有前面工具的输出')
   } finally {
     await rm(cwd, { recursive: true, force: true })
@@ -608,9 +608,10 @@ test('A1: 空目录不能变成一个叫「(目录为空)」的文件', async ()
     const ctx = { task: 't', cwd, files } as never
     assert.equal(hasFileOptions(ctx), false, '空目录里没有可挑的输入')
     assert.deepEqual(unreadFiles(ctx), [])
-    // 写路径最严重：候选里出现幻影文件名时，write_file 会真的把它建出来
-    const writeTargets = Object.keys(fileOptions({ ...(ctx as object), lastTool: 'write_file' } as never))
-    assert.deepEqual(writeTargets, [], '写操作的候选里不能有幻影文件')
+    // 写路径最严重：候选里出现幻影文件名时，write_file 会真的把它建出来。
+    // ★ 现在 `fileOptions` **只服务 read_file**（写路径的名字是生成的，
+    //   见 `write-content.ts`），所以这里验的是「它不会凭空造出候选」
+    assert.deepEqual(Object.keys(fileOptions(ctx)), [], '不能有幻影文件')
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
