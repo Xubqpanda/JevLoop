@@ -100,12 +100,15 @@ const MAX_SESSIONS = 64
  * 生成器**现在能不能看到上文**，如实报给界面。
  *
  * 这是这个服务端唯一一处「说了还没做」的地方，所以它必须是数据而不是
- * 注释 —— 界面拿它决定要不要提示读者「它不记得上一句」。等内核接上
- * `AgentOptions.history`，把这里改成 `true` 就够了，提示自动消失。
+ * 注释 —— 界面拿它决定要不要提示读者「它不记得上一句」。
  *
- * 一个会撒谎的界面比一个缺功能的界面糟得多。
+ * **现在是 `true`**：`AgentOptions.history` 已落地（`de6889a`），
+ * 判定帧也带上了有界的 `earlier`。界面那句提示会自动消失。
+ *
+ * 一个会撒谎的界面比一个缺功能的界面糟得多 —— 所以这个值是**跟着
+ * 内核的实际能力走**的，不是跟着愿望走。内核要是哪天不收了，这里得翻回去。
  */
-const MEMORY_WIRED = false
+const MEMORY_WIRED = true
 
 const SESSIONS = new Map<string, Turn[]>()
 
@@ -286,11 +289,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
     const provider = resolveProvider()
     const generator = resolveGenerator()
 
-    // 注意这里**没有** history —— 内核还不收这个字段（见上面「会话」一节）。
-    // 会话已经记下来了，等 `AgentOptions.history` 落地，这里加一行即可。
+    // 会话就是上文。**在 runAgent 之前读** —— 这一轮自己的问答
+    // 要等跑完才记进去（见 `run:end` 那里），不该混进它自己的上文。
+    const history = sessionOf(session)
     await runAgent({
       task,
       cwd,
+      history,
       decider: new Decider({
         provider,
         meter,
