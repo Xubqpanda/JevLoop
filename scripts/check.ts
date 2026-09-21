@@ -1,7 +1,7 @@
 /**
  * 代码规范的机械检查。
  *
- * JevLoop/AGENTS.md §1/§3 写了一套格式规则，但在写这个脚本之前**没有任何东西执行它** ——
+ * `docs/CODE-STYLE.md` §1/§3 写了一套格式规则，但在写这个脚本之前**没有任何东西执行它** ——
  * 规范是在代码写完之后补的，于是每轮审计都要手工重查一遍，而新代码可以继续偏离。
  *
  * 为什么不是 oxlint / eslint：这个仓库的对外承诺是零运行时依赖（见 README）。
@@ -138,7 +138,7 @@ function checkFile(file: string): Violation[] {
   // ★ 只在**文件头部那个文档块**里找，不是全文件子串匹配。
   //
   //   以前是 `raw.includes(...)`：实测把标签从头部文档块挪到文件末尾一条普通
-  //   `//` 注释里，检查照样全绿 —— 而这条规则的文档（本文件头部、AGENTS.md §3）
+  //   `//` 注释里，检查照样全绿 —— 而这条规则的文档（本文件头部、CODE-STYLE.md §3）
   //   写的是「**模块头部**有 `@module …`」。§7 不允许检查比规范松：
   //   一个比自己的文档弱的检查会让人以为规范已经被守住了。
   //   `#!` 那一行要放行：可执行脚本的 shebang 必须是文件第一行，
@@ -248,7 +248,7 @@ const LAYER: Record<string, number> = {
   // `context-prune` 放 L0 而不是和 `context` 同层：它**零 import**、纯函数，
   // 只收一个字符串出一个字符串，对上下文一无所知。L1 的机制之间不许互相
   // 依赖（§11），而它的依赖面比 L1 任何一件都小 —— 放在最底下，
-  // 谁都能依赖它，它不依赖谁。拆分理由见 AGENTS.md §12。
+  // 谁都能依赖它，它不依赖谁。拆分理由见 docs/CODE-STYLE.md §12。
   'context-prune': 0,
   // `estimate` 同 `context-prune`：零依赖纯函数，谁都能用，放最底下
   estimate: 0,
@@ -691,7 +691,7 @@ function cssScopeViolations(): Violation[] {
 // ═══════════════════════════════════════════════════════════
 // 文件体量：超线就必须**把判断写下来**
 //
-// `AGENTS.md §12` 的判据是「这个文件能不能用一句话说完它负责什么」——
+// `docs/CODE-STYLE.md §12` 的判据是「这个文件能不能用一句话说完它负责什么」——
 // 而它自己写着「检查只覆盖了模块之间的方向，文件内部的体量没有检查」。
 // 于是这条规矩一直**靠人记得**，执行得不均匀。
 //
@@ -745,7 +745,7 @@ function fileFocusViolations(): Violation[] {
       file: f,
       line: 0,
       rule: 'file-focus',
-      detail: `${n} 行超过 ${FILE_FOCUS_LIMIT}，而模块 JSDoc 没写明「为什么不能再拆」或「待拆」（AGENTS.md §12）`,
+      detail: `${n} 行超过 ${FILE_FOCUS_LIMIT}，而模块 JSDoc 没写明「为什么不能再拆」或「待拆」（docs/CODE-STYLE.md §12）`,
     })
   }
   return out
@@ -779,5 +779,5 @@ for (const [rule, list] of [...byRule.entries()].sort()) {
   console.error(`\n✖ ${rule} —— ${list.length} 处`)
   for (const v of list) console.error(`    ${v.file}${v.line ? `:${v.line}` : ''}  ${v.detail}`)
 }
-console.error(`\n共 ${violations.length} 处违规。规则见 AGENTS.md §1/§3。`)
+console.error(`\n共 ${violations.length} 处违规。规则见 docs/CODE-STYLE.md §1/§3。`)
 process.exit(1)

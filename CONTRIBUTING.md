@@ -2,7 +2,7 @@
 
 JevLoop is one idea with a small surface: route every judgement in an agent loop to a decision model, and keep the LLM for the one thing it can do — writing. The loop itself fits in a few files and you can read it in an afternoon. That is deliberate, and it is also why outside help matters: the interesting work is in the parts we have not written yet.
 
-**[`AGENTS.md`](AGENTS.md) is the code rules** — layering, file focus, comment style, the CSS scoping rule — and `npm run check` enforces most of them mechanically. Read it before your first commit; it will save you a review round.
+**[`docs/CODE-STYLE.md`](docs/CODE-STYLE.md) is the code rules** — layering, file focus, comment style, the CSS scoping rule — and `npm run check` enforces most of them mechanically. Each rule carries the failure that produced it. Read it before your first commit; it will save you a review round.
 
 This file is the other half: what we want, what we close, and where the work actually is.
 
@@ -61,8 +61,8 @@ The repo keeps its own list of open work. These are the real ones — each alrea
 
 | Work | Where it is described | Rough size |
 |---|---|---|
-| **Split the `Tool` seam.** `tools.ts` is the only capability seam in the repo with all three corners in one file, and it is the one that produces real side effects — the hardest to replace and the easiest to get wrong. The intended shape (`act.ts` for the interface, `act-local.ts` for the local-filesystem implementation) is sketched in `AGENTS.md` §10. | `AGENTS.md` §10 | medium |
-| **The five files in the 待拆 queue** — `src/agent.ts`, `src/context.ts`, `src/decisiondoc.ts`, `web/app.js`, `web/app.css`. Each has a named seam; split along it, not along a line count. | `AGENTS.md` §12 | medium |
+| **Split the `Tool` seam.** `tools.ts` is the only capability seam in the repo with all three corners in one file, and it is the one that produces real side effects — the hardest to replace and the easiest to get wrong. The intended shape (`act.ts` for the interface, `act-local.ts` for the local-filesystem implementation) is sketched in `docs/CODE-STYLE.md` §10. | `CODE-STYLE.md` §10 | medium |
+| **The five files in the 待拆 queue** — `src/agent.ts`, `src/context.ts`, `src/decisiondoc.ts`, `web/app.js`, `web/app.css`. Each has a named seam; split along it, not along a line count. | `CODE-STYLE.md` §12 | medium |
 | **Anything in the issue tracker** labelled `good first issue` | GitHub issues | small |
 | **Your own itch.** Something the loop does badly on your workload is more interesting to us than anything on this list. | — | — |
 
