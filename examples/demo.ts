@@ -48,7 +48,7 @@ await writeFile(
   paid: boolean
 }
 
-/** 计算未付款总额 */
+/** Total amount still unpaid */
 export function outstanding(invoices: Invoice[]): number {
   return invoices
     .filter((i) => !i.paid)
@@ -57,7 +57,7 @@ export function outstanding(invoices: Invoice[]): number {
 `,
   'utf8',
 )
-await writeFile(join(cwd, 'notes.md'), '# 说明\n\n这是一个演示目录。\n', 'utf8')
+await writeFile(join(cwd, 'notes.md'), '# Notes\n\nA demo directory.\n', 'utf8')
 
 // ── 组装 ─────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ let warned = false
 const notice = (err: unknown, from: string, to: string) => {
   if (warned) return
   warned = true
-  console.error(`  ▲ ${from} 不可用（${(err as Error).message.slice(0, 60)}），改用 ${to}`)
+  console.error(`  ▲ ${from} unavailable (${(err as Error).message.slice(0, 60)}), falling back to ${to}`)
 }
 
 // 判定后端：--rule 强制规则表；--jev / --laya 强制指定；否则按可用性自动解析
@@ -93,7 +93,7 @@ const decider = new Decider({
   //   这也是 C1（`headBudget` 死字段）修好之后仍然不生效的原因：只做 C1 不做这条，
   //   `error` 级别也只是一行没人读的字符串。
   onWarn: (id, warnings) => {
-    for (const w of warnings) console.log(C.yellow(`  ⚠ 预算 [${id}] ${w.message}`))
+    for (const w of warnings) console.log(C.yellow(`  ⚠ budget [${id}] ${w.message}`))
     for (const w of warnings) if (w.hint) console.log(C.dim(`      ${w.hint}`))
   },
   // --strict：预算的 error 级别直接抛，在**发请求之前**拦住
@@ -101,18 +101,18 @@ const decider = new Decider({
 })
 const generator = resolveGenerator({ scripted: prefer === 'scripted' })
 
-const TASK = '列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数。'
+const TASK = 'List the files in the working directory, read the TypeScript file, and explain which functions it defines.'
 
 console.log(C.bold('\nJevLoop · demo'))
 console.log(C.dim(`  task      : ${TASK}`))
 console.log(C.dim(`  cwd       : ${cwd}`))
-console.log(C.dim(`  判定后端  : ${provider.name}`))
-console.log(C.dim(`  生成后端  : ${generator.name}${generator.name === 'scripted' ? '（脚本化，设 DEEPSEEK_API_KEY 可换真实 LLM）' : ''}`))
-if (env.loaded.length) console.log(C.dim(`  .env      : 已加载 ${env.loaded.join(', ')}`))
+console.log(C.dim(`  decision  : ${provider.name}`))
+console.log(C.dim(`  generator : ${generator.name}${generator.name === 'scripted' ? ' — set DEEPSEEK_API_KEY for a real LLM' : ''}`))
+if (env.loaded.length) console.log(C.dim(`  .env      : loaded ${env.loaded.join(', ')}`))
 // 认不出来的行进 `skipped`，**必须显示** —— 一行 `.env` 写错就悄悄退回 Mock 的话，
 // 排查方向会被完全带偏（以前 `export KEY=VALUE` 就是这个下场）。
 if (env.skipped.length) {
-  console.log(C.yellow(`  .env      : ⚠ 跳过了 ${env.skipped.length} 行不认识的写法`))
+  console.log(C.yellow(`  .env      : ⚠ skipped ${env.skipped.length} unrecognised line(s)`))
   for (const line of env.skipped) console.log(C.dim(`              ${line}`))
 }
 console.log('')
@@ -130,11 +130,11 @@ const result = await runAgent({
 // ── 输出 ─────────────────────────────────────────────────────
 
 console.log('')
-console.log(C.bold('  ── 逐条明细 ────────────────────────────────────────────'))
+console.log(C.bold('  ── every decision ──────────────────────────────────────'))
 console.log(C.dim(meter.trace()))
 
 console.log('')
-console.log(C.bold('  ── 结果 ────────────────────────────────────────────────'))
+console.log(C.bold('  ── result ──────────────────────────────────────────────'))
 console.log(`  halt      : ${C.cyan(result.halt)}`)
 console.log(`  steps     : ${result.steps}`)
 console.log('')
@@ -142,18 +142,18 @@ console.log(C.dim('  ' + result.answer.split('\n').join('\n  ').slice(0, 600)))
 
 const s = meter.stats
 console.log('')
-console.log(C.bold('  ── 记账 ────────────────────────────────────────────────'))
+console.log(C.bold('  ── accounting ──────────────────────────────────────────'))
 console.log(
-  `  判定  ${C.green(String(s.decisions).padStart(3))} 次   ${C.dim(`${s.decisionMs}ms（均 ${s.avgDecisionMs}ms）`)}`,
+  `  decisions ${C.green(String(s.decisions).padStart(3))}     ${C.dim(`${s.decisionMs}ms (${s.avgDecisionMs}ms each)`)}`,
 )
 console.log(
-  `  模型  ${C.magenta(String(s.modelCalls).padStart(3))} 次   ${C.dim(`${s.modelMs}ms`)}`,
+  `  model     ${C.magenta(String(s.modelCalls).padStart(3))}     ${C.dim(`${s.modelMs}ms`)}`,
 )
 console.log('')
 console.log(
   // 走 meter 的统一出口。以前这里自己拼，0 次模型调用时会报成 `3 : 1`（真相是 3:0）。
-  `  ${C.bold('判定 : 模型 =')} ${C.bold(C.green(formatRatio(s)))}` +
-    C.dim(`   判定耗时只占 ${(s.decisionShare * 100).toFixed(1)}%`),
+  `  ${C.bold('decisions : model =')} ${C.bold(C.green(formatRatio(s)))}` +
+    C.dim(`   decisions are ${(s.decisionShare * 100).toFixed(1)}% of wall clock`),
 )
 console.log('')
 

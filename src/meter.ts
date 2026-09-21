@@ -110,14 +110,14 @@ export class Meter {
       for (const dec of d) {
         const mark = dec.escalate ? '!' : dec.degraded ? '~' : ' '
         lines.push(
-          `   ${mark} 判定  ${dec.id.padEnd(22)} ${dec.action.padEnd(18)} ${dec.latencyMs.toFixed(1)}ms  ${dec.answers}`,
+          `   ${mark} decide  ${dec.id.padEnd(22)} ${dec.action.padEnd(18)} ${dec.latencyMs.toFixed(1)}ms  ${dec.answers}`,
         )
       }
       for (const call of m) {
-        lines.push(`     模型  ${call.kind.padEnd(22)} ${' '.repeat(18)} ${call.latencyMs.toFixed(0)}ms`)
+        lines.push(`     model   ${call.kind.padEnd(22)} ${' '.repeat(18)} ${call.latencyMs.toFixed(0)}ms`)
       }
       for (const a of this.audit.filter((x) => x.step === step)) {
-        lines.push(`     审计  ${a.tool.padEnd(22)} risk=${a.risk ?? '—'}  ${a.target}`)
+        lines.push(`     audit   ${a.tool.padEnd(22)} risk=${a.risk ?? '—'}  ${a.target}`)
       }
     }
     return lines.join('\n')

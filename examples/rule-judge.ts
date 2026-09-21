@@ -62,7 +62,7 @@ export class RuleJudge implements Provider {
     }
 
     return { answers, provider: this.name, model: 'rules', latencyMs: performance.now() - t0, degraded: true,
-      warnings: ['规则判定器（demo 用）：不是真实的判定模型，结论仅供演示 loop'] }
+      warnings: ['rule judge (demo only): not a real decision model — read the numbers as the shape of the loop, not as a benchmark'] }
   }
 
   #answer(id: string, q: any, s: any): Answer {

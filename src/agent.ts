@@ -256,7 +256,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     const need = record(await decider.decide(needsTool, ctx))
     if (need.action === 'answer') {
       halt = 'answered_directly'
-      trace(`  直接回答（不需要工具）`)
+      trace(`  answering directly (no tool needed)`)
       break
     }
 
@@ -264,7 +264,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     const pick = record(await decider.decide(pickTool, ctx))
     if (pick.escalate || pick.action !== 'call') {
       halt = 'tool_unclear'
-      trace(`  工具选择不确定 → 停下（${pick.reason}）`)
+      trace(`  tool choice unclear → stopping (${pick.reason})`)
       break
     }
     const picked = pick.answers.tool.choice
@@ -274,14 +274,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     // 普通工具输出喂给 `stepOk` —— 判定模型分不清「工具跑出来的结果」和「工具不存在」。
     if (!isToolName(picked)) {
       halt = 'unknown_tool'
-      trace(`  模型返回了不存在的工具 '${picked}' → 停下（不当成结果喂给下一步判定）`)
+      trace(`  model returned a tool that does not exist: '${picked}' → stopping (never fed to the next decision as a result)`)
       break
     }
     const tool: ToolName = picked
 
     if (tool === 'done') {
       halt = 'agent_done'
-      trace(`  agent 主动结束工具循环`)
+      trace(`  agent ended the tool loop`)
       break
     }
 
@@ -292,7 +292,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     const input = await resolveInput(tool, ctx, decider, record, opts.provideWriteContent)
     if (input === undefined) {
       halt = 'input_unclear'
-      trace(`  选不出 ${tool} 的输入 → 停下`)
+      trace(`  could not choose an input for ${tool} → stopping`)
       break
     }
 
@@ -304,7 +304,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     if (risk.escalate || risk.action === 'ask_human') {
       const approved = opts.onAskHuman ? await opts.onAskHuman(risk.reason, tool) : false
       emit({ type: 'authorize', step, tool, reason: risk.reason, approved })
-      trace(`  ⚠ 需要授权：${tool}（${risk.reason}）→ ${approved ? '已批准' : '已拒绝'}`)
+      trace(`  ⚠ authorisation required: ${tool} (${risk.reason}) → ${approved ? 'approved' : 'denied'}`)
       if (!approved) {
         halt = 'denied'
         ctx.history = ctx.history.slice(0, -1)
@@ -318,7 +318,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         break
       }
     } else {
-      trace(`  判定放行：${tool}（${risk.action}）`)
+      trace(`  cleared: ${tool} (${risk.action})`)
       // `auto_audit` 承诺了留痕，那留痕就必须真的发生 ——
       // 以前这条分支和 `auto` 完全一样，只多打一行 trace。
       if (risk.action === 'auto_audit') {
@@ -329,7 +329,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
           risk: risk.answers.risk.score,
         })
         emit({ type: 'audit', step, record: meter.audit[meter.audit.length - 1]! })
-        trace(`  审计留痕 #${meter.audit.length}：${tool} risk=${risk.answers.risk.score}`)
+        trace(`  audit trail #${meter.audit.length}: ${tool} risk=${risk.answers.risk.score}`)
       }
     }
 
@@ -354,7 +354,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     const ok = record(await decider.decide(stepOk, ctx))
     if (ok.action !== 'continue') {
       halt = 'step_failed'
-      trace(`  这一步没有成功 → 停下（${ok.reason}）`)
+      trace(`  this step did not succeed → stopping (${ok.reason})`)
       break
     }
 
@@ -484,7 +484,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // 以前它只是被拼进 halt 字符串，草稿原样返回。
   // **上限 1 次**：第二次还不合格就如实返回并说明，不无限重试（那会变成一个收费循环）。
   if (deliver.action === 'revise') {
-    trace(`  交付闸门要求修订（${deliver.reason}）→ 带着反馈重新生成一次`)
+    trace(`  the delivery gate asked for a revision (${deliver.reason}) → regenerating once with that feedback`)
     genStep += 1
     decider.setStep(genStep)
     const retry = await generator.generate({

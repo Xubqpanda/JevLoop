@@ -84,7 +84,7 @@ test('ScriptedGenerator 也提一句上文 —— 离线路径要能看出多轮
     evidence: '',
     history: TURNS,
   })
-  assert.match(out.text, /上文 2 轮/)
+  assert.match(out.text, /earlier turns: 2/)
   assert.match(out.text, /列出目录里的文件/, '要能看出前几轮问过什么')
 })
 

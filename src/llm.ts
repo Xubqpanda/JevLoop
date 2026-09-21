@@ -85,13 +85,13 @@ export class ScriptedGenerator implements Generator {
 
     const prior = req.history ?? []
     const text = [
-      ...(prior.length ? [`（上文 ${prior.length} 轮：${prior.map((t) => t.task).join(' / ')}）`, ``] : []),
+      ...(prior.length ? [`(earlier turns: ${prior.length} — ${prior.map((t) => t.task).join(' / ')})`, ``] : []),
       // 折叠摘要也摆出来 —— 脚本生成器要让「上文被折过」这件事**看得见**，
       // 否则它的输出和一个没折过的会话长得一模一样（§8.10）。
-      ...(req.historyDigest ? [`（更早的上文已折叠：`, req.historyDigest, `）`, ``] : []),
-      `任务：${req.task}`,
+      ...(req.historyDigest ? [`(older history was folded:`, req.historyDigest, `)`, ``] : []),
+      `task: ${req.task}`,
       ``,
-      `已完成：`,
+      `done:`,
       ...req.evidence
         .split('\n')
         .filter(Boolean)
