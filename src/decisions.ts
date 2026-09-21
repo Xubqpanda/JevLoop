@@ -494,7 +494,27 @@ export const isDone = defineDecision({
       任务说的那两个文件读了没有。`already_read` 就是这个事实。
     */
     already_read: (ctx.readFiles ?? []).slice(0, 15),
-    steps: (ctx.history ?? []).slice(-5).map((h) => `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, 80)}`),
+    /*
+      ★ **结果留 200 字符，不是 80。**
+
+      实测（2026-09-21，帧里只有这一处不同）：
+      任务「这两个 TypeScript 文件里各导出了一个函数，分别叫什么名字？」，
+      两个文件都读完了 ——
+
+          结果留 80   done = 0.35  → keep_going ✗   帧 392 字符
+          结果留 200  done = 0.96  → finish     ✓   帧 534 字符
+
+      80 字符在 `alpha.ts` 那条正好断在 `Order` 接口之后，**函数名 `totalOf`
+      在截断点之后**。于是它看得见两个函数名里的一个，判「还没做完」——
+      **在给定帧下它判得没错**，而那个 `…[+108]` 的截断标记还会让它以为
+      「得再读一次」（重读也一样会被截断）。
+
+      试过另一条路：**不放结果、只放「做了什么」**（帧只 199 字符，靠
+      `already_read` 的覆盖去推）。它过线（0.63）但**最低值 0.61，离门限
+      只有 0.01** —— 而把问题也改成覆盖口径之后反而掉到 0.48。所以：
+      **内容看得到时它是直接判断，不是推理**，余量大得多，那条路留着。
+    */
+    steps: (ctx.history ?? []).slice(-5).map((h) => `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, 200)}`),
   }),
 
   // 问题与策略都来自 DECISION.md 的 is_done 块
