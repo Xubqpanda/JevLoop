@@ -3,16 +3,17 @@
  *
  * 两个视图，**同一串事件**：
  *
- *     对话   你说了什么、它答了什么。运行中只有一行状态，不刷屏
+ *     对话   你说了什么、它答了什么。过程默认折成一行
  *     轨迹   每一次判定、每一次工具调用、每一次生成，一张卡一张卡铺开
  *
  * 分开不是为了藏东西，是因为它们回答的问题不同。对话回答「它做成了吗」，
  * 轨迹回答「它凭什么这么判断」。切过去看不需要重新跑 —— 事件全在内存里，
- * 轨迹是**回放**出来的。
+ * 轨迹是**回放**出来的，重跑就是为同一个答案付两次钱。
  *
- * 视觉主张只有一条：**橙色（模型生成）必须稀少且扎眼。**
- * 判定是蓝的、工具是绿的、规则是灰的 —— 它们铺满整页也不心疼，
- * 而橙色出现一次就该让人意识到「这里花钱了」。
+ * 视觉照搬自 DeepSeek Harness（MIT，Copyright © 2026 DeepSeek）：
+ * 只有用户消息有气泡，助手正文落在背景上，过程折叠成一行。
+ *
+ * 主张只有一条：**橙色（模型生成）必须稀少且扎眼。**
  */
 
 // ═══════════════════════════════════════════════════════════
@@ -62,7 +63,7 @@ const state = { decisions: 0, models: 0, tools: 0, rules: 0, running: false }
  * 对话记录。
  *
  * 每一轮 = 用户一句话 + 一次运行。事件留在轮里，所以切到轨迹
- * 可以直接回放，不需要重跑 —— 重跑就是重新花钱。
+ * 可以直接回放，不需要重跑。
  */
 const turns = []
 let current = null
@@ -83,10 +84,6 @@ function updateTally() {
 // ═══════════════════════════════════════════════════════════
 
 const VIEWS = ['chat', 'trace']
-const NOTES = {
-  chat: '',
-  trace: '同一串事件，不折叠',
-}
 
 function selectView(id) {
   for (const v of VIEWS) {
@@ -94,7 +91,6 @@ function selectView(id) {
     $(`tab-${v}`).setAttribute('aria-selected', String(on))
     $(`view-${v}`).hidden = !on
   }
-  $('tab-note').textContent = NOTES[id] ?? ''
   try {
     localStorage.setItem('jl-view', id)
   } catch {
@@ -108,40 +104,50 @@ for (const v of VIEWS) $(`tab-${v}`).addEventListener('click', () => selectView(
 // 渲染：对话
 // ═══════════════════════════════════════════════════════════
 
-function userMessage(text) {
-  chat.append(
-    h(
-      'div',
-      { class: 'msg msg-user' },
-      h('div', { class: 'msg-role' }, '你'),
-      h('div', { class: 'msg-body' }, text),
-    ),
-  )
+function userTurn(text) {
+  chat.append(h('div', { class: 'msg-user' }, h('div', { class: 'bubble' }, text)))
 }
 
-function assistantMessage() {
-  const status = h('div', { class: 'msg-status decide' }, h('span', { class: 'dot' }), '开始判定…')
-  const body = h('div', { class: 'msg-body' }, '')
+/**
+ * 助手这一轮。
+ *
+ * 运行中只有**一行状态**（DSH 的扫光带），过程折进一个 details，
+ * 正文落在背景上 —— 没有气泡。气泡是用户消息的记号，助手不该抢。
+ */
+function assistantTurn() {
+  const status = h('div', { class: 'status' }, '开始判定…')
+  const processBody = h('div', { class: 'process-body' })
+  const process = h(
+    'details',
+    { class: 'process' },
+    h('summary', {}, '过程'),
+    processBody,
+  )
+  process.hidden = true
+  const answer = h('div', { class: 'answer' }, '')
   const foot = h('div', { class: 'msg-foot' })
-  const el = h('div', { class: 'msg msg-assistant' }, h('div', { class: 'msg-role' }, 'JevLoop'), status, body, foot)
+  const el = h('div', { class: 'msg-assistant' }, status, process, answer, foot)
   chat.append(el)
   el.scrollIntoView({ block: 'end', behavior: 'smooth' })
-  return { el, status, body, foot, finished: false }
+  return { el, status, process, processBody, answer, foot, lines: 0, finished: false }
 }
 
-/** 运行中的一行状态。颜色说明**现在在花哪种钱** */
-function setStatus(kind, text) {
+function setStatus(text) {
   if (!current) return
-  current.status.className = `msg-status ${kind}`
-  current.status.replaceChildren(h('span', { class: 'dot' }), text)
+  current.status.textContent = text
 }
 
 function finishAssistant(text, stats, halt) {
   if (!current) return
   current.finished = true
   current.el.removeChild(current.status)
-  current.body.textContent = text || '（没有回答）'
-  if (halt === 'error') current.el.classList.add('error')
+  current.answer.textContent = text || '（没有回答）'
+
+  // 过程那一行只在真的发生过事情时才出现
+  if (current.lines > 0) {
+    current.process.hidden = false
+    current.process.querySelector('summary').textContent = `${current.lines} 步判定`
+  }
 
   const s = stats ?? {}
   const r = s.ratio
@@ -149,6 +155,7 @@ function finishAssistant(text, stats, halt) {
     typeof r !== 'number' ? '?'
     : !Number.isFinite(r) ? `${s.decisions ?? '?'} : 0`
     : `${r.toFixed(1)} : 1`
+  current.foot.className = `msg-foot${halt === 'error' ? ' failed' : ''}`
   current.foot.replaceChildren(
     h('span', {}, `${s.decisions ?? '?'} 判定`),
     h('span', {}, `${s.modelCalls ?? '?'} 模型`),
@@ -158,10 +165,29 @@ function finishAssistant(text, stats, halt) {
   current.el.scrollIntoView({ block: 'end', behavior: 'smooth' })
 }
 
+/** 折进「过程」里的一行 —— 只保留判定的结论，不铺概率 */
+function processLine(e) {
+  const first = Object.entries(e.answers ?? {})[0]
+  let detail = ''
+  if (first) {
+    const [qid, a] = first
+    if (a.type === 'choice') detail = `${qid}=${a.choice} ${pct(a.probabilities?.[a.choice] ?? 0)}`
+    else if (a.type === 'noul') detail = `${qid}=${a.noul >= 0.5 ? '真' : '假'} ${pct(a.noul)}`
+    else if (a.type === 'score') detail = `${qid}=${a.score}`
+  }
+  return h(
+    'div',
+    { class: 'opt' },
+    h('span', { class: 'opt-name' }, e.id),
+    h('span', { class: 'opt-pct' }, e.action),
+    h('span', { class: 'opt-pct' }, detail),
+  )
+}
+
 // ═══════════════════════════════════════════════════════════
 // 渲染：轨迹
 //
-// 这是界面的主体。一张判定卡要回答四个问题：
+// 一张判定卡要回答四个问题：
 //   问了什么 · 有哪些选项 · 各多少概率 · 命中了哪条策略
 // ═══════════════════════════════════════════════════════════
 
@@ -367,9 +393,9 @@ function renderEndStats(e) {
 // ═══════════════════════════════════════════════════════════
 // 事件分发
 //
-// 一个事件做两件事：更新对话那行状态，往轨迹里放一张卡。
-// 两条路互不依赖 —— 只有轨迹在前台时它也照常构建，因为切过去
-// 要能立刻看到全貌，而不是从切换那一刻才开始记。
+// 一个事件做三件事：更新对话那行状态、往折叠的过程里加一行、
+// 往轨迹里放一张卡。三条路互不依赖 —— 只有轨迹在前台时它也照常
+// 构建，因为切过去要能立刻看到全貌，而不是从切换那一刻才开始记。
 // ═══════════════════════════════════════════════════════════
 
 let lastStep = 0
@@ -377,25 +403,29 @@ let lastStep = 0
 function onEvent(e) {
   if (current) current.events.push(e)
 
-  // 对话侧：只留一行状态，不刷屏
+  // 对话侧：一行状态 + 过程里一行
   switch (e.type) {
     case 'decision':
-      setStatus('decide', `判定 ${e.id} → ${e.action}`)
+      setStatus(`判定 ${e.id} → ${e.action}`)
+      if (current) {
+        current.processBody.append(processLine(e))
+        current.lines++
+      }
       break
     case 'tool:call':
-      setStatus('tool', `调用 ${e.tool}`)
+      setStatus(`调用 ${e.tool}`)
       break
     case 'tool:result':
-      setStatus('tool', `${e.tool} 返回 ${String(e.output ?? '').length} 字符`)
+      setStatus(`${e.tool} 返回 ${String(e.output ?? '').length} 字符`)
       break
     case 'authorize':
-      setStatus('decide', e.approved ? `${e.tool} 已授权` : `${e.tool} 被拒绝`)
+      setStatus(e.approved ? `${e.tool} 已授权` : `${e.tool} 被拒绝`)
       break
     case 'audit':
-      setStatus('decide', `${e.record?.tool ?? ''} 记了审计留痕`)
+      setStatus(`${e.record?.tool ?? ''} 记了审计留痕`)
       break
     case 'generate':
-      setStatus('model', `生成中…（${e.kind}）`)
+      setStatus(`生成中…（${e.kind}）`)
       break
     default:
       break
@@ -423,7 +453,6 @@ function onEvent(e) {
     finishAssistant(e.answer, e.stats, e.halt)
     state.running = false
     $('run').disabled = false
-    $('run').textContent = '发送'
   }
 }
 
@@ -439,13 +468,13 @@ function run(task) {
   updateTally()
 
   if (turns.length === 0) chat.replaceChildren()
-  userMessage(task)
-  current = { task, events: [], ...assistantMessage() }
+  userTurn(task)
+  current = { task, events: [], ...assistantTurn() }
   turns.push(current)
 
   $('run').disabled = true
-  $('run').textContent = '运行中…'
   $('task').value = ''
+  $('task').style.height = 'auto'
 
   const es = new EventSource(`/api/run?task=${encodeURIComponent(task)}`)
 
@@ -471,10 +500,7 @@ function run(task) {
     es.close()
     state.running = false
     $('run').disabled = false
-    $('run').textContent = '发送'
-    if (current && !current.finished) {
-      setStatus('error', '连接断开；服务端那一次运行可能仍在继续（本版本没有取消机制）')
-    }
+    if (current && !current.finished) setStatus('连接断开；服务端那一次运行可能仍在继续')
   }
 }
 
@@ -483,7 +509,7 @@ $('composer').addEventListener('submit', (ev) => {
   run($('task').value.trim())
 })
 
-// Enter 发送，Shift+Enter 换行；输入框随内容长高
+// Enter 发送，Shift+Enter 换行；输入框随内容长高（上限在 CSS 里）
 $('task').addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && !ev.shiftKey) {
     ev.preventDefault()
@@ -492,7 +518,7 @@ $('task').addEventListener('keydown', (ev) => {
 })
 $('task').addEventListener('input', (ev) => {
   ev.target.style.height = 'auto'
-  ev.target.style.height = `${Math.min(ev.target.scrollHeight, 180)}px`
+  ev.target.style.height = `${ev.target.scrollHeight}px`
 })
 
 // ═══════════════════════════════════════════════════════════
@@ -565,5 +591,6 @@ function restore(key) {
 // 跟随系统，除非用户手动选过
 const saved = restore('jl-theme')
 applyTheme(saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches)
-selectView(VIEWS.includes(restore('jl-view')) ? restore('jl-view') : 'chat')
+const savedView = restore('jl-view')
+selectView(VIEWS.includes(savedView) ? savedView : 'chat')
 loadSpec()

@@ -11,79 +11,85 @@
   </head>
   <body>
     <div class="frame">
-      <header class="topbar">
-        <div class="brand">
-          JevLoop
-          <small>判定不花钱的 agent</small>
+      <!-- ── 左：这份 agent 的判定规格 ────────────────────── -->
+      <aside class="pane side">
+        <h2 class="section-title">DECISION.md</h2>
+        <div id="spec"><div class="empty">读取中…</div></div>
+
+        <div class="legend">
+          <h2 class="section-title">图例</h2>
+          <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向，几十毫秒</div>
+          <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定，不过模型</div>
+          <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
+          <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步</b></div>
+          <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
         </div>
+      </aside>
 
-        <!-- 四个计数就是全部主张：判定很多次，模型很少次 -->
-        <div class="tally">
-          <span class="tally-item decide">判定 <b id="t-decide">0</b></span>
-          <span class="tally-item rule">规则 <b id="t-rules">0</b></span>
-          <span class="tally-item tool">工具 <b id="t-tool">0</b></span>
-          <span class="tally-item model">模型 <b id="t-model">0</b></span>
-          <button class="badge action" id="theme" style="cursor:pointer;border-width:1px">深色</button>
-        </div>
-      </header>
-
-      <div class="cols">
-        <!-- ── 左：这份 agent 的判定规格 ────────────────────── -->
-        <aside class="pane side">
-          <h2 class="section-title">DECISION.md</h2>
-          <div id="spec"><div class="empty">读取中…</div></div>
-
-          <div class="legend">
-            <h2 class="section-title">图例</h2>
-            <div class="legend-row"><span class="swatch decide"></span>判定 —— 一次前向，几十毫秒</div>
-            <div class="legend-row"><span class="swatch rule"></span>规则 —— 代码做的决定，不过模型</div>
-            <div class="legend-row"><span class="swatch tool"></span>工具 —— 唯一有真实副作用的地方</div>
-            <div class="legend-row"><span class="swatch model"></span><b>模型生成 —— 唯一贵的一步</b></div>
-            <div class="legend-row"><span class="swatch authorize"></span>授权 —— 停下来等人</div>
-          </div>
-        </aside>
-
-        <!-- ── 中：对话 / 轨迹 ──────────────────────────────── -->
-        <main class="pane center">
+      <!-- ── 中：对话 / 轨迹 ──────────────────────────────── -->
+      <main class="pane center">
+        <!-- DSH 里没有全局顶栏：头部属于中栏的占用者，计数也在这里 -->
+        <header class="conv-header">
           <div class="tabs" role="tablist" aria-label="视图">
             <button class="tab" role="tab" id="tab-chat" data-view="chat" aria-selected="true">对话</button>
             <button class="tab" role="tab" id="tab-trace" data-view="trace" aria-selected="false">轨迹</button>
-            <span class="tab-note" id="tab-note"></span>
           </div>
+          <div class="header-right">
+            <!-- 四个计数就是全部主张：判定很多次，模型很少次 -->
+            <div class="tally">
+              <span class="tally-item decide">判定 <b id="t-decide">0</b></span>
+              <span class="tally-item rule">规则 <b id="t-rules">0</b></span>
+              <span class="tally-item tool">工具 <b id="t-tool">0</b></span>
+              <span class="tally-item model">模型 <b id="t-model">0</b></span>
+            </div>
+            <button class="badge action" id="theme">深色</button>
+          </div>
+        </header>
 
-          <!-- 对话 -->
-          <section class="view" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
-            <div class="stream" id="chat">
+        <!-- 对话 -->
+        <section class="view" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
+          <div class="stream">
+            <div class="stream-inner" id="chat">
               <div class="empty">说点什么，它会边判定边做。</div>
             </div>
-            <form class="composer" id="composer">
-              <textarea
-                class="field"
-                id="task"
-                rows="1"
-                spellcheck="false"
-                placeholder="让它做点什么…（Enter 发送，Shift+Enter 换行）"
-              >列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数</textarea>
-              <button class="btn" id="run" type="submit">发送</button>
-            </form>
-          </section>
+          </div>
 
-          <!-- 轨迹：和对话看的是同一串事件，只是不折叠 -->
-          <section class="view" id="view-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
-            <div class="timeline" id="timeline">
+          <form class="composer" id="composer">
+            <div class="composer-card">
+              <div class="composer-scroll">
+                <textarea
+                  class="composer-input"
+                  id="task"
+                  rows="1"
+                  spellcheck="false"
+                  placeholder="让它做点什么…"
+                >列出工作目录里的文件，读取其中的 TypeScript 文件，说明它定义了哪些函数</textarea>
+              </div>
+              <div class="composer-row">
+                <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+                <button class="send" id="run" type="submit" title="发送" aria-label="发送">↑</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <!-- 轨迹：和对话看的是同一串事件，只是不折叠 -->
+        <section class="view" id="view-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
+          <div class="timeline">
+            <div class="timeline-inner" id="timeline">
               <div class="empty">还没有跑过。切回「对话」发一条。</div>
             </div>
-          </section>
-        </main>
-
-        <!-- ── 右：记账 ─────────────────────────────────────── -->
-        <aside class="pane aside">
-          <h2 class="section-title">记账</h2>
-          <div id="side-stats">
-            <div class="empty">运行结束后显示</div>
           </div>
-        </aside>
-      </div>
+        </section>
+      </main>
+
+      <!-- ── 右：记账 ─────────────────────────────────────── -->
+      <aside class="pane aside">
+        <h2 class="section-title">记账</h2>
+        <div id="side-stats">
+          <div class="empty">运行结束后显示</div>
+        </div>
+      </aside>
     </div>
 
     <script type="module" src="/app.js"></script>

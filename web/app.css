@@ -1,8 +1,19 @@
 /**
  * JevLoop · 布局与组件
  *
- * 只用 tokens.css 的第二层语义别名 —— 这个文件里不出现任何字面颜色值。
- * 换主题只改 tokens.css 第一层的映射。
+ * 视觉照搬自 **DeepSeek Harness**（MIT，Copyright © 2026 DeepSeek）——
+ * 令牌见 tokens.css，完整许可见 LICENSE-DSH。
+ *
+ * 三条从 DSH 的 docs/web-styling.md 一起搬过来的规矩：
+ *
+ *   1. **只用第二层语义别名。** 这个文件里不出现任何字面颜色值 ——
+ *      写死一个颜色意味着换主题时它不会跟着变，而且没人会发现。
+ *   2. **中性描边一律 0.5px。** 按钮、输入框、卡片、分隔线同一条发丝线，
+ *      Chromium 上渲染成一个设备像素。状态色描边保持 1px。
+ *   3. **抬起来的表面不用 border，用阴影。** 发丝线是阴影的第一层，
+ *      `--jl-elevation-stroke-color` 逐表面重绑。两者同时上会被
+ *      DSH 那边的测试拒绝 —— 那看起来像描边套描边。
+ *      状态色的边框（比如告警面板）仍然是真边框。
  */
 
 * {
@@ -13,152 +24,177 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--jl-bg-base);
-  color: var(--jl-label-primary);
-  font-family: var(--jl-font-sans);
+  background: var(--jl-alias-bg-base);
+  color: var(--jl-alias-label-primary);
+  font-family: var(--jl-font-family);
   font-size: var(--jl-font-size);
-  line-height: 1.55;
+  line-height: var(--jl-line);
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ═══════════════════════════════════════════════════════════
-   框架
+   布局轴
+
+   对话内容列居中，输入卡比它宽 32px（DSH 的共享宽度规则）。
+   两侧留白由 --jl-composer-side-clearance 决定，窄屏时内容列
+   正好比输入卡窄 32px。
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  --jl-chat-content-width: min(748px, 100%);
+  --jl-composer-card-max-width: calc(var(--jl-chat-content-width) + 32px);
+  --jl-composer-side-clearance: 16px;
+  --jl-composer-text-max-height: 240px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   框架：侧栏 | 中栏 | 右栏
    ═══════════════════════════════════════════════════════════ */
 
 .frame {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: 280px minmax(0, 1fr) 260px;
+  grid-template-rows: 100%;
   height: 100%;
   overflow: hidden;
+  background: var(--jl-alias-bg-base);
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--jl-gap);
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
-}
-
-.brand {
-  font-weight: 650;
-  letter-spacing: 0.2px;
-}
-.brand small {
-  display: block;
-  font-weight: 400;
-  font-size: 11px;
-  color: var(--jl-label-caption);
-  letter-spacing: 0;
-}
-
-/* 顶部计数：一眼看出判定多少次、模型多少次 */
-.tally {
-  display: flex;
-  gap: 14px;
-  margin-left: auto;
-  align-items: center;
-}
-.tally-item {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-tertiary);
-}
-.tally-item b {
-  font-family: var(--jl-font-mono);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--jl-label-primary);
-}
-.tally-item.decide b {
-  color: var(--jl-decide-fg);
-}
-.tally-item.model b {
-  color: var(--jl-model-fg);
-}
-.tally-item.tool b {
-  color: var(--jl-tool-fg);
-}
-.tally-item.rule b {
-  color: var(--jl-rule-fg);
-}
-
-.cols {
-  display: grid;
-  grid-template-columns: 290px minmax(0, 1fr) 250px;
-  min-height: 0;
-}
-
-@media (max-width: 1100px) {
-  .cols {
-    grid-template-columns: 1fr;
+@media (max-width: 1080px) {
+  .frame {
+    grid-template-columns: minmax(0, 1fr);
     overflow: auto;
   }
 }
 
 .pane {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: var(--jl-pad);
-}
-.pane.side {
-  border-right: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
-}
-.pane.aside {
-  border-left: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
 }
 
-/* 中栏自己管滚动：tab 固定，视图区滚动，输入框钉在底部 */
+.pane.side {
+  overflow: hidden auto;
+  padding: 14px 12px;
+  background: var(--jl-specific-sidebar-fill);
+  border-right: 0.5px solid var(--jl-alias-border-l3);
+}
+
+.pane.aside {
+  overflow: hidden auto;
+  padding: 14px 12px;
+  background: var(--jl-specific-sidebar-fill);
+  border-left: 0.5px solid var(--jl-alias-border-l3);
+}
+
+/* 中栏自己管滚动：头部固定，视图区滚动，输入卡钉在底部 */
 .pane.center {
   display: flex;
   flex-direction: column;
-  padding: 0;
   overflow: hidden;
 }
 
 /* ═══════════════════════════════════════════════════════════
-   视图切换
+   会话头部：tab 在左，计数在右
+
+   DSH 里没有全局顶栏 —— 头部属于中栏的占用者。计数放这里而不是
+   单独一行，因为它描述的是**这次会话**，不是整个应用。
    ═══════════════════════════════════════════════════════════ */
+
+.conv-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 16px;
+  border-bottom: 0.5px solid var(--jl-alias-border-l2);
+  background: var(--jl-alias-bg-base);
+}
 
 .tabs {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 var(--jl-pad);
-  border-bottom: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
-  flex: none;
 }
+
 .tab {
   appearance: none;
   border: 0;
   background: none;
-  padding: 10px 12px 9px;
-  margin-bottom: -1px;
+  padding: 12px 10px 10px;
+  margin-bottom: -0.5px;
   border-bottom: 2px solid transparent;
-  color: var(--jl-label-tertiary);
+  color: var(--jl-alias-label-tertiary);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--jl-font-size-sm);
   cursor: pointer;
+  transition: color var(--jl-duration-fast) var(--jl-ease);
 }
+
 .tab:hover {
-  color: var(--jl-label-primary);
+  color: var(--jl-alias-label-primary);
 }
+
 .tab[aria-selected='true'] {
-  color: var(--jl-label-primary);
-  font-weight: 600;
-  border-bottom-color: var(--jl-decide-fg);
+  color: var(--jl-alias-label-primary);
+  font-weight: 500;
+  border-bottom-color: var(--jl-alias-brand-primary);
 }
-/* 右上角那句提示：切换视图时它说明「另一边在看什么」 */
-.tab-note {
+
+.tab:focus-visible {
+  outline: 1.5px solid var(--jl-alias-button-info-fill);
+  outline-offset: -2px;
+  border-radius: var(--jl-radius-sm);
+}
+
+.header-right {
   margin-left: auto;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-caption);
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
+
+/* 计数：一眼看出判定多少次、模型多少次 */
+.tally {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.tally-item {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tally-item b {
+  font-family: var(--jl-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--jl-alias-label-primary);
+}
+
+/* 四个计数各用自己的语义色 —— 和轨迹里卡片的左边框是同一套 */
+.tally-item.decide b {
+  color: var(--jl-alias-brand-primary);
+}
+.tally-item.rule b {
+  color: var(--jl-alias-label-tertiary);
+}
+.tally-item.tool b {
+  color: var(--jl-alias-state-success-primary);
+}
+.tally-item.model b {
+  color: var(--jl-alias-state-warn-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   视图容器
+   ═══════════════════════════════════════════════════════════ */
 
 .view {
   flex: 1;
@@ -177,556 +213,751 @@ body {
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: var(--jl-pad);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  overflow-y: auto;
+  padding: 16px calc(var(--jl-composer-side-clearance) + 16px);
 }
 
-.msg {
-  max-width: 76ch;
+/* 消息列居中 —— 和输入卡共享同一条轴（输入卡宽 32px，两边各让 16px） */
+.stream-inner {
+  max-width: var(--jl-chat-content-width);
+  width: 100%;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 16px;
 }
+
+/* 用户消息：右对齐的胶囊。**只有用户消息有气泡** ——
+   助手消息是背景上的正文，这是 DSH 界面的主要视觉特征。 */
 .msg-user {
-  align-self: flex-end;
-  align-items: flex-end;
-}
-.msg-role {
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--jl-label-caption);
-}
-.msg-body {
-  padding: 10px 13px;
-  border-radius: var(--jl-radius);
-  border: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.msg-user .msg-body {
-  border-color: var(--jl-decide-border);
-  background: var(--jl-decide-bg);
-}
-
-/* 运行中的状态行：它用判定/工具/模型三种颜色说清「现在在花哪种钱」 */
-.msg-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-tertiary);
-}
-.msg-status .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--jl-label-caption);
-  flex: none;
-}
-.msg-status.decide .dot {
-  background: var(--jl-decide-fg);
-}
-.msg-status.tool .dot {
-  background: var(--jl-tool-fg);
-}
-.msg-status.model .dot {
-  background: var(--jl-model-fg);
-}
-.msg-status.error .dot {
-  background: var(--jl-danger-fg);
-}
-
-/* 一条回答下面挂几行「它为此做了多少次判定」 */
-.msg-foot {
-  display: flex;
-  gap: 10px;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-caption);
-  font-family: var(--jl-font-mono);
-}
-
-.composer {
-  flex: none;
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  padding: 10px var(--jl-pad) 12px;
-  border-top: 1px solid var(--jl-border-l2);
-  background: var(--jl-bg-layer-1);
-}
-.composer .field {
-  resize: none;
-  max-height: 180px;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   DECISION.md 面板
-   ═══════════════════════════════════════════════════════════ */
-
-.spec-headline {
-  font-size: 12px;
-  color: var(--jl-label-secondary);
-  margin-bottom: 10px;
-  line-height: 1.5;
-}
-.spec-block {
-  border-left: 3px solid var(--jl-border-l3);
-  padding: 3px 0 3px 9px;
-  margin-bottom: 7px;
-}
-.spec-block.k-choice,
-.spec-block.k-mixed,
-.spec-block.k-score {
-  border-left-color: var(--jl-decide-fg);
-}
-.spec-block.k-noul {
-  border-left-color: var(--jl-decide-fg);
-}
-/* 代码答的判定用灰色 —— 和轨迹里的规则卡同一个语义 */
-.spec-block.k-rule {
-  border-left-color: var(--jl-rule-fg);
-}
-.spec-id {
-  font-family: var(--jl-font-mono);
-  font-size: 12px;
-}
-.spec-kind {
-  font-size: 11px;
-  color: var(--jl-label-caption);
-  margin-left: 6px;
-}
-.spec-when {
-  font-size: 11px;
-  color: var(--jl-label-tertiary);
-}
-.spec-gate {
-  font-size: 11px;
-  color: var(--jl-authorize-fg);
-  margin-left: 6px;
-}
-.spec-problem {
-  font-size: 11px;
-  color: var(--jl-danger-fg);
-  line-height: 1.45;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   控件
-   ═══════════════════════════════════════════════════════════ */
-
-.section-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  color: var(--jl-label-caption);
-  margin: 0 0 10px;
-}
-
-.field {
-  width: 100%;
-  padding: 9px 11px;
-  border: 1px solid var(--jl-border-l2);
-  border-radius: var(--jl-radius-sm);
-  background: var(--jl-bg-base);
-  color: var(--jl-label-primary);
-  font-family: inherit;
-  font-size: 13px;
-  resize: vertical;
-}
-.field:focus {
-  outline: none;
-  border-color: var(--jl-decide-border);
-}
-
-.btn {
-  width: 100%;
-  margin-top: 10px;
-  padding: 10px 14px;
-  border: none;
-  border-radius: var(--jl-radius-sm);
-  background: var(--jl-decide-fg);
-  color: var(--jl-label-inverted);
-  font-family: inherit;
-  font-size: 13.5px;
-  font-weight: 550;
-  cursor: pointer;
-  transition: filter var(--jl-duration) var(--jl-ease);
-}
-.btn:hover:not(:disabled) {
-  filter: brightness(1.1);
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 图例：把颜色和语义绑在一起，不需要额外解释 */
-.legend {
-  margin-top: 22px;
-}
-.legend-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 5px 0;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-secondary);
-}
-.swatch {
-  width: 3px;
-  height: 15px;
-  border-radius: 2px;
-  flex: none;
-}
-.swatch.decide {
-  background: var(--jl-decide-fg);
-}
-.swatch.tool {
-  background: var(--jl-tool-fg);
-}
-.swatch.model {
-  background: var(--jl-model-fg);
-}
-.swatch.rule {
-  background: var(--jl-rule-fg);
-}
-.swatch.authorize {
-  background: var(--jl-authorize-fg);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   时间线
-   ═══════════════════════════════════════════════════════════ */
-
-.timeline {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 6px;
 }
 
-.step-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 18px 0 6px;
-  font-family: var(--jl-font-mono);
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-caption);
-}
-.step-head::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--jl-border-l1);
+.bubble {
+  max-width: min(calc(var(--jl-chat-content-width) * 0.702), 82%);
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: var(--jl-specific-bubble);
+  color: var(--jl-alias-label-primary);
+  font-size: var(--jl-font-size);
+  line-height: var(--jl-line);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-/* 事件卡片。左边一道 3px 的色条承载整张卡的语义 ——
-   比给整张卡上背景色更克制，也不会让长文本难读。 */
-.card {
-  border: 1px solid var(--jl-border-l1);
-  border-left: 3px solid var(--jl-rule-fg);
-  border-radius: var(--jl-radius-sm);
-  background: var(--jl-bg-layer-1);
-  padding: 10px 13px;
-  animation: card-in var(--jl-duration) var(--jl-ease);
+.msg-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
 }
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
+
+/* 助手正文：没有气泡，直接落在背景上 */
+.answer {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--jl-font-size);
+  line-height: var(--jl-line);
+}
+
+/* 运行中的状态：一条从左向右扫过的品牌蓝带（DSH 的 turnStatus）。
+   它就是「正在判定」这个事实的载体 —— 不刷屏，但一眼看得见。 */
+.status {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  font-size: var(--jl-font-size);
+  line-height: var(--jl-line);
+  white-space: nowrap;
+  background: linear-gradient(
+    90deg,
+    var(--jl-alias-state-business-primary) 0%,
+    var(--jl-alias-state-business-primary) 40%,
+    var(--jl-static-deepseek-200) 50%,
+    var(--jl-alias-state-business-primary) 60%,
+    var(--jl-alias-state-business-primary) 100%
+  );
+  background-position: 100% 0;
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: turn-status-shimmer 1.8s linear infinite;
+}
+
+@keyframes turn-status-shimmer {
+  to {
+    background-position: 0 0;
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
-  .card {
+  .status {
+    background-position: 0 0;
+    background-size: 100% 100%;
     animation: none;
   }
 }
 
+/* 一条回答下面挂的「它为此花了多少」 */
+.msg-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-foot.failed {
+  color: var(--jl-alias-state-error-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   对话里的过程行
+   ═══════════════════════════════════════════════════════════ */
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 折叠起来的过程 —— 和 DSH 一样，一次 turn 的过程默认收成一行 */
+.process {
+  border-radius: var(--jl-radius);
+}
+
+.process > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+  border-radius: 3px;
+  color: var(--jl-alias-label-tertiary);
+  font-size: var(--jl-font-size-sm);
+  line-height: var(--jl-line-sm);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  width: fit-content;
+}
+
+.process > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 小三角，和 DSH 的 retrySummary 同一种画法 */
+.process > summary::after {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  content: '';
+  opacity: 0.8;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+
+.process[open] > summary::after {
+  transform: rotate(45deg);
+}
+
+.process > summary:hover {
+  color: var(--jl-alias-label-secondary);
+}
+
+.process > summary:focus-visible {
+  outline: 1.5px solid var(--jl-alias-button-info-fill);
+  outline-offset: 2px;
+}
+
+.process-body {
+  margin-top: 8px;
+  padding-left: 14px;
+  border-left: 0.5px solid var(--jl-alias-border-l3);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   输入卡
+
+   22px 胶囊、`elevation-soft` 阴影、发丝线由 --jl-elevation-stroke-color
+   画进阴影第一层 —— 所以它没有 border，也不占布局。
+   ═══════════════════════════════════════════════════════════ */
+
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 var(--jl-composer-side-clearance) 12px;
+}
+
+.composer-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--jl-composer-card-max-width);
+  padding-top: 8px;
+  border: 0;
+  --jl-elevation-stroke-color: var(--jl-alias-border-l2);
+  border-radius: 22px;
+  background: var(--jl-specific-input-major);
+  box-shadow: var(--jl-elevation-soft);
+  font-size: var(--jl-font-size);
+  line-height: var(--jl-line);
+}
+
+.composer-scroll {
+  max-height: var(--jl-composer-text-max-height);
+  overflow-y: auto;
+  margin-right: 4px;
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 8px 0 14px;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--jl-alias-label-primary);
+  font-family: var(--jl-font-family);
+  font-size: inherit;
+  line-height: inherit;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer-input::placeholder {
+  color: var(--jl-alias-label-caption);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 8px 8px;
+}
+
+.composer-hint {
+  margin-right: auto;
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-caption);
+}
+
+/* 发送：圆形，品牌蓝。用 --jl-static-neutral-00 而不是 #fff ——
+   DSH 那边这里写的是字面 #fff，这个文件不许出现字面颜色。 */
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--jl-alias-button-info-fill);
+  color: var(--jl-static-neutral-00);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--jl-duration-fast) var(--jl-ease);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--jl-alias-button-info-hover);
+}
+
+.send:disabled {
+  background: var(--jl-alias-button-primary-dimmed);
+  color: var(--jl-alias-label-caption);
+  cursor: default;
+}
+
+.send:focus-visible {
+  outline: 1.5px solid var(--jl-alias-button-info-fill);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   轨迹卡片
+   ═══════════════════════════════════════════════════════════ */
+
+.timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px calc(var(--jl-composer-side-clearance) + 16px) 24px;
+}
+
+.timeline-inner {
+  max-width: var(--jl-chat-content-width);
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.step-head {
+  margin-top: 14px;
+  font-family: var(--jl-font-mono);
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-caption);
+  letter-spacing: 0.4px;
+}
+
+.step-head:first-child {
+  margin-top: 0;
+}
+
+.card {
+  border: 0.5px solid var(--jl-alias-border-l2);
+  border-left-width: 3px;
+  border-radius: var(--jl-radius);
+  padding: 10px 12px;
+  background: var(--jl-alias-bg-layer-1);
+  font-size: var(--jl-font-size-sm);
+  line-height: var(--jl-line-sm);
+}
+
+/* 左边框 3px 就是全部语义 —— 一眼看出这一步是什么性质 */
 .card.decide {
-  border-left-color: var(--jl-decide-fg);
+  border-left-color: var(--jl-alias-brand-primary);
 }
 .card.tool {
-  border-left-color: var(--jl-tool-fg);
+  border-left-color: var(--jl-alias-state-success-primary);
 }
 .card.model {
-  border-left-color: var(--jl-model-fg);
-  background: var(--jl-model-bg);
-  border-color: var(--jl-model-border);
+  border-left-color: var(--jl-alias-state-warn-primary);
+  background: var(--jl-alias-state-warn-tertiary);
 }
 .card.authorize {
-  border-left-color: var(--jl-authorize-fg);
-  background: var(--jl-authorize-bg);
-  border-color: var(--jl-authorize-border);
+  border-left-color: var(--jl-alias-state-error-primary);
 }
 .card.audit {
-  border-left-color: var(--jl-audit-fg);
-}
-.card.end {
-  border-left-color: var(--jl-label-caption);
-}
-.card.error {
-  border-left-color: var(--jl-danger-fg);
-  background: var(--jl-danger-bg);
-  border-color: var(--jl-danger-border);
+  border-left-color: var(--jl-alias-label-caption);
+  background: var(--jl-alias-bg-layer-2);
 }
 
 .card-head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
 }
+
+.badge {
+  flex: none;
+  padding: 1px 7px;
+  border: 0.5px solid transparent;
+  border-radius: 999px;
+  corner-shape: round;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+}
+
+.badge.kind-decide {
+  background: var(--jl-alias-state-business-tertiary);
+  color: var(--jl-alias-state-business-primary);
+}
+.badge.kind-tool {
+  background: var(--jl-alias-state-success-tertiary);
+  color: var(--jl-alias-state-success-primary);
+}
+.badge.kind-model {
+  background: var(--jl-alias-state-warn-tertiary);
+  color: var(--jl-alias-state-warn-label);
+}
+.badge.action {
+  background: var(--jl-alias-interactive-bg-hover-solid);
+  color: var(--jl-alias-label-secondary);
+  font-family: var(--jl-font-mono);
+}
+.badge.action.warn {
+  background: var(--jl-alias-state-warn-tertiary);
+  color: var(--jl-alias-state-warn-label);
+}
+
 .card-id {
   font-family: var(--jl-font-mono);
-  font-size: var(--jl-font-size-mono);
-  font-weight: 550;
+  font-size: 12px;
+  color: var(--jl-alias-label-primary);
 }
+
 .card-lat {
   margin-left: auto;
   font-family: var(--jl-font-mono);
   font-size: 11px;
-  color: var(--jl-label-caption);
+  color: var(--jl-alias-label-caption);
+  font-variant-numeric: tabular-nums;
 }
+
 .card-reason {
-  margin-top: 5px;
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-secondary);
-}
-
-/* 徽标 —— 颜色同样来自语义别名 */
-.badge {
-  padding: 1px 7px;
-  border-radius: 20px;
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.badge.kind-decide {
-  background: var(--jl-decide-bg);
-  color: var(--jl-decide-fg);
-  border-color: var(--jl-decide-border);
-}
-.badge.kind-tool {
-  background: var(--jl-tool-bg);
-  color: var(--jl-tool-fg);
-  border-color: var(--jl-tool-border);
-}
-.badge.kind-model {
-  background: var(--jl-model-bg);
-  color: var(--jl-model-fg);
-  border-color: var(--jl-model-border);
-}
-.badge.action {
-  background: var(--jl-bg-layer-3);
-  color: var(--jl-label-secondary);
-  border-color: var(--jl-border-l2);
-}
-.badge.action.danger {
-  background: var(--jl-danger-bg);
-  color: var(--jl-danger-fg);
-  border-color: var(--jl-danger-border);
-}
-.badge.action.warn {
-  background: var(--jl-authorize-bg);
-  color: var(--jl-authorize-fg);
-  border-color: var(--jl-authorize-border);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   问题与选项
-   ═══════════════════════════════════════════════════════════ */
-
-.qa {
-  margin-top: 9px;
-  padding-top: 9px;
-  border-top: 1px dashed var(--jl-border-l1);
-}
-.q-instruction {
-  font-size: var(--jl-font-size-caption);
-  color: var(--jl-label-secondary);
-  margin-bottom: 6px;
-}
-.q-id {
-  font-family: var(--jl-font-mono);
-  font-size: 11px;
-  color: var(--jl-label-caption);
-  margin-right: 6px;
-}
-
-/* 概率条。选中的那条加粗并染成判定色 ——
-   「模型有多确定」是这一页最重要的信息，必须一眼可读。 */
-.opt {
-  display: grid;
-  grid-template-columns: minmax(58px, 120px) 1fr 44px;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--jl-font-size-caption);
-  padding: 1.5px 0;
-}
-.opt-name {
-  font-family: var(--jl-font-mono);
-  color: var(--jl-label-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.opt-track {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--jl-bg-layer-3);
-  overflow: hidden;
-}
-.opt-fill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--jl-label-caption);
-}
-.opt-pct {
-  font-family: var(--jl-font-mono);
-  color: var(--jl-label-caption);
-  text-align: right;
-}
-.opt.picked .opt-name {
-  color: var(--jl-decide-fg);
-  font-weight: 600;
-}
-.opt.picked .opt-fill {
-  background: var(--jl-decide-fg);
-}
-.opt.picked .opt-pct {
-  color: var(--jl-decide-fg);
-}
-
-/* noul 的两端 */
-.noul-bar {
-  display: flex;
-  height: 6px;
-  border-radius: 3px;
-  overflow: hidden;
-  margin: 4px 0 2px;
-}
-.noul-true {
-  background: var(--jl-decide-fg);
-}
-.noul-false {
-  background: var(--jl-bg-layer-3);
-}
-.noul-legend {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--jl-font-mono);
-  font-size: 10.5px;
-  color: var(--jl-label-caption);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   折叠的原始数据
-   ═══════════════════════════════════════════════════════════ */
-
-details.raw {
-  margin-top: 8px;
-}
-details.raw > summary {
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--jl-label-caption);
-  user-select: none;
-}
-details.raw > summary:hover {
-  color: var(--jl-label-secondary);
-}
-details.raw pre {
-  margin: 7px 0 0;
-  padding: 9px 11px;
-  background: var(--jl-bg-base);
-  border: 1px solid var(--jl-border-l1);
-  border-radius: var(--jl-radius-sm);
-  font-family: var(--jl-font-mono);
-  font-size: 11.5px;
-  color: var(--jl-label-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 260px;
-  overflow: auto;
+  color: var(--jl-alias-label-tertiary);
+  font-size: 12px;
+  line-height: var(--jl-line-caption);
 }
 
 .io {
+  margin-top: 5px;
+  padding: 6px 8px;
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-alias-markdown-code-block);
   font-family: var(--jl-font-mono);
-  font-size: 11.5px;
-  color: var(--jl-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--jl-alias-label-secondary);
   white-space: pre-wrap;
-  word-break: break-word;
-  margin-top: 4px;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.qa {
+  margin-top: 7px;
+}
+
+.q-instruction {
+  color: var(--jl-alias-label-secondary);
+  font-size: 12px;
+  line-height: var(--jl-line-caption);
+  margin-bottom: 5px;
+}
+
+.q-id {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--jl-alias-markdown-tag);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-alias-label-tertiary);
+}
+
+/* 概率条 */
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 1px 0;
+}
+
+.opt-name {
+  flex: none;
+  width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--jl-font-mono);
+  font-size: 12px;
+  color: var(--jl-alias-label-secondary);
+}
+
+.opt-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--jl-alias-bg-skeleton);
+  overflow: hidden;
+}
+
+.opt-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--jl-alias-label-dimmed);
+}
+
+.opt-pct {
+  flex: none;
+  width: 52px;
+  text-align: right;
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-alias-label-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 被选中的那个：整行加粗、条形换成品牌色 —— 一眼看到模型选了什么 */
+.opt.picked .opt-name {
+  color: var(--jl-alias-label-primary);
+  font-weight: 600;
+}
+.opt.picked .opt-fill {
+  background: var(--jl-alias-brand-primary);
+}
+.opt.picked .opt-pct {
+  color: var(--jl-alias-label-primary);
+  font-weight: 600;
+}
+
+/* noul：两段条 */
+.noul-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--jl-alias-bg-skeleton);
+}
+
+.noul-false {
+  background: var(--jl-alias-label-dimmed);
+}
+
+.noul-true {
+  background: var(--jl-alias-brand-primary);
+}
+
+.noul-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  color: var(--jl-alias-label-caption);
+}
+
+.raw {
+  margin-top: 8px;
+}
+
+.raw > summary {
+  color: var(--jl-alias-label-caption);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.raw > summary::-webkit-details-marker {
+  display: none;
+}
+
+.raw > summary:hover {
+  color: var(--jl-alias-label-secondary);
+}
+
+.raw pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--jl-radius-sm);
+  background: var(--jl-alias-markdown-code-block);
+  color: var(--jl-alias-label-secondary);
+  font-family: var(--jl-font-mono);
+  font-size: 11px;
+  line-height: 17px;
+  overflow: auto;
+  max-height: 260px;
 }
 
 /* ═══════════════════════════════════════════════════════════
-   右栏记账
+   左栏：DECISION.md
+   ═══════════════════════════════════════════════════════════ */
+
+.section-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--jl-alias-label-caption);
+}
+
+.pane.side > .section-title:not(:first-child) {
+  margin-top: 18px;
+}
+
+.spec-headline {
+  margin-bottom: 10px;
+  font-size: var(--jl-font-size-caption);
+  line-height: 18px;
+  color: var(--jl-alias-label-secondary);
+}
+
+.spec-block {
+  padding: 3px 0 3px 9px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--jl-alias-border-l3);
+  border-radius: 0 3px 3px 0;
+}
+
+/* 和轨迹卡片同一套语义色：过模型的蓝，代码答的灰 */
+.spec-block.k-choice,
+.spec-block.k-noul,
+.spec-block.k-score,
+.spec-block.k-mixed {
+  border-left-color: var(--jl-alias-brand-primary);
+}
+.spec-block.k-rule {
+  border-left-color: var(--jl-alias-label-caption);
+}
+
+.spec-id {
+  font-family: var(--jl-font-mono);
+  font-size: 12px;
+  color: var(--jl-alias-label-primary);
+}
+
+.spec-kind {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--jl-alias-label-caption);
+}
+
+.spec-gate {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--jl-alias-state-error-primary);
+}
+
+.spec-when {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--jl-alias-label-tertiary);
+}
+
+.spec-problem {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--jl-alias-state-error-primary);
+}
+
+/* 图例 */
+.legend {
+  margin-top: 18px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: var(--jl-font-size-caption);
+  line-height: var(--jl-line-caption);
+  color: var(--jl-alias-label-tertiary);
+}
+
+.swatch {
+  flex: none;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.swatch.decide {
+  background: var(--jl-alias-brand-primary);
+}
+.swatch.rule {
+  background: var(--jl-alias-label-caption);
+}
+.swatch.tool {
+  background: var(--jl-alias-state-success-primary);
+}
+.swatch.model {
+  background: var(--jl-alias-state-warn-primary);
+}
+.swatch.authorize {
+  background: var(--jl-alias-state-error-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   右栏：记账
    ═══════════════════════════════════════════════════════════ */
 
 .metric {
-  padding: 9px 0;
-  border-bottom: 1px solid var(--jl-border-l1);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 0.5px solid var(--jl-alias-border-l1);
 }
-.metric:last-child {
-  border-bottom: none;
-}
+
 .metric-k {
-  font-size: 11px;
-  color: var(--jl-label-caption);
+  font-size: var(--jl-font-size-caption);
+  color: var(--jl-alias-label-tertiary);
 }
+
 .metric-v {
   font-family: var(--jl-font-mono);
-  font-size: 19px;
+  font-size: var(--jl-font-size-sm);
   font-weight: 600;
-  line-height: 1.3;
+  color: var(--jl-alias-label-primary);
+  font-variant-numeric: tabular-nums;
 }
+
 .metric-v.decide {
-  color: var(--jl-decide-fg);
+  color: var(--jl-alias-brand-primary);
 }
 .metric-v.model {
-  color: var(--jl-model-fg);
+  color: var(--jl-alias-state-warn-primary);
 }
 
+/* 头条数字：判定 : 模型 */
 .ratio {
   margin-top: 14px;
-  padding: 13px;
+  padding: 12px;
   border-radius: var(--jl-radius);
-  background: var(--jl-bg-layer-2);
+  background: var(--jl-alias-state-business-tertiary);
   text-align: center;
 }
+
 .ratio-v {
   font-family: var(--jl-font-mono);
-  font-size: 26px;
-  font-weight: 650;
-  color: var(--jl-decide-fg);
-  line-height: 1.2;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--jl-alias-state-business-primary);
+  font-variant-numeric: tabular-nums;
 }
+
 .ratio-k {
+  margin-top: 2px;
   font-size: 11px;
-  color: var(--jl-label-caption);
-  margin-top: 3px;
+  color: var(--jl-alias-label-tertiary);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   通用
+   ═══════════════════════════════════════════════════════════ */
 
 .empty {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--jl-label-caption);
-  font-size: var(--jl-font-size-caption);
+  padding: 10px 0;
+  font-size: var(--jl-font-size-sm);
+  line-height: var(--jl-line-sm);
+  color: var(--jl-alias-label-caption);
 }
 
-.answer {
-  margin-top: 18px;
-  padding: 13px 15px;
-  border: 1px solid var(--jl-border-l2);
-  border-radius: var(--jl-radius);
-  background: var(--jl-bg-layer-1);
-  white-space: pre-wrap;
-  font-size: 13px;
+.badge.action {
+  cursor: default;
+}
+
+button.badge.action {
+  cursor: pointer;
+  border-width: 0.5px;
+  border-color: var(--jl-alias-border-l2);
+  padding: 3px 10px;
+  font-family: var(--jl-font-family);
+  font-size: 11px;
+}
+
+button.badge.action:hover {
+  background: var(--jl-alias-interactive-bg-hover-solid);
 }

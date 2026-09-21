@@ -1,210 +1,818 @@
 /**
- * JevLoop · 设计 token
+ * JevLoop · 设计令牌
  *
  * ══════════════════════════════════════════════════════════════
- *  两层结构（学自 DeepSeek Harness 的 design-platform.css）：
+ *  这份文件**照搬自 DeepSeek Harness**，只做了机械改名：
  *
- *    第一层  静态调色板   --jl-static-<色系>-<档位>
- *    第二层  语义别名     --jl-<用途>-<角色>
+ *      --dsw-static-*    →  --jl-static-*      原始色阶
+ *      --dsw-alias-*     →  --jl-alias-*       语义别名
+ *      --dsw-specific-*  →  --jl-specific-*    具名表面
+ *      [data-ds-dark-theme]  →  [data-jl-dark]
  *
- *  组件**只用第二层**。这样换主题是换第一层的映射，不用碰任何组件；
- *  而第二层的名字说明的是用途（decide / tool / model），不是颜色 ——
- *  写 `color: var(--jl-model-fg)` 的人不需要知道模型是橙色。
+ *  保留 `alias` 那一段是为了**和上游保持 1:1** —— 想核对某个值是不是
+ *  抄对了，把这份文件和 DSH 的并排 diff 就能看出来，而不需要先在心里
+ *  做一次名字映射。
+ *
+ *  改名而不是原样留着 `--dsw-`，是因为名字里带着 dsw 会让后来的人以为
+ *  这里有一份上游同步机制，而实际上没有。出处见下。
  * ══════════════════════════════════════════════════════════════
  *
- * 本项目的语义分四类，对应三分法 + 两种特殊路径：
+ * 三层结构，从下往上：
  *
- *   decide     判定       蓝    每次前向，便宜，界面上的主体
- *   tool       工具执行   绿    唯一有真实副作用的地方
- *   model      模型生成   橙    **整个 loop 里唯一贵的**，视觉上必须跳出来
- *   rule       精确规则   灰    代码做的决定，不花判定也不花模型
- *   authorize  授权       黄    停下来等人
- *   audit      审计       紫    承诺了留痕就必须看得见
+ *      1  --jl-static-<色相>-<深浅>   原始调色板，不带语义
+ *      2  --jl-alias-<用途>-<角色>    语义别名，亮/暗两套值
+ *      3  --jl-specific-<表面>        具名表面（侧栏、气泡、输入框）
+ *
+ * **组件只用第 2 层。** 直接用第 1 层意味着换主题时那个组件不会跟着变。
+ * DSH 那边这条规矩是由测试强制的（ui-theme 的 stylesheet-scan），
+ * 这里靠约定 —— 所以 app.css 里不出现任何字面颜色值，一眼可以查。
+ *
+ * ── 出处 ──────────────────────────────────────────────────────
+ *
+ * 改编自 DeepSeek Harness 的 packages/client/ui-theme/src/styles/：
+ *   design-platform.css · base.css · corner-shape.css · scrollbar.css
+ *   · gradient-shadow-text.css
+ *
+ *   MIT License
+ *   Copyright (c) 2026 DeepSeek
+ *
+ * 完整许可文本见同目录的 LICENSE-DSH。
  */
 
-/* ═══════════════════════════════════════════════════════════
-   第一层 · 静态调色板
-   ═══════════════════════════════════════════════════════════ */
-
+/* ── base.css：字体栈与动效曲线 ─────────────────────────── */
+/* Base variables referenced by the token sheets and component CSS but defined
+ * upstream (deepsuite theme/global.css) — supplied here so the composite
+ * --jl-font-* variables resolve and motion rides the upstream curve. Code
+ * font stack deliberately omits a bare `monospace` tail (Windows CJK falls
+ * back to SimSun otherwise). */
 :root {
-  --jl-static-neutral-00: #ffffff;
-  --jl-static-neutral-50: #fafafa;
-  --jl-static-neutral-75: #f1f3f5;
-  --jl-static-neutral-100: #ebeef2;
-  --jl-static-neutral-200: #e1e5ee;
-  --jl-static-neutral-300: #cfd3d6;
-  --jl-static-neutral-400: #adb2b8;
-  --jl-static-neutral-500: #979da6;
-  --jl-static-neutral-600: #81858c;
-  --jl-static-neutral-700: #61666b;
-  --jl-static-neutral-800: #353638;
-  --jl-static-neutral-850: #2c2c2e;
-  --jl-static-neutral-875: #232324;
-  --jl-static-neutral-900: #1b1b1c;
-  --jl-static-neutral-950: #151517;
-  --jl-static-neutral-1000: #0f1115;
+  --jl-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --jl-font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+    'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
+  --jl-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --jl-duration: 0.2s;
+  --jl-duration-fast: 0.1s;
+  --jl-duration-slow: 0.3s;
+}
 
-  --jl-static-blue-50: #eff6ff;
-  --jl-static-blue-100: #dbeafe;
-  --jl-static-blue-400: #60a5fa;
-  --jl-static-blue-450: #4d93f8;
-  --jl-static-blue-500: #3b82f6;
-  --jl-static-blue-600: #2563eb;
-  --jl-static-blue-800: #1e40af;
-  --jl-static-blue-900: #0e3074;
+/* ── corner-shape.css：超椭圆圆角 ───────────────────────── */
+/* Smooth corner curvature for every rounded surface. Inside the support
+ * guard, all corners curve along superellipse(1.5) — between a circular arc
+ * (round = superellipse(1)) and a squircle (superellipse(2)) — instead of the
+ * default arc; engines without corner-shape keep circular corners because the
+ * token and the rule exist only inside the guard.
+ *
+ * corner-shape does not inherit, so the universal selector applies the token
+ * to elements and their ::before/::after; other pseudo-elements (for example
+ * the ::-webkit-scrollbar parts) stay circular.
+ *
+ * Full-round shapes opt out where they are declared: a superellipse deforms a
+ * circle into a squircle and squares off capsule ends, so every effectively
+ * uncapped radius (50%, 100%, or a pill radius far above the box size) pairs
+ * `corner-shape: round` with its `border-radius` in the owning component
+ * sheet. The corner-shape stylesheet spec enforces that pairing. */
+@supports (corner-shape: superellipse(1.5)) {
+  :root {
+    --jl-corner-shape: superellipse(1.5);
+  }
 
-  --jl-static-green-100: #e6faed;
-  --jl-static-green-400: #4ed17e;
-  --jl-static-green-500: #22c55e;
-  --jl-static-green-900: #233c2c;
+  *,
+  *::before,
+  *::after {
+    corner-shape: var(--jl-corner-shape);
+  }
+}
 
-  --jl-static-amber-100: #fef5e7;
-  --jl-static-amber-400: #f7ad31;
-  --jl-static-amber-500: #f59e0b;
-  --jl-static-amber-600: #dd8629;
-  --jl-static-amber-900: #27241f;
-
-  --jl-static-red-100: #fee2e2;
-  --jl-static-red-400: #f25a5a;
-  --jl-static-red-500: #ef4444;
-  --jl-static-red-900: #570c0c;
-
-  --jl-static-violet-100: #ede9fe;
-  --jl-static-violet-400: #a78bfa;
-  --jl-static-violet-500: #8b5cf6;
-  --jl-static-violet-900: #2e1065;
+/* ── design-platform.css：三层令牌 ──────────────────────── */
+/* Figma font-weight 510 (an SF Pro variable-font weight) always renders as
+   font-weight: 500 in this UI — non-variable webfonts snap intermediate
+   weights unpredictably across platforms. */
+body {
+  --jl-static-amber-100: rgb(254, 245, 231);
+  --jl-static-amber-400: rgb(247, 173, 49);
+  --jl-static-amber-500: rgb(245, 158, 11);
+  --jl-static-amber-600: rgb(221, 134, 41);
+  --jl-static-amber-900: rgb(39, 36, 31);
+  --jl-static-blue-100: rgb(219, 234, 254);
+  --jl-static-blue-300: rgb(147, 197, 253);
+  --jl-static-blue-400: rgb(96, 165, 250);
+  --jl-static-blue-450: rgb(77, 147, 248);
+  --jl-static-blue-500: rgb(59, 130, 246);
+  --jl-static-blue-50: rgb(239, 246, 255);
+  --jl-static-blue-50p: rgb(234, 243, 255);
+  --jl-static-blue-600: rgb(37, 99, 235);
+  --jl-static-blue-75: rgb(229, 240, 255);
+  --jl-static-blue-800: rgb(30, 64, 175);
+  --jl-static-blue-900: rgb(14, 48, 116);
+  --jl-static-blue-950: rgb(23, 37, 84);
+  --jl-static-deepseek-100: rgb(228, 237, 253);
+  --jl-static-deepseek-200: rgb(211, 226, 255);
+  --jl-static-deepseek-300: rgb(183, 200, 254);
+  --jl-static-deepseek-400: rgb(103, 158, 254);
+  --jl-static-deepseek-450: rgb(86, 134, 254);
+  --jl-static-deepseek-500: rgb(65, 118, 230);
+  --jl-static-deepseek-50: rgb(237, 243, 254);
+  --jl-static-deepseek-600: rgb(72, 104, 178);
+  --jl-static-deepseek-700-delete: rgb(47, 76, 143);
+  --jl-static-deepseek-800: rgb(52, 65, 91);
+  --jl-static-deepseek-900: rgb(40, 49, 66);
+  --jl-static-green-100: rgb(230, 250, 237);
+  --jl-static-green-400: rgb(78, 209, 126);
+  --jl-static-green-500: rgb(34, 197, 94);
+  --jl-static-green-900: rgb(35, 60, 44);
+  --jl-static-neutral-00: rgb(255, 255, 255);
+  --jl-static-neutral-1000: rgb(0, 0, 0);
+  --jl-static-neutral-100: rgb(245, 245, 245);
+  --jl-static-neutral-150: rgb(237, 237, 237);
+  --jl-static-neutral-200: rgb(229, 229, 229);
+  --jl-static-neutral-250: rgb(220, 220, 220);
+  --jl-static-neutral-300: rgb(212, 212, 212);
+  --jl-static-neutral-400: rgb(162, 164, 166);
+  --jl-static-neutral-500: rgb(127, 130, 135);
+  --jl-static-neutral-50: rgb(250, 250, 250);
+  --jl-static-neutral-550: rgb(101, 103, 107);
+  --jl-static-neutral-600: rgb(84, 85, 87);
+  --jl-static-neutral-700: rgb(60, 60, 61);
+  --jl-static-neutral-800: rgb(41, 41, 41);
+  --jl-static-neutral-850: rgb(33, 33, 35);
+  --jl-static-neutral-900: rgb(15, 15, 15);
+  --jl-static-neutral-bluish-00: rgb(255, 255, 255);
+  --jl-static-neutral-bluish-1000: rgb(15, 17, 21);
+  --jl-static-neutral-bluish-100: rgb(235, 238, 242);
+  --jl-static-neutral-bluish-150: rgb(233, 236, 242);
+  --jl-static-neutral-bluish-200: rgb(225, 229, 238);
+  --jl-static-neutral-bluish-300: rgb(207, 211, 214);
+  --jl-static-neutral-bluish-400: rgb(173, 178, 184);
+  --jl-static-neutral-bluish-500: rgb(151, 157, 166);
+  --jl-static-neutral-bluish-50: rgb(249, 250, 251);
+  --jl-static-neutral-bluish-600: rgb(129, 133, 140);
+  --jl-static-neutral-bluish-60: rgb(245, 246, 247);
+  --jl-static-neutral-bluish-700: rgb(97, 102, 107);
+  --jl-static-neutral-bluish-750: rgb(67, 69, 74);
+  --jl-static-neutral-bluish-75: rgb(241, 243, 245);
+  --jl-static-neutral-bluish-800: rgb(53, 54, 56);
+  --jl-static-neutral-bluish-850: rgb(44, 44, 46);
+  --jl-static-neutral-bluish-875: rgb(35, 35, 36);
+  --jl-static-neutral-bluish-900: rgb(27, 27, 28);
+  --jl-static-neutral-bluish-950: rgb(21, 21, 23);
+  --jl-static-red-100: rgb(254, 226, 226);
+  --jl-static-red-400: rgb(242, 90, 90);
+  --jl-static-red-500: rgb(239, 68, 68);
+  --jl-static-red-50: rgb(254, 242, 242);
+  --jl-static-red-600: rgb(236, 19, 19);
+  --jl-static-red-900: rgb(87, 12, 12);
 }
 
 body[data-jl-dark] {
-  --jl-static-neutral-00: #0f1115;
-  --jl-static-neutral-50: #151517;
-  --jl-static-neutral-75: #1b1b1c;
-  --jl-static-neutral-100: #232324;
-  --jl-static-neutral-200: #2c2c2e;
-  --jl-static-neutral-300: #353638;
-  --jl-static-neutral-400: #61666b;
-  --jl-static-neutral-500: #81858c;
-  --jl-static-neutral-600: #979da6;
-  --jl-static-neutral-700: #adb2b8;
-  --jl-static-neutral-800: #cfd3d6;
-  --jl-static-neutral-850: #cfd3d6;
-  --jl-static-neutral-875: #e1e5ee;
-  --jl-static-neutral-900: #ebeef2;
-  --jl-static-neutral-950: #f1f3f5;
-  --jl-static-neutral-1000: #ffffff;
-
-  --jl-static-blue-50: #12203a;
-  --jl-static-blue-100: #16294a;
-  --jl-static-blue-400: #60a5fa;
-  --jl-static-blue-450: #4d93f8;
-  --jl-static-blue-500: #4d93f8;
-  --jl-static-blue-600: #2563eb;
-  --jl-static-blue-800: #93c5fd;
-  --jl-static-blue-900: #dbeafe;
-
-  --jl-static-green-100: #122c1f;
-  --jl-static-green-400: #4ed17e;
-  --jl-static-green-500: #22c55e;
-  --jl-static-green-900: #e6faed;
-
-  --jl-static-amber-100: #33240d;
-  --jl-static-amber-400: #f7ad31;
-  --jl-static-amber-500: #f59e0b;
-  --jl-static-amber-600: #f7ad31;
-  --jl-static-amber-900: #fef5e7;
-
-  --jl-static-red-100: #351a18;
-  --jl-static-red-400: #f25a5a;
-  --jl-static-red-500: #ef4444;
-  --jl-static-red-900: #fee2e2;
-
-  --jl-static-violet-100: #241a45;
-  --jl-static-violet-400: #a78bfa;
-  --jl-static-violet-500: #8b5cf6;
-  --jl-static-violet-900: #ede9fe;
+  --jl-static-amber-100: rgb(254, 245, 231);
+  --jl-static-amber-400: rgb(247, 173, 49);
+  --jl-static-amber-500: rgb(245, 158, 11);
+  --jl-static-amber-600: rgb(221, 134, 41);
+  --jl-static-amber-900: rgb(39, 36, 31);
+  --jl-static-blue-100: rgb(219, 234, 254);
+  --jl-static-blue-300: rgb(147, 197, 253);
+  --jl-static-blue-400: rgb(96, 165, 250);
+  --jl-static-blue-450: rgb(77, 147, 248);
+  --jl-static-blue-500: rgb(59, 130, 246);
+  --jl-static-blue-50: rgb(239, 246, 255);
+  --jl-static-blue-50p: rgb(234, 243, 255);
+  --jl-static-blue-600: rgb(37, 99, 235);
+  --jl-static-blue-75: rgb(229, 240, 255);
+  --jl-static-blue-800: rgb(30, 64, 175);
+  --jl-static-blue-900: rgb(14, 48, 116);
+  --jl-static-blue-950: rgb(23, 37, 84);
+  --jl-static-deepseek-100: rgb(228, 237, 253);
+  --jl-static-deepseek-200: rgb(211, 226, 255);
+  --jl-static-deepseek-300: rgb(183, 200, 254);
+  --jl-static-deepseek-400: rgb(103, 158, 254);
+  --jl-static-deepseek-450: rgb(86, 134, 254);
+  --jl-static-deepseek-500: rgb(65, 118, 230);
+  --jl-static-deepseek-50: rgb(237, 243, 254);
+  --jl-static-deepseek-600: rgb(72, 104, 178);
+  --jl-static-deepseek-700-delete: rgb(47, 76, 143);
+  --jl-static-deepseek-800: rgb(52, 65, 91);
+  --jl-static-deepseek-900: rgb(40, 49, 66);
+  --jl-static-green-100: rgb(230, 250, 237);
+  --jl-static-green-400: rgb(78, 209, 126);
+  --jl-static-green-500: rgb(34, 197, 94);
+  --jl-static-green-900: rgb(35, 60, 44);
+  --jl-static-neutral-00: rgb(255, 255, 255);
+  --jl-static-neutral-1000: rgb(0, 0, 0);
+  --jl-static-neutral-100: rgb(245, 245, 245);
+  --jl-static-neutral-150: rgb(237, 237, 237);
+  --jl-static-neutral-200: rgb(229, 229, 229);
+  --jl-static-neutral-250: rgb(220, 220, 220);
+  --jl-static-neutral-300: rgb(212, 212, 212);
+  --jl-static-neutral-400: rgb(162, 164, 166);
+  --jl-static-neutral-500: rgb(127, 130, 135);
+  --jl-static-neutral-50: rgb(250, 250, 250);
+  --jl-static-neutral-550: rgb(101, 103, 107);
+  --jl-static-neutral-600: rgb(84, 85, 87);
+  --jl-static-neutral-700: rgb(60, 60, 61);
+  --jl-static-neutral-800: rgb(41, 41, 41);
+  --jl-static-neutral-850: rgb(33, 33, 35);
+  --jl-static-neutral-900: rgb(15, 15, 15);
+  --jl-static-neutral-bluish-00: rgb(255, 255, 255);
+  --jl-static-neutral-bluish-1000: rgb(15, 17, 21);
+  --jl-static-neutral-bluish-100: rgb(235, 238, 242);
+  --jl-static-neutral-bluish-150: rgb(233, 236, 242);
+  --jl-static-neutral-bluish-200: rgb(225, 229, 238);
+  --jl-static-neutral-bluish-300: rgb(207, 211, 214);
+  --jl-static-neutral-bluish-400: rgb(173, 178, 184);
+  --jl-static-neutral-bluish-500: rgb(151, 157, 166);
+  --jl-static-neutral-bluish-50: rgb(249, 250, 251);
+  --jl-static-neutral-bluish-600: rgb(129, 133, 140);
+  --jl-static-neutral-bluish-60: rgb(249, 250, 251);
+  --jl-static-neutral-bluish-700: rgb(97, 102, 107);
+  --jl-static-neutral-bluish-750: rgb(67, 69, 74);
+  --jl-static-neutral-bluish-75: rgb(241, 243, 245);
+  --jl-static-neutral-bluish-800: rgb(53, 54, 56);
+  --jl-static-neutral-bluish-850: rgb(44, 44, 46);
+  --jl-static-neutral-bluish-875: rgb(35, 35, 36);
+  --jl-static-neutral-bluish-900: rgb(27, 27, 28);
+  --jl-static-neutral-bluish-950: rgb(21, 21, 23);
+  --jl-static-red-100: rgb(254, 226, 226);
+  --jl-static-red-400: rgb(242, 90, 90);
+  --jl-static-red-500: rgb(239, 68, 68);
+  --jl-static-red-50: rgb(254, 242, 242);
+  --jl-static-red-600: rgb(236, 19, 19);
+  --jl-static-red-900: rgb(87, 12, 12);
 }
 
+body {
+  --jl-alias-bg-base: var(--jl-static-neutral-bluish-00);
+  --jl-alias-bg-layer-1: var(--jl-static-neutral-bluish-00);
+  --jl-alias-bg-layer-2: var(--jl-static-neutral-bluish-00);
+  --jl-alias-bg-layer-3: var(--jl-static-neutral-bluish-00);
+  --jl-alias-bg-mask-1: rgba(0, 0, 0, 0.24);
+  --jl-alias-bg-mask-2: rgba(0, 0, 0, 0.12);
+  --jl-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --jl-alias-bg-mask-photo: rgba(0, 0, 0, 0.88);
+  --jl-alias-bg-mask-drop: rgba(255, 255, 255, 0.7);
+  --jl-alias-bg-module-platform: var(--jl-static-neutral-bluish-60);
+  --jl-alias-bg-multi-select: var(--jl-static-neutral-bluish-60);
+  --jl-alias-bg-overlay: var(--jl-static-neutral-bluish-150);
+  --jl-alias-bg-skeleton: rgba(0, 0, 0, 0.04);
+  --jl-alias-border-inverted2: rgba(0, 0, 0, 0);
+  --jl-alias-border-inverted: rgba(0, 0, 0, 0);
+  --jl-alias-border-l1: rgba(0, 0, 0, 0.04);
+  --jl-alias-border-l2-darkmode-thin: rgba(0, 0, 0, 0.1);
+  --jl-alias-border-l2: rgba(0, 0, 0, 0.1);
+  --jl-alias-border-l3: rgba(0, 0, 0, 0.12);
+  --jl-alias-border-l4: rgba(0, 0, 0, 0.16);
+  --jl-alias-brand-primary-invert: var(--jl-static-neutral-bluish-1000);
+  --jl-alias-brand-primary-new-colorprimary-new-color: rgb(65, 118, 230);
+  --jl-alias-brand-primary: var(--jl-static-neutral-bluish-1000);
+  --jl-alias-brand-text: var(--jl-static-neutral-bluish-1000);
+  --jl-alias-button-contrast-fill: var(--jl-static-neutral-bluish-700);
+  --jl-alias-button-elevated-fill: var(--jl-static-neutral-bluish-00);
+  --jl-alias-button-floating-fill: var(--jl-static-neutral-bluish-00);
+  --jl-alias-button-floating-hover: var(--jl-static-neutral-bluish-75);
+  --jl-alias-button-ghost-active-border: var(--jl-static-neutral-bluish-500);
+  --jl-alias-button-ghost-active-fill: var(--jl-static-neutral-bluish-100);
+  --jl-alias-button-ghost-active-hover: var(--jl-static-neutral-bluish-150);
+  --jl-alias-button-info-fill: var(--jl-static-deepseek-500);
+  --jl-alias-button-info-hover: var(--jl-static-deepseek-400);
+  --jl-alias-button-primary-dimmed: var(--jl-static-neutral-bluish-100);
+  --jl-alias-button-primary-fill: var(--jl-alias-brand-primary);
+  --jl-alias-button-primary-hover: var(--jl-static-neutral-bluish-750);
+  --jl-alias-button-tool-bar-fill-invisible: rgba(31, 31, 31, 0.36);
+  --jl-alias-button-tool-bar-fill: rgba(84, 85, 87, 0.5);
+  --jl-alias-button-tool-bar-hover: rgba(84, 85, 87, 0.6);
+  --jl-alias-interactive-bg-active: rgba(38, 49, 72, 0.1);
+  --jl-alias-interactive-bg-hover-accent: rgba(38, 49, 72, 0.14);
+  --jl-alias-interactive-bg-hover-danger: rgba(236, 19, 19, 0.05);
+  --jl-alias-interactive-bg-hover-solid: var(--jl-static-neutral-bluish-75);
+  --jl-alias-interactive-bg-hover: rgba(38, 49, 72, 0.06);
+  --jl-alias-label-caption: var(--jl-static-neutral-bluish-400);
+  --jl-alias-label-dimmed: var(--jl-static-neutral-bluish-200);
+  --jl-alias-label-primary-bluish: var(--jl-static-blue-900);
+  --jl-alias-label-primary-dimmed: var(--jl-static-neutral-bluish-950);
+  --jl-alias-label-primary-foreground: var(--jl-static-neutral-bluish-00);
+  --jl-alias-label-primary-inverted: var(--jl-static-neutral-bluish-00);
+  --jl-alias-label-primary: var(--jl-static-neutral-bluish-1000);
+  --jl-alias-label-secondary: var(--jl-static-neutral-bluish-700);
+  --jl-alias-label-tertiary: var(--jl-static-neutral-bluish-600);
+  --jl-alias-link: var(--jl-static-deepseek-500);
+  --jl-alias-markdown-citation: var(--jl-static-neutral-bluish-100);
+  --jl-alias-markdown-code-block-banner: var(--jl-static-neutral-bluish-50);
+  --jl-alias-markdown-code-block: var(--jl-static-neutral-bluish-50);
+  --jl-alias-markdown-code-segment-selected: var(--jl-static-neutral-bluish-00);
+  --jl-alias-markdown-code-segment-unselected: var(--jl-static-neutral-bluish-75);
+  --jl-alias-markdown-inline-code: var(--jl-static-neutral-50);
+  --jl-alias-markdown-placeholder: var(--jl-static-neutral-bluish-60);
+  --jl-alias-markdown-tag: var(--jl-static-neutral-bluish-75);
+  --jl-alias-scrollbar-bg-l1: var(--jl-static-neutral-200);
+  --jl-alias-scrollbar-bg-l2: var(--jl-static-neutral-200);
+  --jl-alias-scrollbar-hover-l1: var(--jl-static-neutral-300);
+  --jl-alias-scrollbar-hover-l2: var(--jl-static-neutral-300);
+  --jl-alias-state-business-primary: var(--jl-static-deepseek-500);
+  --jl-alias-state-business-tertiary: var(--jl-static-deepseek-100);
+  --jl-alias-state-error-primary: var(--jl-static-red-600);
+  --jl-alias-state-error-secondary: var(--jl-static-red-400);
+  --jl-alias-state-success-primary: var(--jl-static-green-500);
+  --jl-alias-state-success-secondary: var(--jl-static-green-400);
+  --jl-alias-state-success-tertiary: var(--jl-static-green-100);
+  --jl-alias-state-warn-label: var(--jl-static-amber-600);
+  --jl-alias-state-warn-primary: var(--jl-static-amber-500);
+  --jl-alias-state-warn-secondary: var(--jl-static-amber-400);
+  --jl-alias-state-warn-tertiary: var(--jl-static-amber-100);
+  --jl-alias-toast-bg: var(--jl-static-neutral-bluish-800);
+  --jl-alias-tooltip-bg: var(--jl-static-neutral-bluish-850);
+  --jl-specific-bubble-highlight: var(--jl-static-deepseek-200);
+  --jl-specific-bubble: var(--jl-static-deepseek-50);
+  --jl-specific-input-major: var(--jl-static-neutral-bluish-00);
+  --jl-specific-login-input: var(--jl-static-neutral-bluish-50);
+  --jl-specific-menu: var(--jl-alias-bg-layer-3);
+  --jl-specific-selector: var(--jl-static-neutral-bluish-60);
+  --jl-specific-sidebar-fill: var(--jl-static-neutral-bluish-50);
+  --jl-specific-sidebar-nav-item-active-accent: var(--jl-static-deepseek-100);
+  --jl-specific-sidebar-nav-item-active: var(--jl-static-neutral-bluish-100);
+  --jl-specific-sidebar-nav-item-hover: var(--jl-static-neutral-bluish-75);
+  --jl-specific-tip: var(--jl-static-neutral-bluish-60);
+}
+
+body[data-jl-dark] {
+  --jl-alias-bg-base: var(--jl-static-neutral-bluish-950);
+  --jl-alias-bg-layer-1: var(--jl-static-neutral-bluish-875);
+  --jl-alias-bg-layer-2: var(--jl-static-neutral-bluish-850);
+  --jl-alias-bg-layer-3: var(--jl-static-neutral-bluish-800);
+  --jl-alias-bg-mask-1: rgba(0, 0, 0, 0.5);
+  --jl-alias-bg-mask-2: rgba(0, 0, 0, 0.2);
+  --jl-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --jl-alias-bg-mask-photo: rgba(0, 0, 0, 0.88);
+  --jl-alias-bg-mask-drop: rgba(39, 39, 48, 0.7);
+  --jl-alias-bg-module-platform: var(--jl-static-neutral-bluish-800);
+  --jl-alias-bg-multi-select: var(--jl-static-neutral-850);
+  --jl-alias-bg-overlay: var(--jl-static-neutral-bluish-700);
+  --jl-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
+  --jl-alias-border-inverted2: rgba(255, 255, 255, 0.08);
+  --jl-alias-border-inverted: rgba(255, 255, 255, 0.06);
+  --jl-alias-border-l1: rgba(255, 255, 255, 0.06);
+  --jl-alias-border-l2-darkmode-thin: rgba(255, 255, 255, 0.06);
+  --jl-alias-border-l2: rgba(255, 255, 255, 0.12);
+  --jl-alias-border-l3: rgba(255, 255, 255, 0.16);
+  --jl-alias-border-l4: rgba(255, 255, 255, 0.2);
+  --jl-alias-brand-primary-invert: var(--jl-static-neutral-bluish-50);
+  --jl-alias-brand-primary-new-colorprimary-new-color: var(--jl-static-deepseek-450);
+  --jl-alias-brand-primary: var(--jl-static-neutral-bluish-50);
+  --jl-alias-brand-text: var(--jl-static-neutral-bluish-50);
+  --jl-alias-button-contrast-fill: var(--jl-static-neutral-bluish-50);
+  --jl-alias-button-elevated-fill: var(--jl-static-neutral-bluish-750);
+  --jl-alias-button-floating-fill: var(--jl-static-neutral-bluish-850);
+  --jl-alias-button-floating-hover: var(--jl-static-neutral-bluish-800);
+  --jl-alias-button-ghost-active-border: var(--jl-static-neutral-bluish-600);
+  --jl-alias-button-ghost-active-fill: var(--jl-static-neutral-bluish-750);
+  --jl-alias-button-ghost-active-hover: var(--jl-static-neutral-bluish-700);
+  --jl-alias-button-info-fill: var(--jl-static-deepseek-400);
+  --jl-alias-button-info-hover: var(--jl-static-deepseek-500);
+  --jl-alias-button-primary-dimmed: var(--jl-static-neutral-bluish-750);
+  --jl-alias-button-primary-fill: var(--jl-alias-brand-primary);
+  --jl-alias-button-primary-hover: var(--jl-static-neutral-bluish-100);
+  --jl-alias-button-tool-bar-fill-invisible: rgba(31, 31, 31, 0.36);
+  --jl-alias-button-tool-bar-fill: rgba(84, 85, 87, 0.5);
+  --jl-alias-button-tool-bar-hover: rgba(84, 85, 87, 0.6);
+  --jl-alias-interactive-bg-active: rgba(255, 255, 255, 0.14);
+  --jl-alias-interactive-bg-hover-accent: rgba(255, 255, 255, 0.24);
+  --jl-alias-interactive-bg-hover-danger: rgba(242, 90, 90, 0.15);
+  --jl-alias-interactive-bg-hover-solid: var(--jl-static-neutral-bluish-800);
+  --jl-alias-interactive-bg-hover: rgba(255, 255, 255, 0.08);
+  --jl-alias-label-caption: var(--jl-static-neutral-bluish-600);
+  --jl-alias-label-dimmed: var(--jl-static-neutral-bluish-750);
+  --jl-alias-label-primary-bluish: var(--jl-static-neutral-bluish-50);
+  --jl-alias-label-primary-dimmed: var(--jl-static-neutral-bluish-100);
+  --jl-alias-label-primary-foreground: var(--jl-static-neutral-bluish-1000);
+  --jl-alias-label-primary-inverted: var(--jl-static-neutral-bluish-800);
+  --jl-alias-label-primary: var(--jl-static-neutral-bluish-50);
+  --jl-alias-label-secondary: var(--jl-static-neutral-bluish-300);
+  --jl-alias-label-tertiary: var(--jl-static-neutral-bluish-400);
+  --jl-alias-link: var(--jl-static-deepseek-400);
+  --jl-alias-markdown-citation: var(--jl-static-neutral-bluish-800);
+  --jl-alias-markdown-code-block-banner: var(--jl-static-neutral-bluish-850);
+  --jl-alias-markdown-code-block: var(--jl-static-neutral-bluish-900);
+  --jl-alias-markdown-code-segment-selected: var(--jl-static-neutral-bluish-800);
+  --jl-alias-markdown-code-segment-unselected: var(--jl-static-neutral-bluish-900);
+  --jl-alias-markdown-inline-code: var(--jl-static-neutral-800);
+  --jl-alias-markdown-placeholder: var(--jl-static-neutral-bluish-850);
+  --jl-alias-markdown-tag: var(--jl-static-neutral-bluish-850);
+  --jl-alias-scrollbar-bg-l1: var(--jl-static-neutral-700);
+  --jl-alias-scrollbar-bg-l2: var(--jl-static-neutral-600);
+  --jl-alias-scrollbar-hover-l1: var(--jl-static-neutral-600);
+  --jl-alias-scrollbar-hover-l2: var(--jl-static-neutral-550);
+  --jl-alias-state-business-primary: var(--jl-static-deepseek-400);
+  --jl-alias-state-business-tertiary: var(--jl-static-deepseek-800);
+  --jl-alias-state-error-primary: var(--jl-static-red-400);
+  --jl-alias-state-error-secondary: var(--jl-static-red-400);
+  --jl-alias-state-success-primary: var(--jl-static-green-500);
+  --jl-alias-state-success-secondary: var(--jl-static-green-400);
+  --jl-alias-state-success-tertiary: var(--jl-static-green-900);
+  --jl-alias-state-warn-label: var(--jl-static-amber-600);
+  --jl-alias-state-warn-primary: var(--jl-static-amber-500);
+  --jl-alias-state-warn-secondary: var(--jl-static-amber-400);
+  --jl-alias-state-warn-tertiary: var(--jl-static-amber-900);
+  --jl-alias-toast-bg: var(--jl-static-neutral-bluish-750);
+  --jl-alias-tooltip-bg: var(--jl-static-neutral-bluish-750);
+  --jl-specific-bubble-highlight: var(--jl-static-neutral-bluish-750);
+  --jl-specific-bubble: var(--jl-static-neutral-bluish-850);
+  --jl-specific-input-major: var(--jl-static-neutral-bluish-850);
+  --jl-specific-login-input: var(--jl-static-neutral-bluish-900);
+  --jl-specific-menu: var(--jl-alias-bg-layer-3);
+  --jl-specific-selector: var(--jl-static-neutral-bluish-800);
+  --jl-specific-sidebar-fill: var(--jl-static-neutral-bluish-900);
+  --jl-specific-sidebar-nav-item-active-accent: var(--jl-static-neutral-bluish-800);
+  --jl-specific-sidebar-nav-item-active: var(--jl-static-neutral-bluish-750);
+  --jl-specific-sidebar-nav-item-hover: var(--jl-static-neutral-bluish-850);
+  --jl-specific-tip: var(--jl-static-neutral-bluish-800);
+}
+
+/* ── gradient-shadow-text.css：排版角色、高度、渐变与阴影 ── */
+body {
+  --jl-linear-gradient-think: linear-gradient(180deg, #fff 20.19%, rgba(255, 255, 255, 0) 100%);
+  --jl-linear-think-select: linear-gradient(180deg, #f5f6f7 20.19%, rgba(245, 246, 247, 0) 100%);
+  /* 阴影 */
+  --jl-shadow-lv1: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  --jl-shadow-lv1-blur: 0 4px 12px 0 rgba(0, 0, 0, 0.02);
+  --jl-shadow-lv2: 0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
+  --jl-shadow-lv3:
+    0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+  /* Elevation：浮层/面板/面型按钮的描边+投影三件套。0.5px 发丝描边画在
+     box-shadow 里（组件配 border: 0，不占布局），叠两层极淡柔光；深色主题下
+     柔光几乎不可见，由描边承担分离。描边颜色经 --jl-elevation-stroke-color
+     间接，组件可重绑（菜单面重绑最浅的 l1、输入框重绑 l2，输入框的
+     workspace-trigger 态置 transparent 只保留柔光）。soft 供输入框：更大
+     模糊、更低透明度的柔光。默认色只声明在 body 上，让表面的重绑沿继承
+     传给真正消费投影的后代。 */
+  --jl-elevation-stroke-color: var(--jl-alias-border-l4);
+  /* blur filter */
+  --jl-mask-blur: blur(2px);
+}
+
+/* 派生 elevation 值逐元素声明而非从 body 继承：继承传下来的是在 body 上就
+   已替换完 var() 的值，组件重绑 --jl-elevation-stroke-color 将无法进入
+   var(--jl-elevation-*)；逐元素声明让每个元素按自己看到的描边色重新替换
+   （同 scrollbar.css 对 --jl-scrollbar-thumb 的处理）。 */
+body,
+body * {
+  --jl-elevation-stroke: 0 0 0 0.5px var(--jl-elevation-stroke-color);
+  --jl-elevation-panel:
+    var(--jl-elevation-stroke), 0 3px 8px 0 rgba(0, 0, 0, 0.03), 0 0 16px 0 rgba(0, 0, 0, 0.02);
+  --jl-elevation-prominent:
+    var(--jl-elevation-stroke), 0 3px 8px 0 rgba(0, 0, 0, 0.04), 0 0 20px 0 rgba(0, 0, 0, 0.05);
+  --jl-elevation-soft:
+    var(--jl-elevation-stroke), 0 4px 16px 0 rgba(0, 0, 0, 0.03), 0 0 24px 0 rgba(0, 0, 0, 0.03);
+}
+
+body[data-jl-dark] {
+  --jl-linear-gradient-think: linear-gradient(180deg, #151517 20.19%, rgba(21, 21, 23, 0) 100%);
+  --jl-linear-think-select: linear-gradient(180deg, #232325 20.19%, rgba(35, 35, 37, 0) 100%);
+}
+
+/* ---------- 字体 ---------- */
+/* 由 @deepseek-figma-plugin/custom-variable-name 插件导出 */
+/* Markdown 阶梯整体按 0.875（正文 16 → 14）等比缩放，四舍五入到整数像素；
+   重新从 Figma 导出时需要保留这一缩放。 */
+/* 正文字号调节：--dsh-content-font-size 由主题 bootstrap 与 ThemePresenter
+   写在 body 上（整数 px，12–17，默认 14）。标题与正文变体按同一像素增量
+   （--dsh-content-font-delta）随动，保持层级。低一档文本（think、工具/bash
+   行的标题与摘要、markdown 表格、流内次级说明等）统一读
+   --dsh-content-font-size-secondary：设置 ≤14 时为设置值 −1，>14 时为
+   设置值 −2（12→11、13→12、14→13、15→13、16→14、17→15）。式中
+   max(13px,·) 的作用是让低设置取 −1 而非 −2，不是结果下限——12 设置下
+   层级触底 11px。small、code 属于密集次级文本，保持固定。 */
+body {
+  --dsh-content-font-delta: calc(var(--dsh-content-font-size, 14px) - 14px);
+  --dsh-content-font-size-secondary: min(calc(var(--dsh-content-font-size, 14px) - 1px), max(13px, calc(var(--dsh-content-font-size, 14px) - 2px)));
+  --dsh-content-font-delta-secondary: calc(var(--dsh-content-font-size-secondary) - 13px);
+
+  --jl-font-markdown-h1: 700 calc(21px + var(--dsh-content-font-delta)) / calc(30px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h1-font-family: var(--jl-font-family);
+  --jl-font-markdown-h1-font-weight: 700;
+  --jl-font-markdown-h1-line-height: calc(30px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h1-font-size: calc(21px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h1-font-style: normal;
+
+  --jl-font-markdown-h2: 700 calc(19px + var(--dsh-content-font-delta)) / calc(28px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h2-font-family: var(--jl-font-family);
+  --jl-font-markdown-h2-font-weight: 700;
+  --jl-font-markdown-h2-line-height: calc(28px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h2-font-size: calc(19px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h2-font-style: normal;
+
+  --jl-font-markdown-h3: 700 calc(18px + var(--dsh-content-font-delta)) / calc(26px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h3-font-family: var(--jl-font-family);
+  --jl-font-markdown-h3-font-weight: 700;
+  --jl-font-markdown-h3-line-height: calc(26px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h3-font-size: calc(18px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h3-font-style: normal;
+
+  --jl-font-markdown-h4: 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-h4-font-family: var(--jl-font-family);
+  --jl-font-markdown-h4-font-weight: 600;
+  --jl-font-markdown-h4-line-height: calc(24px + var(--dsh-content-font-delta));
+  --jl-font-markdown-h4-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-h4-font-style: normal;
+
+  --jl-font-markdown-base: var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-font-family: var(--jl-font-family);
+  --jl-font-markdown-base-font-weight: 400;
+  --jl-font-markdown-base-line-height: calc(24px + var(--dsh-content-font-delta));
+  --jl-font-markdown-base-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-font-style: normal;
+
+  --jl-font-markdown-base-strong: 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-strong-font-family: var(--jl-font-family);
+  --jl-font-markdown-base-strong-font-weight: 600;
+  --jl-font-markdown-base-strong-line-height: calc(24px + var(--dsh-content-font-delta));
+  --jl-font-markdown-base-strong-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-strong-font-style: normal;
+
+  --jl-font-markdown-base-italic: italic var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-italic-font-family: var(--jl-font-family);
+  --jl-font-markdown-base-italic-font-weight: 400;
+  --jl-font-markdown-base-italic-line-height: calc(24px + var(--dsh-content-font-delta));
+  --jl-font-markdown-base-italic-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-italic-font-style: italic;
+
+  --jl-font-markdown-base-strong-italic: italic 600 var(--dsh-content-font-size, 14px) / calc(24px + var(--dsh-content-font-delta)) var(--jl-font-family);
+  --jl-font-markdown-base-strong-italic-font-family: var(--jl-font-family);
+  --jl-font-markdown-base-strong-italic-font-weight: 600;
+  --jl-font-markdown-base-strong-italic-line-height: calc(24px + var(--dsh-content-font-delta));
+  --jl-font-markdown-base-strong-italic-font-size: var(--dsh-content-font-size, 14px);
+  --jl-font-markdown-base-strong-italic-font-style: italic;
+
+  --jl-font-markdown-table: var(--dsh-content-font-size-secondary, 13px)/calc(22px + var(--dsh-content-font-delta-secondary, 0px)) var(--jl-font-family);
+  --jl-font-markdown-table-font-family: var(--jl-font-family);
+  --jl-font-markdown-table-font-weight: 400;
+  --jl-font-markdown-table-line-height: calc(22px + var(--dsh-content-font-delta-secondary, 0px));
+  --jl-font-markdown-table-font-size: var(--dsh-content-font-size-secondary, 13px);
+  --jl-font-markdown-table-font-style: normal;
+
+  --jl-font-markdown-table-head: 500 var(--dsh-content-font-size-secondary, 13px)/calc(22px + var(--dsh-content-font-delta-secondary, 0px)) var(--jl-font-family);
+  --jl-font-markdown-table-head-font-family: var(--jl-font-family);
+  --jl-font-markdown-table-head-font-weight: 500;
+  --jl-font-markdown-table-head-line-height: calc(22px + var(--dsh-content-font-delta-secondary, 0px));
+  --jl-font-markdown-table-head-font-size: var(--dsh-content-font-size-secondary, 13px);
+  --jl-font-markdown-table-head-font-style: normal;
+
+  --jl-font-markdown-small: 12px/20px var(--jl-font-family);
+  --jl-font-markdown-small-font-family: var(--jl-font-family);
+  --jl-font-markdown-small-font-weight: 400;
+  --jl-font-markdown-small-line-height: 20px;
+  --jl-font-markdown-small-font-size: 12px;
+  --jl-font-markdown-small-font-style: normal;
+
+  --jl-font-markdown-small-strong: 600 12px/20px var(--jl-font-family);
+  --jl-font-markdown-small-strong-font-family: var(--jl-font-family);
+  --jl-font-markdown-small-strong-font-weight: 600;
+  --jl-font-markdown-small-strong-line-height: 20px;
+  --jl-font-markdown-small-strong-font-size: 12px;
+  --jl-font-markdown-small-strong-font-style: normal;
+
+  --jl-font-markdown-small-italic: italic 12px/20px var(--jl-font-family);
+  --jl-font-markdown-small-italic-font-family: var(--jl-font-family);
+  --jl-font-markdown-small-italic-font-weight: 400;
+  --jl-font-markdown-small-italic-line-height: 20px;
+  --jl-font-markdown-small-italic-font-size: 12px;
+  --jl-font-markdown-small-italic-font-style: italic;
+
+  --jl-font-markdown-small-strong-italic: italic 600 12px/20px var(--jl-font-family);
+  --jl-font-markdown-small-strong-italic-font-family: var(--jl-font-family);
+  --jl-font-markdown-small-strong-italic-font-weight: 600;
+  --jl-font-markdown-small-strong-italic-line-height: 20px;
+  --jl-font-markdown-small-strong-italic-font-size: 12px;
+  --jl-font-markdown-small-strong-italic-font-style: italic;
+
+  --jl-font-markdown-code: 12px/19px var(--jl-font-mono);
+  --jl-font-markdown-code-font-family: var(--jl-font-mono);
+  --jl-font-markdown-code-font-weight: 400;
+  --jl-font-markdown-code-line-height: 19px;
+  --jl-font-markdown-code-font-size: 12px;
+  --jl-font-markdown-code-font-style: normal;
+
+  --jl-font-markdown-code-block: 11px/19px var(--jl-font-mono);
+  --jl-font-markdown-code-block-font-family: var(--jl-font-mono);
+  --jl-font-markdown-code-block-font-weight: 400;
+  --jl-font-markdown-code-block-line-height: 19px;
+  --jl-font-markdown-code-block-font-size: 11px;
+  --jl-font-markdown-code-block-font-style: normal;
+
+  /* 手工补充（非插件导出）：tool row 展开卡片内的小号 code 字体。 */
+  --jl-font-markdown-code-block-small: 11px/16px var(--jl-font-mono);
+  --jl-font-markdown-code-block-small-font-family: var(--jl-font-mono);
+  --jl-font-markdown-code-block-small-font-weight: 400;
+  --jl-font-markdown-code-block-small-line-height: 16px;
+  --jl-font-markdown-code-block-small-font-size: 11px;
+  --jl-font-markdown-code-block-small-font-style: normal;
+
+  --jl-font-xl-24: 600 24px/32px var(--jl-font-family);
+  --jl-font-xl-24-font-family: var(--jl-font-family);
+  --jl-font-xl-24-font-weight: 600;
+  --jl-font-xl-24-line-height: 32px;
+  --jl-font-xl-24-font-size: 24px;
+  --jl-font-xl-24-font-style: normal;
+
+  --jl-font-l-20: 500 20px/28px var(--jl-font-family);
+  --jl-font-l-20-font-family: var(--jl-font-family);
+  --jl-font-l-20-font-weight: 500;
+  --jl-font-l-20-line-height: 28px;
+  --jl-font-l-20-font-size: 20px;
+  --jl-font-l-20-font-style: normal;
+
+  --jl-font-m-18: 500 16px/28px var(--jl-font-family);
+  --jl-font-m-18-font-family: var(--jl-font-family);
+  --jl-font-m-18-font-weight: 500;
+  --jl-font-m-18-line-height: 28px;
+  --jl-font-m-18-font-size: 16px;
+  --jl-font-m-18-font-style: normal;
+
+  --jl-font-base-16: 16px/24px var(--jl-font-family);
+  --jl-font-base-16-font-family: var(--jl-font-family);
+  --jl-font-base-16-font-weight: 400;
+  --jl-font-base-16-line-height: 24px;
+  --jl-font-base-16-font-size: 16px;
+  --jl-font-base-16-font-style: normal;
+
+  --jl-font-base-strong-16: 500 16px/24px var(--jl-font-family);
+  --jl-font-base-strong-16-font-family: var(--jl-font-family);
+  --jl-font-base-strong-16-font-weight: 500;
+  --jl-font-base-strong-16-line-height: 24px;
+  --jl-font-base-strong-16-font-size: 16px;
+  --jl-font-base-strong-16-font-style: normal;
+
+  --jl-font-s-14: 14px/22px var(--jl-font-family);
+  --jl-font-s-14-font-family: var(--jl-font-family);
+  --jl-font-s-14-font-weight: 400;
+  --jl-font-s-14-line-height: 22px;
+  --jl-font-s-14-font-size: 14px;
+  --jl-font-s-14-font-style: normal;
+
+  --jl-font-s-strong-14: 500 14px/22px var(--jl-font-family);
+  --jl-font-s-strong-14-font-family: var(--jl-font-family);
+  --jl-font-s-strong-14-font-weight: 500;
+  --jl-font-s-strong-14-line-height: 22px;
+  --jl-font-s-strong-14-font-size: 14px;
+  --jl-font-s-strong-14-font-style: normal;
+
+  --jl-font-xs-13: 13px/20px var(--jl-font-family);
+  --jl-font-xs-13-font-family: var(--jl-font-family);
+  --jl-font-xs-13-font-weight: 400;
+  --jl-font-xs-13-line-height: 20px;
+  --jl-font-xs-13-font-size: 13px;
+  --jl-font-xs-13-font-style: normal;
+
+  --jl-font-xs-strong-13: 500 13px/20px var(--jl-font-family);
+  --jl-font-xs-strong-13-font-family: var(--jl-font-family);
+  --jl-font-xs-strong-13-font-weight: 500;
+  --jl-font-xs-strong-13-line-height: 20px;
+  --jl-font-xs-strong-13-font-size: 13px;
+  --jl-font-xs-strong-13-font-style: normal;
+
+  --jl-font-xxs-12: 12px/18px var(--jl-font-family);
+  --jl-font-xxs-12-font-family: var(--jl-font-family);
+  --jl-font-xxs-12-font-weight: 400;
+  --jl-font-xxs-12-line-height: 18px;
+  --jl-font-xxs-12-font-size: 12px;
+  --jl-font-xxs-12-font-style: normal;
+
+  --jl-font-xxs-strong-12: 500 12px/18px var(--jl-font-family);
+  --jl-font-xxs-strong-12-font-family: var(--jl-font-family);
+  --jl-font-xxs-strong-12-font-weight: 500;
+  --jl-font-xxs-strong-12-line-height: 18px;
+  --jl-font-xxs-strong-12-font-size: 12px;
+  --jl-font-xxs-strong-12-font-style: normal;
+
+  --jl-font-xxxs-11: 11px/14px var(--jl-font-family);
+  --jl-font-xxxs-11-font-family: var(--jl-font-family);
+  --jl-font-xxxs-11-font-weight: 400;
+  --jl-font-xxxs-11-line-height: 14px;
+  --jl-font-xxxs-11-font-size: 11px;
+  --jl-font-xxxs-11-font-style: normal;
+
+  --jl-font-xxxs-strong-11: 500 11px/14px var(--jl-font-family);
+  --jl-font-xxxs-strong-11-font-family: var(--jl-font-family);
+  --jl-font-xxxs-strong-11-font-weight: 500;
+  --jl-font-xxxs-strong-11-line-height: 14px;
+  --jl-font-xxxs-strong-11-font-size: 11px;
+  --jl-font-xxxs-strong-11-font-style: normal;
+}
+
+/* ── scrollbar.css：滚动条皮肤 ──────────────────────────── */
+/* Scrollbar skin: the sole consumer of the four --jl-alias-scrollbar-*
+ * tokens. Without it every scrolling region renders the UA scrollbar, which
+ * ignores the theme — a light native bar over the dark palette.
+ *
+ * The rules sit on `body`, not `html`: design-platform.css declares the
+ * --jl-alias-* tokens on `body` (and the dark overrides on
+ * `body[data-jl-dark]`), and custom properties only inherit downward,
+ * so an `html` rule resolves them to the guaranteed-invalid value and
+ * `scrollbar-color` falls back to `auto`.
+ *
+ * Surfaces pick their elevation by rebinding --jl-scrollbar-thumb{,-hover}:
+ * the l1 pair here is the base-surface default, and an elevated surface
+ * (menu, popover, dialog) rebinds to the l2 pair on its own container. A
+ * scroll container may also rebind the three geometry variables below. */
+
+body {
+  --jl-scrollbar-thumb: var(--jl-alias-scrollbar-bg-l1);
+  --jl-scrollbar-thumb-hover: var(--jl-alias-scrollbar-hover-l1);
+  --jl-scrollbar-thumb-border: 0px;
+  --jl-scrollbar-track-margin: 0px;
+  /* The WebKit bar's layout width, mirrored by the ::-webkit-scrollbar rule
+     below. A surface that must align itself beside a space-consuming bar
+     (ConversationRoot's overlay composer seat) reads this instead of
+     hardcoding the number. */
+  --jl-scrollbar-width: 8px;
+}
+
+/* The two paths are mutually exclusive, and the gate is load-bearing rather
+   than defensive. A non-`auto` `scrollbar-width` or `scrollbar-color` makes
+   Chromium and Safari drop every `::-webkit-scrollbar*` rule for that
+   element, including `::-webkit-scrollbar-thumb:hover` — measured in chromium
+   as an 8px `::-webkit-scrollbar` width taking effect on its own and being
+   ignored as soon as `scrollbar-width: thin` is added. Declaring both
+   unconditionally therefore leaves the hover tokens with no rendering at all,
+   because the engines that implement the hover pseudo-element are exactly the
+   ones the standard properties silence, and Firefox has no hover
+   pseudo-element to fall back on.
+
+   `not selector(::-webkit-scrollbar)` is true only where the pseudo-element
+   is unimplemented, so Firefox takes the standard path and WebKit-based
+   engines take the pseudo-element path. An engine too old for the
+   `selector()` function makes the condition invalid, which evaluates false
+   and selects the pseudo-element path — the correct side for the pre-16.4
+   Safari that is the realistic case. */
+@supports not selector(::-webkit-scrollbar) {
+  /* Declared on every element rather than inherited from `body`. Inheriting
+     would pass down the COLOUR already substituted at `body`, so a descendant
+     rebinding --jl-scrollbar-thumb could not change it; re-declaring makes
+     each element substitute the variable as it sees it, which is what gives
+     an elevated surface a working rebind. `scrollbar-width` is not an
+     inherited property at all, so it needs the per-element declaration
+     regardless.
+
+     No hover counterpart exists on this path: `scrollbar-color` states one
+     thumb colour and the engine derives its own hover treatment. */
+  body,
+  body * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--jl-scrollbar-thumb) transparent;
+  }
+}
+
+/* Not gated in turn: an engine that does not implement these pseudo-elements
+   drops the rules as unknown selectors, so the gate would only restate what
+   selector matching already does. Not inherited either, hence the unscoped
+   selectors. */
+::-webkit-scrollbar {
+  width: var(--jl-scrollbar-width);
+  height: var(--jl-scrollbar-width);
+}
+
+/* Track stays transparent so the thumb reads against whatever surface scrolls
+   under it; only the thumb carries a token colour. */
+::-webkit-scrollbar-track {
+  margin-block: var(--jl-scrollbar-track-margin);
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: var(--jl-scrollbar-thumb-border) solid transparent;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--jl-scrollbar-thumb);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--jl-scrollbar-thumb-hover);
+}
+
+/* Both scrollbars meeting in a corner: no separate token, so the corner
+   matches the transparent track rather than the UA's opaque default. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+
 /* ═══════════════════════════════════════════════════════════
-   第二层 · 语义别名
+   JevLoop 自己补的几个排版常量
+
+   DSH 那边这些值属于各组件的局部契约（它一个组件一个 CSS Module），
+   而这里是单文件界面，抽出来集中定义。字号与行高**成对出现** ——
+   只给字号不给行高是排版最常见的走样来源。
    ═══════════════════════════════════════════════════════════ */
 
 :root {
-  /* 表面 */
-  --jl-bg-base: var(--jl-static-neutral-00);
-  --jl-bg-layer-1: var(--jl-static-neutral-50);
-  --jl-bg-layer-2: var(--jl-static-neutral-75);
-  --jl-bg-layer-3: var(--jl-static-neutral-100);
-  --jl-bg-skeleton: rgba(0, 0, 0, 0.04);
-
-  /* 描边 —— l1 最淡，l4 最重 */
-  --jl-border-l1: rgba(0, 0, 0, 0.06);
-  --jl-border-l2: rgba(0, 0, 0, 0.1);
-  --jl-border-l3: rgba(0, 0, 0, 0.16);
-  --jl-border-l4: rgba(0, 0, 0, 0.24);
-
-  /* 文字 */
-  --jl-label-primary: var(--jl-static-neutral-1000);
-  --jl-label-secondary: var(--jl-static-neutral-700);
-  --jl-label-tertiary: var(--jl-static-neutral-600);
-  --jl-label-caption: var(--jl-static-neutral-400);
-  --jl-label-inverted: var(--jl-static-neutral-00);
-
-  /* 交互 */
-  --jl-interactive-hover: rgba(38, 49, 72, 0.06);
-  --jl-interactive-active: rgba(38, 49, 72, 0.1);
-
-  /* ── 领域语义：每个语义三条线（fg / bg / border） ──
-     组件只写 `--jl-decide-fg`，不写 `blue`。 */
-  --jl-decide-fg: var(--jl-static-blue-600);
-  --jl-decide-bg: var(--jl-static-blue-50);
-  --jl-decide-border: var(--jl-static-blue-100);
-
-  --jl-tool-fg: var(--jl-static-green-900);
-  --jl-tool-bg: var(--jl-static-green-100);
-  --jl-tool-border: var(--jl-static-green-400);
-
-  --jl-model-fg: var(--jl-static-amber-900);
-  --jl-model-bg: var(--jl-static-amber-100);
-  --jl-model-border: var(--jl-static-amber-400);
-
-  --jl-rule-fg: var(--jl-static-neutral-700);
-  --jl-rule-bg: var(--jl-static-neutral-75);
-  --jl-rule-border: var(--jl-static-neutral-300);
-
-  --jl-authorize-fg: var(--jl-static-amber-900);
-  --jl-authorize-bg: var(--jl-static-amber-100);
-  --jl-authorize-border: var(--jl-static-amber-500);
-
-  --jl-audit-fg: var(--jl-static-violet-900);
-  --jl-audit-bg: var(--jl-static-violet-100);
-  --jl-audit-border: var(--jl-static-violet-400);
-
-  --jl-danger-fg: var(--jl-static-red-900);
-  --jl-danger-bg: var(--jl-static-red-100);
-  --jl-danger-border: var(--jl-static-red-400);
-
-  /* 字体 */
-  --jl-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
-  --jl-font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
-  --jl-font-size: 14px;
   --jl-font-size-caption: 12px;
-  --jl-font-size-mono: 12.5px;
-
-  /* 尺度 */
+  --jl-font-size-sm: 13px;
+  --jl-font-size: 14px;
+  --jl-line-caption: 18px;
+  --jl-line-sm: 20px;
+  --jl-line: 22px;
+  --jl-font-sans: var(--jl-font-family);
   --jl-radius-sm: 6px;
   --jl-radius: 10px;
   --jl-gap: 12px;
   --jl-pad: 16px;
-
-  /* 动效。DSH 的做法：只给「状态切换」用动效，
-     拖拽/高频更新的属性一律不做过渡，否则会跟手不上。 */
-  --jl-ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --jl-duration: 160ms;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --jl-duration: 0ms;
-  }
 }
