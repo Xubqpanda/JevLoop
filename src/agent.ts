@@ -34,7 +34,7 @@
  */
 
 import { Decider } from './decide.ts'
-import type { DecisionSpec, DecisionResult } from './vocab-decision.ts'
+import type { DecisionResult, DecisionSpec } from './vocab-decision.ts'
 import type { AnswerMap, QuestionSet } from './vocab.ts'
 import { Meter } from './meter.ts'
 import { clip } from './budget.ts'
@@ -324,21 +324,60 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     return record(await decider.decide(spec, c))
   }
 
+  /**
+   * 一次请求问**多个独立的**判定。
+   *
+   * ★ **为什么要合并**：判定占墙钟 62–80%（§8.11，托管 Jev 一次约 390ms），
+   *   而每一步要问好几次。官方 skill 的话：「**Ask independent questions
+   *   over the same state together** … They run in parallel and cannot see
+   *   one another's answers.」—— 一次请求里加问题是**并行打分**的，
+   *   延迟不随问题数增长。
+   *
+   * ★ **为什么两个结果都要发事件**：轨迹上仍然是两个判定点。合并省的是
+   *   **一次网络往返**，不是一次判断 —— 每个判定各跑各的策略、各自决定动作。
+   *   `state` 报的是**实际发出去的那份**（合并后的帧），因为那是事实。
+   *
+   * 「独立」的硬要求见 `Decider.decideMany` —— 问题 id 撞了、或者状态里
+   * 同名键有两个值，它**抛**。
+   */
+  const askMany = async <QA extends QuestionSet, QB extends QuestionSet>(
+    specs: readonly [DecisionSpec<AgentCtx, QA>, DecisionSpec<AgentCtx, QB>],
+    c: AgentCtx = ctx,
+  ): Promise<[DecisionResult<AnswerMap<QA>>, DecisionResult<AnswerMap<QB>>]> => {
+    // phase 报**全部**节点名：它们同时开始，报一个会让人以为另一个还没开始
+    emit({ type: 'phase', step, kind: 'decide', id: specs.map((x) => x.id).join(' + ') })
+    // 转换说明：`decideMany` 收的是擦掉每节点具体类型的形状（它按问题 id 分发），
+    // 而这里的元组签名是为了让调用点拿回**各自的**答案类型（`pick.answers.tool.choice`）。
+    // 返回值再转回来 —— 两边是同一批对象，只是类型面不同。
+    const results = await decider.decideMany(
+      specs as unknown as readonly DecisionSpec<AgentCtx, QuestionSet>[],
+      c,
+    )
+    for (const r of results) record(r)
+    return results as unknown as [DecisionResult<AnswerMap<QA>>, DecisionResult<AnswerMap<QB>>]
+  }
+
   // ── 工具循环 ──────────────────────────────────────────────
   while (step < maxSteps) {
     step++
     decider.setStep(step)
 
-    // ↗ 需要动手吗
-    const need = await ask(needsTool, ctx)
+    /*
+      ↗ 需要动手吗 + ↗ 用哪个工具（候选每步重建）
+
+      **这两个一起问。** `pickTool` 的候选由 `toolsFor(ctx)` 算出来，和后
+      者答什么无关，所以它们是独立的：一次请求拿到两份答案，代码再按
+      `needsTool` 的答案决定要不要用 `pickTool` 那份。
+
+      下面仍然**先看 needsTool** —— 顺序在代码里，模型看不见彼此。
+    */
+    const [need, pick] = await askMany([needsTool, pickTool])
     if (need.action === 'answer') {
       halt = 'answered_directly'
       trace(`  answering directly (no tool needed)`)
       break
     }
 
-    // ↗ 用哪个工具（候选每步重建）
-    const pick = await ask(pickTool, ctx)
     if (pick.escalate || pick.action !== 'call') {
       halt = 'tool_unclear'
       trace(`  tool choice unclear → stopping (${pick.reason})`)
@@ -427,7 +466,26 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       ctx.readFiles = [...(ctx.readFiles ?? []), input.trim()]
     }
 
-    // ↗ 成功了吗
+    /*
+      ↗ 成功了吗
+
+      ⚠️ **这两个（`stepOk` / `isDone`）不能合并** —— 试过了，合并检查当场拦下，
+      而且拦得对。
+
+      逻辑上它们确实独立（一个问这次调用，一个问整个任务），但**帧必须不一样**：
+
+        `stepOk`  **故意没有 `task`** —— 那是修出来的。以前帧带着 `task`、
+                  问题写着 "for the task"，于是第一步 `list_dir` 成功返回了
+                  文件列表，它却因为「没回答任务的问题」判 `ok=0.470` → `stop`
+                  → 任何多步任务都跑不完（见 DECISION.md 的 step_ok 一节）。
+        `isDone`  **必须有 `task`** —— 它判的就是任务完没完。
+
+      合并会把 `task` 塞回 `stepOk` 的帧里，**把那个修复撤销掉**。
+
+      （拦下它的直接原因还不是 `task`，是 `already_read`：`stepOk` 放的是
+      **条数**，`isDone` 放的是**清单**。同一个字段名两种东西 —— 那本身也是
+      个该修的毛病，记在案。）
+    */
     const ok = await ask(stepOk, ctx)
     if (ok.action !== 'continue') {
       halt = 'step_failed'

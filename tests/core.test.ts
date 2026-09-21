@@ -869,7 +869,7 @@ test('★ 每个 decision / generate **之前**都有一条 phase —— 界面�
   const { Decider } = await import('../src/decide.ts')
   const { Meter } = await import('../src/meter.ts')
 
-  const seq: string[] = []
+  const seq: { type: string; id?: string; kind?: string }[] = []
   const decider = new Decider({
     meter: new Meter(),
     provider: {
@@ -888,21 +888,46 @@ test('★ 每个 decision / generate **之前**都有一条 phase —— 界面�
     },
     maxSteps: 1,
     onEvent: (e) => {
-      seq.push(e.type === 'phase' ? `phase:${e.kind}` : e.type)
+      seq.push(
+        e.type === 'phase'
+          ? { type: `phase:${e.kind}`, ...(e.id ? { id: e.id } : {}) }
+          : e.type === 'decision'
+            ? { type: 'decision', id: e.id }
+            : { type: e.type },
+      )
     },
   })
 
-  // 走一遍序列：每个 decision / generate 前面**紧邻**的必须是对应的 phase
-  const missing: string[] = []
-  for (const [i, x] of seq.entries()) {
-    if (x === 'decision' && seq[i - 1] !== 'phase:decide') missing.push(`第 ${i} 条 decision 前面是 ${seq[i - 1]}`)
-    if (x === 'generate' && seq[i - 1] !== 'phase:generate') missing.push(`第 ${i} 条 generate 前面是 ${seq[i - 1]}`)
-  }
-  assert.deepEqual(missing, [], '有操作没有先播报 phase —— 界面会在那一段显示上一个阶段的标签')
+  /*
+    ★ **一次 phase 可以覆盖多个 decision。**
 
-  // 防呆：别因为一次判定都没发生而静默通过
-  assert.ok(seq.filter((x) => x === 'phase:decide').length >= 1, `一次判定都没发生：${seq.join(' → ')}`)
-  assert.ok(seq.includes('phase:generate'), `没有生成阶段：${seq.join(' → ')}`)
+    循环里每步开头那一对（`needsTool` + `pickTool`）是**一次请求问两个独立
+    判定**（官方 skill：「Ask independent questions over the same state
+    together」）—— 它们同时开始，所以只有一条 phase。
+
+    所以要验的不是「一对一」，而是：**每条 decision 前面都有一条 phase，
+    而且那条 phase 的名字里点得到它** —— 否则界面在那一整段显示的还是上
+    一个阶段的标签，而那正是这条测试当初要抓的 bug。
+  */
+  const problems: string[] = []
+  let lastPhase: { id?: string } | undefined
+  for (const [i, x] of seq.entries()) {
+    if (x.type === 'phase:decide') lastPhase = x
+    if (x.type === 'decision') {
+      // 那条 phase 必须**点名它自己** —— 合并时名字是 `'a + b'`，拆开看
+      if (!lastPhase) problems.push(`第 ${i} 条 decision 前面没有 phase:decide`)
+      else if (lastPhase.id && !lastPhase.id.split(' + ').includes(x.id!)) {
+        problems.push(`phase 的名字 '${lastPhase.id}' 里点不到它要覆盖的 '${x.id}'`)
+      }
+    }
+    if (x.type === 'generate' && seq[i - 1]?.type !== 'phase:generate') {
+      problems.push(`第 ${i} 条 generate 前面是 ${seq[i - 1]?.type}`)
+    }
+  }
+  assert.deepEqual(problems, [], '有操作没有先播报 phase —— 界面会在那一段显示上一个阶段的标签')
+
+  assert.ok(seq.some((x) => x.type === 'phase:decide'), `一次判定都没发生：${seq.map((x) => x.type).join(' → ')}`)
+  assert.ok(seq.some((x) => x.type === 'phase:generate'), `没有生成阶段：${seq.map((x) => x.type).join(' → ')}`)
 })
 
 test('phase 事件带得上判定节点 id —— 排查「哪个判定慢」要看它', async () => {
@@ -931,15 +956,19 @@ test('phase 事件带得上判定节点 id —— 排查「哪个判定慢」要
       if (e.type === 'phase' && e.kind === 'decide') ids.push(e.id ?? '(没有 id)')
     },
   })
+
   // ⚠️ 不要写成 `['loop.needsTool']` —— spy provider 对**每个**判定都返回
   //    同一份答案，所以 `canDeliver` 也拿到 `needs_tool:0.1`，它的策略在缺
   //    `deliverable` / `unsupported` 时走到 `revise`，于是**又一次生成 +
-  //    又一次 canDeliver**。实测序列是 needsTool → canDeliver → canDeliver。
-  //    （同一个坑今天绊了两次：修订那条路径让「一次运行有几次生成」比
-  //     直觉多一次。）
-  assert.equal(ids[0], 'loop.needsTool', '第一个判定是 needsTool')
+  //    又一次 canDeliver**。（同一个坑今天绊了两次。）
+  //
+  // ★ 合并之后一条 phase 可能覆盖两个节点（`'a + b'`），所以判据是
+  //   **每个名字都像节点 id**，而不是「恰好一个」。
+  const all = ids.flatMap((x) => x.split(' + '))
+  assert.equal(all[0], 'loop.needsTool', '第一个判定是 needsTool')
   assert.ok(
-    ids.every((id) => /^loop\.[a-zA-Z]+$/.test(id)),
+    all.every((id) => /^loop\.[a-zA-Z]+$/.test(id)),
     `每个 phase 都要带真实的节点 id，实际拿到：${JSON.stringify(ids)}`,
   )
+  assert.ok(all.includes('loop.pickTool'), `合并的那一对要都点名：${JSON.stringify(ids)}`)
 })

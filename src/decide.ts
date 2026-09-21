@@ -78,29 +78,125 @@ export class Decider {
     this.#step = n
   }
 
-  /** 跑一次判定 —— 这是唯一的公开入口 */
+  /** 跑一次判定 —— 单数形式，交给 `decideMany`（见那里的说明） */
   async decide<Ctx, Q extends QuestionSet>(
     spec: DecisionSpec<Ctx, Q>,
     ctx: Ctx,
     opts: DecideOptions = {},
   ): Promise<DecisionResult<AnswerMap<Q>>> {
+    const [only] = await this.decideMany([spec as DecisionSpec<Ctx, QuestionSet>], ctx, opts)
+    return only as DecisionResult<AnswerMap<Q>>
+  }
+
+  /**
+   * 一次请求问**多个独立的**判定。
+   *
+   * ══════════════════════════════════════════════════════════════
+   *  官方 skill 的原话：「**Ask independent questions over the same state
+   *  together**, including useful speculative questions. They run in
+   *  parallel and cannot see one another's answers.」
+   * ══════════════════════════════════════════════════════════════
+   *
+   * 为什么要合并：**判定占墙钟 62–80%**（§8.11，托管 Jev 一次约 390ms），
+   * 而循环里每一步要问好几次。合并之后请求数直接少掉一截，而每次请求的
+   * 延迟**不随问题数增长**（所有问题对同一份 state 并行打分）。
+   *
+   * ── 「独立」是什么意思 ──────────────────────────────────────────
+   *
+   * **一个判定的问题不依赖另一个判定的答案。** 比如每步开头的
+   * `needsTool`（要不要动手）和 `pickTool`（用哪个工具）：后者的候选由
+   * `toolsFor(ctx)` 算出来，和前者答什么无关 —— 所以它们可以一起问，
+   * 代码再按 `needsTool` 的答案决定要不要用 `pickTool` 那份。
+   *
+   * `gradeRisk`（这次调用多危险）就**不能**并进来：它的帧依赖
+   * `pickTool` 选中的是哪个工具。
+   *
+   * ── 两处硬约束，撞了就抛 ────────────────────────────────────────
+   *
+   * · **问题 id 不能撞** —— 撞了答案会互相覆盖，而其中一个判定会拿着
+   *   另一个的问题的答案去跑策略，**在轨迹上完全看不出来**。
+   * · **状态里同名键不能有两个值** —— 合并取一个的话，其中一个判定看到的
+   *   就不是它要的帧（§8.2 的错法，但更隐蔽：帧看起来「有」那个字段）。
+   *
+   * 两个都抛而不是取一个：这是**调用方接线错了**，不是运行时状况。
+   */
+  async decideMany<Ctx>(
+    specs: readonly DecisionSpec<Ctx, QuestionSet>[],
+    ctx: Ctx,
+    opts: DecideOptions = {},
+  ): Promise<DecisionResult<AnswerSet>[]> {
     const step = opts.step ?? this.#step
+    if (specs.length === 0) return []
 
-    // ① State 投影
-    const state = spec.state(ctx)
+    // ① 各自投影
+    const projected = specs.map((spec) => ({
+      spec,
+      state: spec.state(ctx),
+      questions: (typeof spec.questions === 'function' ? spec.questions(ctx) : spec.questions) as QuestionSet,
+    }))
 
-    // ② 问题
-    const questions: QuestionSet =
-      typeof spec.questions === 'function' ? spec.questions(ctx) : spec.questions
+    /*
+      ② 合成 state。
 
-    // ③ 发请求之前就检查预算
-    const warnings = validate(state, questions, this.checkpoint)
-    if (warnings.length) this.#onWarn?.(spec.id, warnings)
-    if (this.strict && warnings.some((w) => w.level === 'error')) {
-      throw new Error(`决策 '${spec.id}' 超出 ${this.checkpoint} 限制：${warnings.map((w) => w.message).join('; ')}`)
+      ★ **单数时原样用**，不做任何包装 —— 合并是为了省一次请求，不该顺手
+      改变单次调用的帧形状（那会让已有的 bench 数字不再可比）。
+    */
+    let state: unknown = projected[0]!.state
+    if (projected.length > 1) {
+      const merged: Record<string, unknown> = {}
+      for (const p of projected) {
+        const obj = p.state as Record<string, unknown> | null
+        if (obj === null || typeof obj !== 'object') {
+          throw new Error(
+            `合并 ${projected.map((x) => x.spec.id).join(' 和 ')} 时，'${p.spec.id}' 的 state 不是对象` +
+              `（${typeof obj}）—— 合并只能用于「同一份上下文的两个投影」`,
+          )
+        }
+        for (const [k, v] of Object.entries(obj)) {
+          const seen = merged[k]
+          if (k in merged && JSON.stringify(seen) !== JSON.stringify(v)) {
+            throw new Error(
+              `合并 ${projected.map((x) => x.spec.id).join(' 和 ')} 时，状态字段 '${k}' 有两个不同的值 —— ` +
+                `这两个判定不是同一份上下文的投影，不该合并（静默取一个会让其中一个看到错的帧）`,
+            )
+          }
+          merged[k] = v
+        }
+      }
+      state = merged
     }
 
-    // ④ 一次前向
+    // ③ 合成问题。id 撞了**抛**，不覆盖
+    let questions: QuestionSet
+    if (projected.length === 1) {
+      questions = projected[0]!.questions
+    } else {
+      questions = {}
+      for (const p of projected) {
+        for (const [qid, q] of Object.entries(p.questions)) {
+          if (qid in questions) {
+            throw new Error(
+              `合并 ${projected.map((x) => x.spec.id).join(' 和 ')} 时，问题 id '${qid}' 撞了 —— ` +
+                `答案会互相覆盖，而其中一个判定会拿着另一个的答案跑策略，轨迹上看不出来`,
+            )
+          }
+          questions[qid] = q
+        }
+      }
+    }
+
+    // ④ 发请求之前就检查预算
+    for (const p of projected) {
+      const warnings = validate(state, p.questions, this.checkpoint)
+      if (warnings.length) this.#onWarn?.(p.spec.id, warnings)
+      if (this.strict && warnings.some((w) => w.level === 'error')) {
+        throw new Error(
+          `决策 '${p.spec.id}' 超出 ${this.checkpoint} 限制：${warnings.map((w) => w.message).join('; ')}`,
+        )
+      }
+    }
+
+    // ⑤ 一次前向
     let answers: AnswerSet = {}
     let latencyMs = 0
     let provider = this.provider.name
@@ -115,7 +211,9 @@ export class Decider {
       const res = await this.provider.decide({
         state,
         questions,
-        ...(opts.model ?? spec.model ? { model: opts.model ?? spec.model } : {}),
+        // 合并的判定**必须用同一个模型** —— 两个判定发往不同模型的话，
+        // 「一次请求」这件事就不成立了
+        ...(opts.model ?? projected[0]!.spec.model ? { model: opts.model ?? projected[0]!.spec.model } : {}),
         timeoutMs: this.#timeoutMs,
       })
       answers = res.answers
@@ -128,56 +226,68 @@ export class Decider {
       // 防线：后端整个不可用也不能让 loop 崩。
       // 记 degraded，然后交回上层 —— 不猜。
       const failedMs = performance.now() - t0
-      const result: DecisionResult<AnswerMap<Q>> = {
-        id: spec.id,
-        step,
-        state,
-        questions,
-        answers: {} as AnswerMap<Q>,
-        action: 'escalate',
-        reason: `${provider} 不可用：${(err as Error).message}`,
-        latencyMs: failedMs,
-        provider, // 记**原计划用的**，不覆盖成 "none"
-        degraded: true,
-        escalate: true,
-        // 异常文本同时进 `reason` 和 `warnings`：前者是给人看的一句话，
-        // 后者是**可枚举**的那一份。降级链上的每一跳都在里面。
-        warnings: [`${provider} 不可用：${(err as Error).message}`],
+      return projected.map((p) => {
+        const result: DecisionResult<AnswerSet> = {
+          id: p.spec.id,
+          step,
+          state,
+          questions: p.questions,
+          answers: {},
+          action: 'escalate',
+          reason: `${provider} 不可用：${(err as Error).message}`,
+          latencyMs: failedMs,
+          provider, // 记**原计划用的**，不覆盖成 "none"
+          degraded: true,
+          escalate: true,
+          // 异常文本同时进 `reason` 和 `warnings`：前者是给人看的一句话，
+          // 后者是**可枚举**的那一份。降级链上的每一跳都在里面。
+          warnings: [`${provider} 不可用：${(err as Error).message}`],
+        }
+        this.meter.recordDecision(step, result)
+        return result
+      })
+    }
+
+    // ⑥ 每个判定**各跑各的策略** —— 合并的只是那次前向，动作还是分开决定的
+    return projected.map((p) => {
+      const mine: AnswerSet = {}
+      for (const qid of Object.keys(p.questions)) {
+        const a = answers[qid]
+        if (a !== undefined) mine[qid] = a
       }
-      this.meter.recordDecision(step, result as DecisionResult<unknown>)
+
+      const policyWarnings: PolicyWarning[] = []
+      const outcome = resolvePolicy(p.spec.policy, mine, (w) => policyWarnings.push(w))
+      if (policyWarnings.length) this.#onPolicyWarn?.(p.spec.id, policyWarnings)
+
+      const result: DecisionResult<AnswerSet> = {
+        id: p.spec.id,
+        step,
+        // `state` / `questions` 报的是**实际发出去的那一份**：合并时就是合并后的帧。
+        // 报各自的投影会让轨迹看起来像发了两次请求，而实际只发了一次。
+        state,
+        questions: p.questions,
+        answers: mine,
+        action: outcome.action,
+        reason: outcome.reason,
+        latencyMs,
+        provider,
+        ...(model !== undefined ? { model } : {}),
+        degraded: degraded || policyWarnings.length > 0,
+        escalate: outcome.action === 'escalate',
+        // ★ 后端报的问题**和**策略警告一起带上。
+        //
+        //   它们本来就被算出来了（`notes` / `policyWarnings`），只是**没有
+        //   一个消费者** —— 于是 `degraded: true` 在轨迹上是一句没有下文的话。
+        //   实测某个会话的每一次判定都 degraded，而没人说得出缺了什么。
+        ...(notes.length || policyWarnings.length
+          ? { warnings: [...notes, ...policyWarnings.map((w) => w.message)] }
+          : {}),
+      }
+
+      // ⑦ 记账
+      this.meter.recordDecision(step, result)
       return result
-    }
-
-    // ⑤ 策略
-    const policyWarnings: PolicyWarning[] = []
-    const outcome = resolvePolicy(spec.policy, answers as never, (w) => policyWarnings.push(w))
-    if (policyWarnings.length) this.#onPolicyWarn?.(spec.id, policyWarnings)
-
-    const result: DecisionResult<AnswerMap<Q>> = {
-      id: spec.id,
-      step,
-      state,
-      questions,
-      answers: answers as AnswerMap<Q>,
-      action: outcome.action,
-      reason: outcome.reason,
-      latencyMs,
-      provider,
-      ...(model !== undefined ? { model } : {}),
-      degraded: degraded || policyWarnings.length > 0,
-      escalate: outcome.action === 'escalate',
-      // ★ 后端报的问题**和**策略警告一起带上。
-      //
-      //   它们本来就被算出来了（`notes` / `policyWarnings`），只是**没有
-      //   一个消费者** —— 于是 `degraded: true` 在轨迹上是一句没有下文的话。
-      //   实测某个会话的每一次判定都 degraded，而没人说得出缺了什么。
-      ...(notes.length || policyWarnings.length
-        ? { warnings: [...notes, ...policyWarnings.map((w) => w.message)] }
-        : {}),
-    }
-
-    // ⑥ 记账
-    this.meter.recordDecision(step, result as DecisionResult<unknown>)
-    return result
+    })
   }
 }

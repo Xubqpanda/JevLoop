@@ -28,6 +28,15 @@ import type { Generator } from './llm.ts'
 export type FallbackNotice = (error: unknown, from: string, to: string) => void
 
 /** 判定后端的选择。 */
+/**
+ * 钉住的 Jev 版本。
+ *
+ * `docs.typesafe.ai/models` 里 `jev-latest` 当前解析到 `jev-1.13.0`。
+ * **换它要当成一次决定**：改这里、重跑 bench、看数字动不动 —— 因为
+ * `DECISION.md` 里那些门限是拿这个版本量出来的。
+ */
+export const PINNED_JEV_MODEL = 'jev-1.13.0'
+
 export interface ProviderChoice {
   /** 官方 Jev 的 baseUrl，默认 `https://api.typesafe.ai` */
   jevUrl?: string
@@ -92,7 +101,26 @@ export function resolveProvider(choice: ProviderChoice = {}): Provider {
   const jev = new HttpProvider({
     baseUrl: choice.jevUrl ?? 'https://api.typesafe.ai',
     name: 'jev',
-    defaultModel: choice.model ?? 'jev-latest',
+    /*
+      ★ **钉住版本，不用 `jev-latest` 别名。**
+
+      官方文档（`docs.typesafe.ai/models`）的原话：
+
+        「An alias moves when a new release ships, so the answers behind it
+          can change without a change on your side. … **If you have tuned
+          confidence thresholds against a specific version, pin that
+          version's ID instead of the alias** and move to the new one on
+          your own schedule.」
+
+      我们**确实调过**门限 —— `DECISION.md` 里现在有 8 条
+      （`prob:needs_tool >= 0.5`、`top >= 0.6`、`prob:ok >= 0.6` …），
+      每一条都是拿 bench 量出来的。别名一动，那些数字背后的模型就换了，
+      而**我们这边一处都没改**，bench 的历史数字也不再可比。
+
+      换版本是一次**决定**：改这里，重跑 bench，看数字动不动。
+      `choice.model` 仍然可以覆盖（试验新版本时用）。
+    */
+    defaultModel: choice.model ?? PINNED_JEV_MODEL,
     ...(apiKey ? { apiKey } : {}),
   })
 
