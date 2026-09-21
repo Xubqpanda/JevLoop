@@ -20,6 +20,26 @@
 
 最后一条不是风格问题：Node 的类型剥离和 `allowImportingTsExtensions` 都要求它。
 
+### 只能用**可擦除**的语法
+
+这个项目跑 `.ts` 靠 Node 的类型剥离，它**只把类型标注抹掉，不做转换**。
+所以有几样 TS 语法剥不掉，运行时直接抛 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`：
+
+| 别写 | 换成 |
+|---|---|
+| `constructor(readonly x: T)` —— **参数属性** | 字段显式声明，构造函数里赋值 |
+| `enum E { A }` | `const E = { A: 'A' } as const` |
+| `namespace N { … }`（有运行时产物的） | 一个文件 |
+| `import x = require('…')` | ESM 的 `import` |
+
+**⚠️ 为什么这条值得单列：这几种写法 `tsc` 全都接受。**
+`npx tsc --noEmit` 全绿，一跑就炸 —— 检查器说没问题，而它说的不是运行时的语言。
+实测（2026-09-21）：`WorkspaceError` 用了参数属性，`tsc` 干净，
+`node --experimental-strip-types` 当场抛。
+
+**机器检查**：`erasable`（`scripts/check.ts`）。用 TypeScript 的 AST 而不是
+正则 —— 正则会命中注释和字符串里的反例（写那条检查时自己就踩了）。
+
 ## 2. 注释写事实和契约，不叙述代码
 
 **要写的**：这个模块解决什么问题、为什么这么设计、有什么不变量、调用方要注意什么。

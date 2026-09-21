@@ -115,6 +115,8 @@ function checkFile(file: string): Violation[] {
 
   const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, false)
   for (const v of lexicalViolations(sf)) add(v.line, v.rule, v.detail)
+  // 可擦除语法：这一条挡的是「tsc 全绿、一跑就炸」
+  for (const v of erasableViolations(sf)) add(v.line, v.rule, v.detail)
 
   raw.split('\n').forEach((line, i) => {
     if (line.includes('\t')) add(i + 1, 'tab', '含制表符（规范要求 2 空格缩进）')
@@ -148,6 +150,56 @@ function checkFile(file: string): Violation[] {
   }
 
   return found
+}
+
+// ═══════════════════════════════════════════════════════════
+// 语法必须是**可擦除的**
+//
+// 这个项目跑 .ts 靠 Node 的**类型剥离**（`--experimental-strip-types`），
+// 它只把类型标注抹掉，不做转换。所以有几样 TS 语法**剥不掉**，直接抛
+// `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`。
+//
+// ★ **为什么值得单列一条检查**：这几种写法 `tsc` 全都接受 ——
+//   `npx tsc --noEmit` 全绿，一跑就炸。这是最难查的一类：
+//   检查器说没问题，而它说的不是运行时的语言。
+//
+// 实测（2026-09-21）：`WorkspaceError` 用了参数属性
+// （`constructor(readonly code: X, …)`），`tsc` 干净，一跑就
+// `TypeScript parameter property is not supported in strip-only mode`。
+//
+// 用 AST 而不是正则：正则会在注释和字符串里误报（写这条检查时自己就
+// 在注释里写了反例，正则当场命中）。
+// ═══════════════════════════════════════════════════════════
+
+/** 一条「剥不掉」的语法 */
+function erasableViolations(sf: ts.SourceFile): { line: number; rule: string; detail: string }[] {
+  const out: { line: number; rule: string; detail: string }[] = []
+  const lineOf = (pos: number) => sf.getLineAndCharacterOfPosition(pos).line + 1
+  const add = (node: ts.Node, what: string, why: string) =>
+    out.push({ line: lineOf(node.getStart(sf)), rule: 'erasable', detail: `${what} —— ${why}` })
+
+  const walk = (node: ts.Node): void => {
+    // ① 参数属性：`constructor(readonly x: T)`。剥掉 readonly 之后那个参数
+    //    就不再是字段了，等于**悄悄改语义**，所以 Node 拒绝而不是忽略
+    if (ts.isConstructorDeclaration(node)) {
+      for (const prm of node.parameters) {
+        if (ts.getModifiers(prm)?.some((m) => m.kind >= ts.SyntaxKind.PublicKeyword && m.kind <= ts.SyntaxKind.ReadonlyKeyword)) {
+          add(prm, `参数属性 '${prm.name.getText(sf)}'`, '类型剥离剥不掉它，运行时抛 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX')
+        }
+      }
+    }
+    // ② enum：有运行时产物，剥不掉。要常量就用 `as const` 对象
+    if (ts.isEnumDeclaration(node)) add(node, `enum '${node.name.getText(sf)}'`, 'enum 有运行时产物；用 `as const` 对象代替')
+    // ③ namespace / module：同上（`declare namespace` 是纯类型，放行）
+    if (ts.isModuleDeclaration(node) && !node.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) {
+      add(node, `namespace '${node.name.getText(sf)}'`, '有运行时产物；要分组就用文件')
+    }
+    // ④ `import x = require(...)` / `export =`：CommonJS 互操作语法，剥不掉
+    if (ts.isImportEqualsDeclaration(node)) add(node, 'import … = require(…)', '剥不掉；用 ESM 的 import')
+    ts.forEachChild(node, walk)
+  }
+  walk(sf)
+  return out
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -216,6 +268,12 @@ const LAYER: Record<string, number> = {
   // 它只认「一轮问答」这个形状，不认识 agent、不认识判定 —— 所以放在
   // 接缝那一层，和 `llm` / `tools` 同级。
   'session-store': 2,
+  // 工作区那两块：选目录（浏览）和登记表。都有 IO，都不认识 agent。
+  // 「选一个目录」和「记住选过哪些」是两件事，各约 100 行代码，所以拆开；
+  // 共用的失败词表下沉到 L0（`vocab-workspace.ts`），因为 §11 不许同层互相依赖。
+  'dir-browse': 2,
+  workspace: 2,
+  'vocab-workspace': 0,
   // L3 —— 编译器
   frame: 3,
   // 层号按**拆出来那半的依赖面有多小**定（同 context-prune 的先例）：

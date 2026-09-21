@@ -68,6 +68,12 @@ export { hasFileOptions, unreadFiles } from './frame.ts'
 export type { AgentCtx, StepRecord } from './frame.ts'
 
 // ── 环境 ─────────────────────────────────────────────────────
+export { listDirs, createDir } from './dir-browse.ts'
+export type { DirEntry, DirListing } from './dir-browse.ts'
+export { WorkspaceStore } from './workspace.ts'
+export type { Workspace, CreateResult } from './workspace.ts'
+export { WorkspaceError } from './vocab-workspace.ts'
+export type { WorkspaceErrorCode } from './vocab-workspace.ts'
 export { SessionStore, assertSessionId, SESSION_FORMAT_VERSION } from './session-store.ts'
 export type { StoredTurn, SessionSummary } from './session-store.ts'
 export { loadEnv } from './env.ts'

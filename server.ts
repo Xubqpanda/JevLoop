@@ -39,6 +39,9 @@ import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc
 import { compilePredicate } from './src/decision-compile.ts'
 import type { AgentEvent } from './src/events.ts'
 import { SessionStore, assertSessionId } from './src/session-store.ts'
+import { createDir, listDirs } from './src/dir-browse.ts'
+import { WorkspaceStore } from './src/workspace.ts'
+import { WorkspaceError, type WorkspaceErrorCode } from './src/vocab-workspace.ts'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = join(ROOT, 'web')
@@ -105,6 +108,41 @@ const MAX_TURNS = 12
  */
 const JEVLOOP_HOME = process.env.JEVLOOP_HOME ?? join(homedir(), '.jevloop')
 const store = new SessionStore(join(JEVLOOP_HOME, 'sessions'))
+const workspaces = new WorkspaceStore(join(JEVLOOP_HOME, 'workspaces.json'))
+
+/**
+ * 绑到非回环地址时，**浏览和登记端点一律拒绝**。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  ★ 这是加了工作区之后**新开的口子**，所以要有对应的闸门。
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 在这个功能之前，工作目录只能来自 `CWD_ROOT`（启动参数）—— 请求指定
+ * 不了，因为 `?cwd=/etc` 曾经让这个端点变成**无鉴权的任意目录读取**。
+ *
+ * 现在跑任务那条路径仍然安全：请求发的是 **workspaceId**，路径由服务端
+ * 从自己登记的表里取。但**浏览**（`/api/browse`）和**登记**
+ * （`POST /api/workspaces`）确实开始接受路径了 —— 它们必须接受，否则
+ * 没法挑目录。
+ *
+ * 「能浏览本机文件系统」是**宿主级能力**：它和「能在这台机器上跑命令」
+ * 是一回事。所以它只在服务只能从本机访问时才成立。绑到 `0.0.0.0` 的话，
+ * 这个端点等于把整个文件系统开放给网络，而那个后果不该由一个
+ * 「我没注意 HOST 默认值」来承担。
+ *
+ * 要显式开放就设 `JEVLOOP_ALLOW_REMOTE_WORKSPACE=1` —— **让它是一次决定**。
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+const ALLOW_REMOTE_WORKSPACE = process.env.JEVLOOP_ALLOW_REMOTE_WORKSPACE === '1'
+
+function remoteWorkspaceRefusal(): string | null {
+  if (LOOPBACK_HOSTS.has(HOST) || ALLOW_REMOTE_WORKSPACE) return null
+  return (
+    `服务绑在 ${HOST}（非本机），所以浏览目录和登记工作区被拒绝。\n` +
+    `它们能读到这台机器上的任何目录 —— 那和「能在这台机器上跑命令」是一回事。\n` +
+    `要么把 HOST 改回 127.0.0.1，要么明确接受这个后果：JEVLOOP_ALLOW_REMOTE_WORKSPACE=1`
+  )
+}
 
 /**
  * 生成器**现在能不能看到上文**，如实报给界面。
@@ -265,7 +303,18 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   const task = url.searchParams.get('task')?.trim() || DEFAULT_TASK
   const maxSteps = parseMaxSteps(url.searchParams.get('maxSteps'))
   const session = resolveSessionId(url.searchParams.get('session'))
-  const cwd = await workspaceRoot()
+  // ★ 请求发的是 **id**，不是路径 —— 客户端说不出一个服务端没登记过的目录。
+  //   没给就退回老路径（`CWD_ROOT` 或临时演示目录），行为不变。
+  let cwd: string
+  try {
+    cwd = await resolveRunCwd(url)
+  } catch (err) {
+    if (err instanceof WorkspaceError) {
+      sendJson(res, statusOf(err.code), { error: err.message, code: err.code })
+      return
+    }
+    throw err
+  }
 
   const send = openStream(res)
 
@@ -360,6 +409,63 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 }
 
+/**
+ * 读一个 JSON 请求体。
+ *
+ * 有上限（64KB）：没有上限的话，一个 `POST` 就能让服务端把内存吃光。
+ * 这几条端点的 body 都只有几十字节。
+ */
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const MAX = 64 * 1024
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const c of req) {
+    size += (c as Buffer).length
+    if (size > MAX) throw new WorkspaceError('bad-name', '', `请求体超过 ${MAX} 字节`)
+    chunks.push(c as Buffer)
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (!raw) return {}
+  try {
+    const v: unknown = JSON.parse(raw)
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+  } catch {
+    throw new WorkspaceError('bad-name', '', '请求体不是合法 JSON')
+  }
+}
+
+/**
+ * 这次跑在哪个目录。
+ *
+ * `?workspace=<id>` 优先；没有就退回启动参数那条路（`CWD_ROOT`，或者
+ * 自动造的演示目录）。**退回是为了不破坏已有用法** —— 以前不带这个参数
+ * 是对的，现在也该是对的。
+ */
+async function resolveRunCwd(url: URL): Promise<string> {
+  const id = url.searchParams.get('workspace')
+  if (!id) return workspaceRoot()
+  const ws = await workspaces.get(id)
+  if (!ws) {
+    throw new WorkspaceError(
+      'not-found',
+      id,
+      `没有 id 为 ${id} 的工作区 —— 界面可能还拿着一个已经被移除的，刷新即可`,
+    )
+  }
+  return ws.path
+}
+
+/**
+ * 失败 → HTTP 状态。
+ *
+ * `not-found` 是 **404** 不是 400：请求本身没毛病，是那个东西不在了。
+ * 混成 400 的话，界面没法区分「你发的请求不对」（改请求）和
+ * 「它被删了」（刷新列表）—— 而这两件事该做的处理完全不同。
+ */
+function statusOf(code: WorkspaceErrorCode): number {
+  return code === 'not-found' ? 404 : 400
+}
+
 /** 统一的 JSON 出口。`cache-control: no-store` —— 这些是**状态**，缓存没意义 */
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -395,6 +501,75 @@ async function handleSessions(req: IncomingMessage, res: ServerResponse, url: UR
     return
   }
   sendJson(res, 200, { sessions: await store.list(), home: JEVLOOP_HOME })
+}
+
+/**
+ * 目录浏览。**只列目录**，每一条带绝对路径 —— 客户端不自己拼路径。
+ *
+ * 形状抄自 DSH 的 directory-picker，理由写在 `src/dir-browse.ts` 的文件头。
+ */
+async function handleBrowse(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  // **只认 GET**。不挡的话 `POST /api/browse` 也会去列家目录 ——
+  // 请求方法写错却拿到 200，是最难发现的一类接口错误
+  if (req.method !== 'GET') return sendJson(res, 405, { error: `浏览只支持 GET，收到 ${req.method}` })
+
+  const refusal = remoteWorkspaceRefusal()
+  if (refusal) return sendJson(res, 403, { error: refusal })
+
+  const path = url.searchParams.get('path') ?? undefined
+  try {
+    sendJson(res, 200, await listDirs(path))
+  } catch (err) {
+    if (err instanceof WorkspaceError) {
+      return sendJson(res, statusOf(err.code), { error: err.message, code: err.code, path: err.path })
+    }
+    throw err
+  }
+}
+
+/**
+ * 工作区登记表：GET 列表，POST 新增，PATCH 改名，DELETE 撤销。
+ *
+ * ⚠️ **`DELETE` 只从表里去掉，不碰磁盘上的目录。** 见 `WorkspaceStore.remove`。
+ */
+async function handleWorkspaces(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const refusal = remoteWorkspaceRefusal()
+  if (refusal) return sendJson(res, 403, { error: refusal })
+
+  try {
+    if (req.method === 'GET') return sendJson(res, 200, { workspaces: await workspaces.list() })
+
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const path = typeof body.path === 'string' ? body.path : ''
+      // `mkdir` 让界面能在浏览到的目录下就地新建一个 —— 没有它，用户
+      // 得先切到终端建目录再回来
+      if (typeof body.newDir === 'string' && body.newDir) {
+        await createDir(path, body.newDir)
+      }
+      const title = typeof body.title === 'string' ? body.title : undefined
+      return sendJson(res, 200, await workspaces.create(path, title))
+    }
+
+    if (req.method === 'PATCH') {
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id : ''
+      const title = typeof body.title === 'string' ? body.title : ''
+      return sendJson(res, 200, { workspace: await workspaces.rename(id, title) })
+    }
+
+    if (req.method === 'DELETE') {
+      const id = url.searchParams.get('id') ?? ''
+      return sendJson(res, 200, { removed: await workspaces.remove(id) })
+    }
+
+    sendJson(res, 405, { error: `不认识的方法 ${req.method}` })
+  } catch (err) {
+    if (err instanceof WorkspaceError) {
+      return sendJson(res, statusOf(err.code), { error: err.message, code: err.code, path: err.path })
+    }
+    throw err
+  }
 }
 
 /**
@@ -482,9 +657,22 @@ const server = createServer(async (req, res) => {
       await handleSessions(req, res, url)
       return
     }
+    if (url.pathname === '/api/browse') {
+      await handleBrowse(req, res, url)
+      return
+    }
+    if (url.pathname === '/api/workspaces') {
+      await handleWorkspaces(req, res, url)
+      return
+    }
     await serveStatic(res, url.pathname)
   } catch (err) {
-    res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' }).end((err as Error).message)
+    // ★ **错误一律 JSON**，和成功路径同一个形状。
+    //   以前这里是纯文本，而浏览/工作区那几条返回 JSON —— 界面统一按
+    //   `res.json()` 解析就会在出错时炸在一个语法错误上，看不到真正的原因。
+    //   「出错时接口变成另一种格式」是最典型的自伤。
+    if (!res.headersSent) sendJson(res, 500, { error: (err as Error).message })
+    else res.end()
   }
 })
 
