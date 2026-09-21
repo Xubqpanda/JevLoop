@@ -273,6 +273,23 @@ export const needsTool = defineDecision({
       同一个事实两处写法不同，两边就会给出不一致的判断。
     */
     already_done: describeDone(ctx),
+    /*
+      ★ **「有哪几个文件」和「读过哪几个」—— 这两个事实 `pickTool` 一直有，
+      这里一直没有。**
+
+      实测（2026-09-21）：任务「这两个 TypeScript 文件里各导出了一个函数，
+      分别叫什么名字？」，读完 alpha.ts 和 beta.ts 之后这个节点判「还要用工具」
+      （0.86），于是 loop 又去读了**任务不需要的** `notes.md`。
+
+      它当时看到的是 `already_done: "already called: list_dir, read_file
+      (3 steps)"` —— **去重后的工具名加一个总步数**。从里面分不出读了
+      一个文件还是两个，也就无法确认任务说的「这两个」读完了没有。
+
+      任务里的「这两个」是一个**指代**，而帧里没有任何东西能让它落地
+      （§8.2：帧里没有的，它判不出来）。
+    */
+    files_known: (ctx.files ?? []).slice(0, 15),
+    already_read: (ctx.readFiles ?? []).slice(0, 15),
     last: clip(ctx.lastResult ?? '（还没有做过任何动作）', 300),
   }),
 
@@ -464,7 +481,20 @@ export const isDone = defineDecision({
 
   state: (ctx: AgentCtx) => ({
     task: clip(ctx.task, 400),
-    steps: (ctx.history ?? []).slice(-6).map((h) => `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, 80)}`),
+    /*
+      ★ 和 `needsTool` 同一处遗漏，后果不同。
+
+      `steps` 里每条结果只留 80 字符 —— 实测（2026-09-21）任务
+      「这两个 TypeScript 文件里各导出了一个函数，分别叫什么名字？」，
+      `read_file(alpha.ts)` 那条显示到 `Order` 接口就被切了，
+      **函数名 `totalOf` 在截断点之后**。于是它只看得见两个函数名里的一个，
+      判「还没做完」（0.22）—— **在给定帧下它判得没错。**
+
+      而这个问题（任务要求的事做完了吗）其实靠**覆盖**就能答：
+      任务说的那两个文件读了没有。`already_read` 就是这个事实。
+    */
+    already_read: (ctx.readFiles ?? []).slice(0, 15),
+    steps: (ctx.history ?? []).slice(-5).map((h) => `${h.tool}(${clip(h.input, 60)}) → ${clip(h.result, 80)}`),
   }),
 
   // 问题与策略都来自 DECISION.md 的 is_done 块
