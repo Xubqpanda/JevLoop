@@ -285,3 +285,92 @@ test('N2: revise 必须真的重新生成一次，且只重试一次', async () 
     await rm(cwd, { recursive: true, force: true })
   }
 })
+
+test('N3: 工具参数是判定 —— 「读取全部文件」必须能读到第二个', async () => {
+  const { Decider } = await import('../src/decide.ts')
+  const { runAgent } = await import('../src/agent.ts')
+  const { Meter } = await import('../src/meter.ts')
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  // 一个专门读「全部」文件的判定器：只要有没读过的就继续读
+  const readEverything = {
+    name: 'read-everything',
+    decide: async (req: { state: unknown; questions: Record<string, { type: string; criteria?: unknown }> }) => {
+      const s = req.state as {
+        files_known?: string[]
+        already_read?: string[]
+        already_done?: string
+        steps?: string[]
+        tool?: string
+      }
+      const answers: Record<string, unknown> = {}
+      const opts = (id: string) => Object.keys((req.questions[id]?.criteria ?? {}) as Record<string, string>)
+      for (const [id, q] of Object.entries(req.questions)) {
+        const crit = opts(id)
+        if (q.type === 'noul') {
+          // 这几个问题「高」意味着坏事：回答不支持、需要授权、或**任务还没做完**。
+          // 全给 0.9 会让 loop 在第一次 list_dir 之后就 isDone=finish 而停下。
+          const negative = id === 'unsupported' || id === 'needs_auth' || id === 'done'
+          let p = negative ? 0.05 : 0.9
+          if (id === 'done') {
+            // isDone 的帧只有 steps —— 数一下读过几个文件
+            const steps: string[] = Array.isArray(s.steps) ? s.steps : []
+            const reads = steps.filter((x) => String(x).startsWith('read_file')).length
+            p = reads >= 2 ? 0.9 : 0.05
+          }
+          answers[id] = { type: 'noul', noul: p }
+        } else if (q.type === 'score') {
+          const legend = (q.criteria as string[]) ?? []
+          answers[id] = { type: 'score', score: 0, legend: Object.fromEntries(legend.map((l, i) => [String(i), l])), probabilities: {}, confidence: 0.9 }
+        } else {
+          // choice：按问题 id 决定选谁
+          let pick = crit[0] ?? ''
+          if (id === 'tool') {
+            // 读决策帧的**实际字段**（already_done / already_read），
+            // 不是已经不存在的 recent —— 那正是 examples/rule-judge.ts 犯过的错。
+            const listed = String(s.already_done ?? '').includes('list_dir')
+            const read = new Set(s.already_read ?? [])
+            const unread = (s.files_known ?? []).filter((f) => !read.has(f))
+            if (!listed) pick = 'list_dir'
+            else pick = crit.includes('read_file') && unread.length ? 'read_file' : 'done'
+          }
+          if (id === 'file') {
+            const read = new Set(s.already_read ?? [])
+            pick = crit.find((f) => !read.has(f)) ?? crit[0] ?? ''
+          }
+          answers[id] = { type: 'choice', choice: pick, probabilities: pick ? { [pick]: 0.99 } : {}, confidence: 0.99 }
+        }
+      }
+      return { answers, provider: 'fake', latencyMs: 0 }
+    },
+  }
+
+  const cwd = await mkdtemp(join(tmpdir(), 'jevloop-n3-'))
+  try {
+    await writeFile(join(cwd, 'a.ts'), 'export const a = 1\n', 'utf8')
+    await writeFile(join(cwd, 'b.ts'), 'export const b = 2\n', 'utf8')
+
+    const meter = new Meter()
+    const decider = new Decider({ provider: readEverything as never, meter })
+    await runAgent({
+      task: '读取全部 TypeScript 文件',
+      cwd,
+      decider,
+      generator: { name: 'noop', generate: async () => ({ text: 'ok', latencyMs: 0, inputTokens: 0, outputTokens: 0, model: 'noop' }) },
+      maxSteps: 8,
+    })
+
+    const reads = meter.decisions.filter((d) => d.id === 'loop.pickInput')
+    const targets = meter.decisions
+      .filter((d) => d.id === 'loop.pickTool' && d.answers.includes('read_file'))
+      .length
+
+    // 修之前：read_file 读一次之后就被 toolsFor 永久移除，所以最多 1 次
+    assert.equal(targets, 2, `read_file 必须被选中两次（两个文件各一次），实际 ${targets}`)
+    assert.equal(reads.length, 2, `pickInput 必须被问两次，实际 ${reads.length}`)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})

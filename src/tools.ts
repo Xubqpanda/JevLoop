@@ -30,7 +30,12 @@ function safePath(cwd: string, p: string): string {
   return full
 }
 
-export const TOOLS: Record<string, Tool> = {
+/**
+ * `satisfies` 而不是 `: Record<string, Tool>` ——
+ * 后者会把键擦成 `string`，于是 `ToolName` 只能是 `string`，
+ * `defaultInput` 的 switch 就永远需要一个什么都接的 `default` 分支。
+ */
+export const TOOLS = {
   list_dir: {
     name: 'list_dir',
     description: '列出工作目录里的文件（不含子目录内容）',
@@ -81,9 +86,23 @@ export const TOOLS: Record<string, Tool> = {
       return '任务标记为完成'
     },
   },
+} satisfies Record<string, Tool>
+
+/** 工具名的**封闭**联合。来自 TOOLS 的实际键，不是 `string` */
+export type ToolName = keyof typeof TOOLS
+
+/**
+ * 模型返回的工具名是不可信输入 —— 调用前必须过这一道。
+ *
+ * 不过会怎样：`defaultInput` 静默返回 `''`，`callTool` 返回
+ * 「错误：没有这个工具」，**而这个错误被当成普通工具输出喂给了 `stepOk` 判定**。
+ * 判定模型看到的是一段文本，它无法区分「工具跑出来的结果」和「工具根本不存在」。
+ */
+export function isToolName(v: string): v is ToolName {
+  return Object.hasOwn(TOOLS, v)
 }
 
-export const toolNames = (): string[] => Object.keys(TOOLS)
+export const toolNames = (): ToolName[] => Object.keys(TOOLS) as ToolName[]
 
 /**
  * 执行一次工具调用。
@@ -91,9 +110,8 @@ export const toolNames = (): string[] => Object.keys(TOOLS)
  * 判定节点已经决定「放行 / 需要授权」了，这里只负责执行 ——
  * 但**执行结果永远要回传**，因为判定「成功了吗」需要看到它。
  */
-export async function callTool(name: string, input: string, cwd: string): Promise<string> {
+export async function callTool(name: ToolName, input: string, cwd: string): Promise<string> {
   const tool = TOOLS[name]
-  if (!tool) return `错误：没有这个工具 '${name}'`
   try {
     return await tool.run(input, cwd)
   } catch (err) {

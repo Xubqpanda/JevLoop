@@ -25,12 +25,24 @@
  */
 
 import { Decider } from './decide.ts'
+import type { DecisionResult } from './types.ts'
 import { Meter } from './meter.ts'
-import { needsTool, pickTool, gradeRisk, stepOk, isDone, canDeliver, type AgentCtx, type StepRecord } from './decisions.ts'
-import { callTool } from './tools.ts'
+import {
+  needsTool,
+  pickTool,
+  pickInput,
+  gradeRisk,
+  stepOk,
+  isDone,
+  canDeliver,
+  hasFileOptions,
+  type AgentCtx,
+  type StepRecord,
+} from './decisions.ts'
+import { callTool, isToolName, type ToolName } from './tools.ts'
+import { assertNever } from './util.ts'
 import { decisionEvent, type AgentObserver } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
-import type { DecisionResult } from './types.ts'
 import type { Generator } from './llm.ts'
 
 export interface AgentOptions {
@@ -69,7 +81,6 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const meter = decider.meter
   const maxSteps = opts.maxSteps ?? 12
   const trace = opts.onTrace ?? (() => {})
-
   const emit: AgentObserver = opts.onEvent ?? (() => {})
 
   const ctx: AgentCtx = { task: opts.task, cwd: opts.cwd, files: [], history: [] }
@@ -84,7 +95,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
    * loop 里每个 `decider.decide` 的返回值都过这个函数 —— 漏一处，
    * 界面上就少一个决策点，而那种缺失不会报错，只会静默地少一块。
    */
-  const record = <A,>(d: DecisionResult<A>): DecisionResult<A> => {
+  const record = <A>(d: DecisionResult<A>): DecisionResult<A> => {
     emit(decisionEvent(step, d as DecisionResult<unknown>))
     return d
   }
@@ -109,7 +120,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       trace(`  工具选择不确定 → 停下（${pick.reason}）`)
       break
     }
-    const tool = pick.answers.tool.choice
+    const picked = pick.answers.tool.choice
+
+    // 模型返回的工具名是**不可信输入**，调用前必须过这一道（AGENTS.md §6 允许的真实边界）。
+    // 不过会怎样：`callTool` 返回「错误：没有这个工具」，而这个字符串会被当成
+    // 普通工具输出喂给 `stepOk` —— 判定模型分不清「工具跑出来的结果」和「工具不存在」。
+    if (!isToolName(picked)) {
+      halt = 'unknown_tool'
+      trace(`  模型返回了不存在的工具 '${picked}' → 停下（不当成结果喂给下一步判定）`)
+      break
+    }
+    const tool: ToolName = picked
 
     if (tool === 'done') {
       halt = 'agent_done'
@@ -117,11 +138,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       break
     }
 
-    // 记录这次要做什么，好让 gradeRisk 看到
-    const input = defaultInput(tool, ctx)
+    // 先记下要调用什么，`loop.pickInput` 的候选依赖 lastTool
+    ctx.lastTool = tool
+
+    // 工具参数是一次**判定**，不是写死的代码（审计 N3）
+    const input = await resolveInput(tool, ctx, decider, record)
+    if (input === undefined) {
+      halt = 'input_unclear'
+      trace(`  选不出 ${tool} 的输入 → 停下`)
+      break
+    }
+
     const pending: StepRecord = { step, tool, input, result: '' }
     ctx.history = [...(ctx.history ?? []), pending]
-    ctx.lastTool = tool
 
     // ↗ 这个操作多危险
     const risk = record(await decider.decide(gradeRisk, ctx))
@@ -161,6 +190,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     // 工具产生了文件列表 → 灌进 ctx，下一轮的候选动作会跟着变
     if (tool === 'list_dir') {
       ctx.files = result.split('\n').filter((l) => l && !l.endsWith('/'))
+    }
+    // 读过的文件要记下来 —— 否则 `pickInput` 会一直提议读同一个文件
+    if (tool === 'read_file') {
+      ctx.readFiles = [...(ctx.readFiles ?? []), input.trim()]
     }
 
     // ↗ 成功了吗
@@ -229,7 +262,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       tokens: retry.inputTokens + retry.outputTokens,
     })
     ctx.draft = retry.text
-    deliver = await decider.decide(canDeliver, ctx)
+    deliver = record(await decider.decide(canDeliver, ctx))
   }
 
   if (deliver.action !== 'deliver') {
@@ -240,17 +273,44 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   return { answer: ctx.draft, halt, steps: step, ctx, meter }
 }
 
-/** 每个工具的默认输入。真实 agent 里这一步也由模型生成 —— 这里为了 demo 保持确定性 */
-function defaultInput(tool: string, ctx: AgentCtx): string {
-  const firstFile = (ctx.files ?? [])[0] ?? ''
+/**
+ * 给一个工具决定它的输入。
+ *
+ * 审计 N3 之前这里是写死的 `defaultInput`：永远返回 `files[0]`，配合
+ * `toolsFor` 移除用过的动作，导致一个 agent 生命周期内 `read_file`
+ * 只能触发一次、且只能读第一个文件 —— 「读取全部 TypeScript 文件」
+ * 这类任务不可能完成。
+ *
+ * 按三分法，「读哪个文件」是**挑选**，交给判定；「写什么内容」是**生成**，
+ * 仍由调用方提供。`list_dir` 没有有意义的输入选择，不占用一次判定。
+ *
+ * @param tool 已经过 `isToolName` 校验的工具名
+ * @param ctx 当前上下文，`pickInput` 的候选从这里构造
+ * @param decider 判定器
+ * @returns 工具的输入字符串；无法确定时返回 `undefined`（调用方应停机，不要猜）
+ */
+async function resolveInput(
+  tool: ToolName,
+  ctx: AgentCtx,
+  decider: Decider,
+  record: <A>(d: DecisionResult<A>) => DecisionResult<A>,
+): Promise<string | undefined> {
   switch (tool) {
     case 'list_dir':
+      // 输入恒为工作目录 —— 这里没有可挑的东西，不值得问一次判定
       return '.'
-    case 'read_file':
-      return firstFile
-    case 'write_file':
-      return `${firstFile}\n（内容由调用方提供）`
-    default:
+    case 'done':
       return ''
+    case 'read_file':
+    case 'write_file': {
+      // 没有候选就**不要问** —— criteria 为空的 choice 是无效问题
+      if (!hasFileOptions(ctx)) return undefined
+      const d = record(await decider.decide(pickInput, ctx))
+      if (d.escalate || d.action !== 'use') return undefined
+      const file = d.answers.file.choice
+      return tool === 'write_file' ? `${file}\n（内容由调用方提供）` : file
+    }
+    default:
+      return assertNever(tool)
   }
 }

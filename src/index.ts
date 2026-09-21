@@ -43,23 +43,23 @@ export type { HttpProviderOptions } from './provider.ts'
 
 // ── 记账 ─────────────────────────────────────────────────────
 export { Meter } from './meter.ts'
-export type { MeterStats, DecisionRecord, ModelCallRecord } from './meter.ts'
+export { assertNever } from './util.ts'
+export type { MeterStats, DecisionRecord, ModelCallRecord, AuditRecord } from './meter.ts'
 
 // ── agent ────────────────────────────────────────────────────
 export { runAgent } from './agent.ts'
 export type { AgentOptions, AgentResult } from './agent.ts'
 
 // ── 事件缝 ───────────────────────────────────────────────────
-// loop 把「发生了什么」发成事件，界面 / 测试 / 日志都接在这里。
 export { decisionEvent, fanOut } from './events.ts'
 export type { AgentEvent, AgentObserver } from './events.ts'
-export { TOOLS, callTool, toolNames } from './tools.ts'
-export type { Tool } from './tools.ts'
+export { TOOLS, callTool, toolNames, isToolName } from './tools.ts'
+export type { Tool, ToolName } from './tools.ts'
 export { ScriptedGenerator, HttpGenerator } from './llm.ts'
 export type { Generator, GenerateRequest, GenerateResult } from './llm.ts'
 
 // ── 预设的判定节点 ───────────────────────────────────────────
-export { needsTool, pickTool, gradeRisk, stepOk, isDone, canDeliver } from './decisions.ts'
+export { needsTool, pickTool, pickInput, gradeRisk, stepOk, isDone, canDeliver, hasFileOptions, unreadFiles } from './decisions.ts'
 export type { AgentCtx, StepRecord } from './decisions.ts'
 
 // ── 环境 ─────────────────────────────────────────────────────

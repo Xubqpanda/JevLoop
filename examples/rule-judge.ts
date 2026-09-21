@@ -75,12 +75,29 @@ export class RuleJudge implements Provider {
 
       case 'tool': {
         const all = (q as ChoiceQuestion).criteria
-        const recent: string[] = Array.isArray(s.recent) ? s.recent : []
-        const didList = recent.some((r) => String(r).startsWith('list_dir'))
-        const didRead = recent.some((r) => String(r).startsWith('read_file'))
-        const want = !didList ? 'list_dir' : !didRead ? 'read_file' : 'done'
+          // ★ 读决策帧的**实际字段**。这里以前读 `s.recent`，而那个字段
+          //   早就不存在了 —— didList 恒为 false，规则判定器只是一直选 list_dir，
+          //   靠 `want in all` 的兜底意外地「能用」。toolsFor 不再永久移除
+          //   read_file 之后兜底失效，才暴露出来。
+          //   （同一类问题：状态帧里没有的信号，判定不出来。）
+          const doneStr = String(s.already_done ?? '')
+          const didList = doneStr.includes('list_dir')
+          const read: string[] = Array.isArray(s.already_read) ? s.already_read : []
+          const files: string[] = Array.isArray(s.files_known) ? s.files_known : []
+          const unread = files.filter((f) => !read.includes(f))
+          const want = !didList ? 'list_dir' : unread.length ? 'read_file' : 'done'
         // 想要的工具可能不在候选里（候选每步重建）—— 退到第一个可用的
         return choice(want in all ? want : Object.keys(all)[0]!, all)
+      }
+
+      // 审计 N3 新增：给选定的工具挑一个输入文件。
+      // 规则：优先挑还没读过的第一个；都已经读过就挑候选里的第一个。
+      case 'file': {
+        const all = (q as ChoiceQuestion).criteria
+        const ids = Object.keys(all)
+        const read: string[] = Array.isArray(s.already_read) ? s.already_read : []
+        const unread = ids.find((f) => !read.includes(f))
+        return choice(unread ?? ids[0] ?? '', all)
       }
 
       case 'risk': {

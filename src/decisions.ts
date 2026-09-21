@@ -40,6 +40,8 @@ export interface AgentCtx {
   cwd: string
   /** 已知的文件列表，由 ls 工具填充 */
   files?: string[]
+  /** 已经读过的文件。`loop.pickInput` 用它把读过的从候选里去掉 */
+  readFiles?: string[]
   /** 已经做过的动作 */
   history?: StepRecord[]
   lastTool?: string
@@ -57,6 +59,7 @@ export interface AgentCtx {
 const T = {
   needsTool: 0.5,
   toolAuto: 0.6,
+  inputPick: 0.5,
   riskAuth: 2,
   riskAudit: 1,
   stepOk: 0.5,
@@ -116,6 +119,9 @@ export const pickTool = defineDecision({
     //   模型会重复选已经做过的动作。
     already_done: describeDone(ctx),
     files_known: (ctx.files ?? []).slice(0, 20),
+    // 模型必须知道读过哪些 —— 帧里没有的信号它判不出来（见 §8.2），
+    // 少了这个它会重复读同一个文件。
+    already_read: (ctx.readFiles ?? []).slice(0, 10),
     last_result: clip(ctx.lastResult ?? '', 300),
   }),
 
@@ -126,6 +132,41 @@ export const pickTool = defineDecision({
   policy: [
     { when: topGte('tool', T.toolAuto), action: 'call', reason: `选中项概率 ≥ ${T.toolAuto}` },
     { action: 'escalate', reason: '工具选择置信度不足 → 交回上层，不猜' },
+  ],
+})
+
+// ═══════════════════════════════════════════════════════════
+// 2b · 给选定的工具挑一个输入
+//
+// 审计 N3：工具参数以前是**写死的代码**（`defaultInput` 永远返回 `files[0]`），
+// 配合 `toolsFor` 会把用过的动作从候选里删掉，结果是
+// **一个 agent 生命周期内 read_file 只能触发一次，且只能读第一个文件** ——
+// 任务「读取目录里的**全部** TypeScript 文件」在这个实现下不可能完成。
+//
+// 按三分法，这是「挑选」不是「生成」，所以它该是一次判定：
+// 候选 = 还没读过的文件，由 `fileOptions` 每步重建。
+//
+// 「写什么内容」是生成，仍由调用方提供（不在本次范围内）。
+// ═══════════════════════════════════════════════════════════
+
+export const pickInput = defineDecision({
+  id: 'loop.pickInput',
+  describe: '给已选定的工具挑一个输入（读/写哪个文件）',
+
+  state: (ctx: AgentCtx) => ({
+    task: clip(ctx.task, 400),
+    tool: ctx.lastTool ?? '',
+    already_read: (ctx.readFiles ?? []).slice(0, 10),
+    candidates: (ctx.files ?? []).slice(0, 20),
+  }),
+
+  questions: (ctx: AgentCtx) => ({
+    file: choice('Which file should this tool call target?', fileOptions(ctx)),
+  }),
+
+  policy: [
+    { when: topGte('file', T.inputPick), action: 'use', reason: `选中项概率 ≥ ${T.inputPick}` },
+    { action: 'escalate', reason: '文件选择置信度不足 → 交回上层，不猜' },
   ],
 })
 
@@ -153,8 +194,15 @@ function toolsFor(ctx: AgentCtx): Record<string, string> {
     out.list_dir = 'The agent does not yet know which files exist in the working directory.'
 
   if ((ctx.files ?? []).length > 0) {
-    if (!done.has('read_file'))
-      out.read_file = 'The content of an existing file is needed to make progress, and has not been read yet.'
+    // ★ 审计 N3：以前这里只要有 done.has('read_file') 就永久移除它，
+    //   于是「读取全部 TypeScript 文件」这类任务不可能完成。
+    //   现在只要**还有没读过的文件**，read_file 就保持候选。
+    const unread = unreadFiles(ctx)
+    if (unread.length)
+      out.read_file =
+        unread.length === 1
+          ? 'The content of one file is still needed to make progress and has not been read yet.'
+          : `The contents of ${unread.length} files are still needed: ${unread.slice(0, 5).join(', ')}.`
     out.write_file = 'A file must be created or its content changed.'
   }
 
@@ -162,6 +210,41 @@ function toolsFor(ctx: AgentCtx): Record<string, string> {
     'Everything the task asks for has already been done; calling any other tool would not add information.';
 
   return out
+}
+
+/** 还没读过的文件 */
+export function unreadFiles(ctx: AgentCtx): string[] {
+  const read = new Set(ctx.readFiles ?? [])
+  return (ctx.files ?? []).filter((f) => !read.has(f))
+}
+
+/**
+ * 给 `pickInput` 构造候选。**每步重建** —— 读过的文件不再出现。
+ *
+ * criteria 写成条件句而不是名词标签：`read_file` 的每个候选都要说清
+ * 「为什么还需要读它」。这是 Jev Engineering 规则 2 的落地
+ * （问题 ID 不会到达模型，判据必须写进指令和选项里）。
+ */
+function fileOptions(ctx: AgentCtx): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (ctx.lastTool === 'write_file') {
+    for (const f of ctx.files ?? []) out[f] = `The task requires creating or changing ${f}.`
+    return out
+  }
+  for (const f of unreadFiles(ctx)) {
+    out[f] = `The task still needs the contents of ${f}, and it has not been read yet.`
+  }
+  return out
+}
+
+/**
+ * 这个 ctx 下有没有可选的输入。
+ *
+ * **没有候选就不要问** —— 一个 `criteria` 为空的 choice 是无效问题，
+ * 会得到无意义的答案。调用方据此决定「不做这次判定」。
+ */
+export function hasFileOptions(ctx: AgentCtx): boolean {
+  return Object.keys(fileOptions(ctx)).length > 0
 }
 
 /** 把"已经做过什么"写成一句人能读的话，喂给判定模型 */
