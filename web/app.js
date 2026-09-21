@@ -1266,21 +1266,30 @@ function resetTrace() {
   updateTally()
 }
 
-/** 一轮**没有跑完**（没有 `run:end`）。说清楚，不要留一个「正在…」在那里转 */
+/**
+ * 一轮**没有跑完**（没有 `run:end`）。说清楚，不要留一个「正在…」在那里转。
+ *
+ * ★ 这是**重放**路径（`restoreConversation` 遇到存下来却没有 `answer` 的一轮），
+ *   不是实时断线 —— 实时断线走 `es.onerror`，那条路上正文本来就一个字节不动
+ *   （它只把「正在…」那行改成「连接断开，已停止接收」）。
+ */
 function abortedTurn() {
   if (!current) return
   current.finished = true
   stopTicker()
   current.el.removeChild(current.running)
   /*
-    ★ 流过的正文**留着**。
+    ⚠️ 判据是**文本内容**，不是 `childNodes.length`。
 
-    以前这里无条件写 `（这一轮没有跑完）`。没有流式时那句话是对的（本来就
-    什么都没有），有流式之后它等于**把已经生成出来的几百字擦掉** ——
-    而那些字是真的、是花过钱换来的，而且正是排查「它断在哪」唯一能看的
-    东西。下面那句 `msg-foot` 已经说清楚了这一轮没跑完。
+    原来写的是后者，而那让这句话成了**死代码**：`assistantTurn` 里
+    `h('div', { class: 'answer' }, '')` 会 append 一个**空文本节点**，
+    所以 `childNodes.length` 从建出来的那一刻起就是 1，条件永远不成立 ——
+    重放一轮中断的运行，正文区是**空白**，只有页脚在解释。实测确认过：
+    照那个写法建出来的空 `.answer` 是 `childNodes=1 / textContent=""`。
+
+    **空节点和空内容是两件事。**
   */
-  if (!current.answer.childNodes.length) current.answer.textContent = '（这一轮没有跑完）'
+  if (!current.answer.textContent.trim()) current.answer.textContent = '（这一轮没有跑完）'
   current.foot.className = 'msg-foot failed'
   current.foot.replaceChildren(h('span', {}, '没有 run:end —— 这一轮中途断了，上面是它走到的位置'))
   followTail()
