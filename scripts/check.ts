@@ -47,7 +47,7 @@ interface Violation {
   detail: string
 }
 
-const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts', 'server.ts']
+const ROOTS = ['src/**/*.ts', 'examples/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts', 'bench/**/*.ts']
 
 /**
  * `dir` 下的全部 TS 文件，**含子目录**。
@@ -299,8 +299,12 @@ const LAYER: Record<string, number> = {
   backends: 6,
   env: 6,
   // 命令行入口。它组合判定、生成、工具三条缝并把它们接到 argv 上，
-  // 所以和 `backends` 同层。`server.ts` 是同一类东西，但它在包根、不在 `src/`。
+  // 所以和 `backends` 同层。
   cli: 6,
+  // 开发服务器。它组合的和 `cli` 是同一批东西，只是接到 HTTP 上而不是 argv 上。
+  // 放在 `src/` 里（而不是包根）是为了让它进 `dist/` —— 见 `cli.ts` 的 `serve`：
+  // Node 拒绝给 `node_modules` 下的文件剥离类型，所以包根那份 TS 装出来跑不了。
+  server: 6,
 }
 
 /** 层号 → 一句话，报错时要说清两边各是什么 */

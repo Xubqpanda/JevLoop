@@ -2,8 +2,9 @@
 /**
  * JevLoop · 开发服务器
  *
- *   node --experimental-strip-types server.ts
- *   CWD_ROOT=/path/to/project node --experimental-strip-types server.ts
+ *   npx jevloop serve                                       # 从包装出来的版本
+ *   node --experimental-strip-types src/server.ts           # 从 clone
+ *   CWD_ROOT=/path/to/project node --experimental-strip-types src/server.ts
  *
  * 把 agent loop 的事件流通过 SSE 推给浏览器，同时托管 web/ 下的界面。
  * 只用 Node 标准库 —— 没有 express，没有构建步骤。
@@ -17,34 +18,69 @@
  * 双向通信在这个界面里没有任何用途。
  *
  * 会话落盘在 `JEVLOOP_HOME/sessions/`（默认 `~/.jevloop/`），规则见
- * `src/session-store.ts`。**盘上全留，只在读给 agent 用时截到 `MAX_TURNS` 轮** ——
+ * `session-store.ts`。**盘上全留，只在读给 agent 用时截到 `MAX_TURNS` 轮** ——
  * 以前是内存里的一个 Map，重启就没了，而且界面上看不出来。
+ *
+ * ── 为什么不能再拆 ────────────────────────────────────────────
+ *
+ * `docs/CODE-STYLE.md` §12 问的是能不能用一句话说完它负责什么。这里能：
+ * **这个文件是开发服务器** —— 收请求、把事件流推给浏览器、托管 `web/`。
+ * 路由按端点分节，每节都只是「解析请求 → 调内核 → 写响应」，而它们共享同一份
+ * 状态（会话、工作区、正在跑的 run）；拆成 `server-routes.ts` 之类只会让
+ * 「一共有哪些端点」从一眼可见变成要翻三个文件。
+ *
+ * 真的会长的那半已经在别处：会话存储、工作区登记、目录浏览各自成文件
+ * （`session-store.ts` / `workspace.ts` / `dir-browse.ts`），本文件只做接线。
+ *
+ * ⚠️ **本文件在 `src/` 里，但它读的文件在包根。** `web/` 和 `DECISION.md`
+ * 既不编译也不属于 `src/`，所以 `ROOT` 不是「本文件所在目录」，而是
+ * **往上找到的第一个有 `package.json` 的目录** —— 从 `src/` 跑和从 `dist/` 跑
+ * 都指回包根。写成前者的话，编译之后 `web/` 会指到 `dist/web`。
  *
  * @module JevLoop/server
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
-import { basename, extname, isAbsolute, join, normalize, relative } from 'node:path'
+import { realpathSync, existsSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
-import { Decider } from './src/decide.ts'
-import { Meter } from './src/meter.ts'
-import { runAgent } from './src/agent.ts'
-import { resolveProvider, resolveGenerator } from './src/backends.ts'
-import { loadEnv } from './src/env.ts'
-import { parseDecisionDoc, summarize, headline, isGate } from './src/decisiondoc.ts'
-import { compilePredicate } from './src/decision-compile.ts'
-import type { AgentEvent } from './src/events.ts'
-import { SessionStore, assertSessionId } from './src/session-store.ts'
-import { migrateLegacyLayout } from './src/session-migrate.ts'
-import { createDir, listDirs } from './src/dir-browse.ts'
-import { WorkspaceStore } from './src/workspace.ts'
-import { WorkspaceError, type WorkspaceErrorCode } from './src/vocab-workspace.ts'
+import { Decider } from './decide.ts'
+import { Meter } from './meter.ts'
+import { runAgent } from './agent.ts'
+import { parseDecisionDoc, summarize, headline, isGate } from './decisiondoc.ts'
+import { compilePredicate } from './decision-compile.ts'
+import type { AgentEvent } from './events.ts'
+import { SessionStore, assertSessionId } from './session-store.ts'
+import { migrateLegacyLayout } from './session-migrate.ts'
+import { createDir, listDirs } from './dir-browse.ts'
+import { WorkspaceStore } from './workspace.ts'
+import { WorkspaceError, type WorkspaceErrorCode } from './vocab-workspace.ts'
+// `backends` 和 `env` 都是 L6，和本文件同层 —— §11 只允许 L0 内部互相指涉、
+// 以及 L2 指向定义角，同层直接 import 是违规的。走门面（`index.ts` 不受层约束），
+// 这也是 `cli.ts` 的写法。
+import { resolveGenerator, resolveProvider, loadEnv } from './index.ts'
 
-const ROOT = fileURLToPath(new URL('.', import.meta.url))
+/**
+ * 包根目录：从本文件往上找到的第一个带 `package.json` 的目录。
+ *
+ * **不能写成「本文件所在目录」** —— `web/` 和 `DECISION.md` 在包根，
+ * 而本文件从 `src/server.ts` 跑时所在的是 `src/`、编译后是 `dist/`，
+ * 两者都指不到包根。往上找 `package.json` 对两种位置都成立。
+ */
+function findRoot(from: string): string {
+  let dir = from
+  for (;;) {
+    if (existsSync(join(dir, 'package.json'))) return dir
+    const up = dirname(dir)
+    if (up === dir) throw new Error(`no package.json above ${from} — is this file installed correctly?`)
+    dir = up
+  }
+}
+
+const ROOT = findRoot(dirname(fileURLToPath(import.meta.url)))
 const WEB_DIR = join(ROOT, 'web')
 const DECISION_MD = join(ROOT, 'DECISION.md')
 const PORT = Number(process.env.PORT ?? 7799)

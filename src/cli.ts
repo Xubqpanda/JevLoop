@@ -22,7 +22,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { USAGE, parseArgv } from './cli-args.ts'
@@ -127,35 +127,34 @@ async function runTask(task: string, options: Map<string, string>): Promise<numb
 /**
  * 起界面。
  *
- * `server.ts` 留在包根、不编译进 `dist/`：它用 `import.meta.url` 定位 `web/`
- * 和 `DECISION.md`，编译到 `dist/server.js` 之后这两个路径会一起指错。
+ * 两条路，取决于这个 `cli.js` 是从哪跑起来的：
  *
- * ⚠️ **代价：从 npm 装出来时它跑不了。** Node 拒绝给 `node_modules` 下的文件
- * 剥离类型（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，§8.8 记的就是这条）。
- * 所以这里检测到包在 `node_modules` 下就直接给出指引 —— 把 Node 的栈丢给用户
- * 等于让人自己猜，而这一条猜不出来。
+ * - **装出来的包**：`dist/cli.js` 旁边就是 `dist/server.js`（`tsc` 一起编的），
+ *   直接跑它。这条是 npm 路径，也是 `serve` 从包装出来能跑的原因。
+ * - **clone**：`src/cli.ts` 旁边是 `src/server.ts`，按类型剥离跑。
+ *
+ * 两者都能跑，是因为 `server.ts` 的 `ROOT` 是**往上找 `package.json`**，
+ * 不是「本文件所在目录」—— 从 `src/` 跑和从 `dist/` 跑都指回包根，
+ * 而 `web/` 和 `DECISION.md` 都在那儿。
  */
 function serve(options: Map<string, string>): Promise<number> {
-  const serverPath = join(PKG_ROOT, 'server.ts')
-  if (!existsSync(serverPath)) {
-    console.error(`✗ ${serverPath} is missing — this package was published without server.ts`)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const compiled = join(here, 'server.js')
+  const source = join(here, 'server.ts')
+
+  let script: string
+  let stripTypes = false
+  if (existsSync(compiled)) {
+    script = compiled
+  } else if (existsSync(source)) {
+    script = source
+    // 类型剥离 v22.6 引入、v22.18 才默认开启。低版本必须显式带这个标志。
+    const [major = 0, minor = 0] = process.versions.node.split('.').map(Number)
+    stripTypes = major < 22 || (major === 22 && minor < 18)
+  } else {
+    console.error(`✗ neither ${compiled} nor ${source} exists — this package is incomplete`)
     return Promise.resolve(1)
   }
-
-  if (PKG_ROOT.includes(`${sep}node_modules${sep}`)) {
-    console.error('✗ `jevloop serve` needs a clone, not an installed package.')
-    console.error('  Node cannot strip types for files under node_modules, and server.ts is TypeScript.')
-    console.error('')
-    console.error('    git clone https://github.com/zjunlp/JevLoop && cd JevLoop')
-    console.error('    node --experimental-strip-types server.ts')
-    console.error('')
-    console.error('  `jevloop run` and `jevloop spec` work from the installed package.')
-    return Promise.resolve(1)
-  }
-
-  // 类型剥离 v22.6 引入、v22.18 才默认开启。低版本必须显式带这个标志。
-  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number)
-  const needsFlag = major < 22 || (major === 22 && minor < 18)
 
   const env = { ...process.env }
   const cwd = options.get('cwd')
@@ -165,14 +164,14 @@ function serve(options: Map<string, string>): Promise<number> {
   const host = options.get('host')
   if (host) env.HOST = host
 
-  const child = spawn(process.execPath, [...(needsFlag ? ['--experimental-strip-types'] : []), serverPath], {
+  const child = spawn(process.execPath, [...(stripTypes ? ['--experimental-strip-types'] : []), script], {
     stdio: 'inherit',
     env,
   })
   return new Promise((done) => {
     child.on('exit', (code) => done(code ?? 1))
     child.on('error', (err) => {
-      console.error(`✗ could not start server.ts: ${err.message}`)
+      console.error(`✗ could not start the server: ${err.message}`)
       done(1)
     })
   })

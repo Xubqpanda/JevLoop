@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "demo": "node --experimental-strip-types examples/demo.ts",
+    "serve": "node --experimental-strip-types src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
     "check": "node --experimental-strip-types scripts/check.ts",
@@ -40,7 +41,6 @@
   "files": [
     "dist",
     "src",
-    "server.ts",
     "web",
     "README.md",
     "LICENSE",
