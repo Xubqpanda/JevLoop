@@ -14,7 +14,7 @@
 
 import type { DecisionResult } from './vocab-decision.ts'
 import type { QuestionSet, AnswerSet } from './vocab.ts'
-import type { MeterStats, AuditRecord } from './meter.ts'
+import type { AuditRecord, MeterStats } from './vocab-records.ts'
 
 /** 每一步里发生的一件事。判别式联合，新增成员时编译器会逼消费者处理。 */
 export type AgentEvent =

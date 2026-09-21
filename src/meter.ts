@@ -17,63 +17,9 @@
 
 import type { DecisionResult } from './vocab-decision.ts'
 
-export interface DecisionRecord {
-  step: number
-  id: string
-  action: string
-  reason: string
-  latencyMs: number
-  provider: string
-  degraded: boolean
-  escalate: boolean
-  /** 每个问题的答案摘要，用于 trace */
-  answers: string
-}
+import type { AuditRecord, DecisionRecord, MeterStats, ModelCallRecord } from './vocab-records.ts'
 
-export interface ModelCallRecord {
-  step: number
-  kind: string
-  latencyMs: number
-  inputTokens?: number
-  outputTokens?: number
-}
-
-/**
- * 一条审计记录 —— 「不可逆操作要留痕」这件事的落点。
- *
- * `loop.gradeRisk` 判出 `auto_audit` 时写一条。以前那个 action 名承诺了审计，
- * 实际和 `auto` 完全一样（只多打一行 trace）—— 名字和行为脱钩，
- * 而读 policy 的人会以为写了 `auto_audit` 就有留痕保障。
- */
-export interface AuditRecord {
-  step: number
-  tool: string
-  /** 目标（工具输入，截断过） */
-  target: string
-  /** 判定给出的理由，原样保留 */
-  reason: string
-  /** 风险分（`gradeRisk` 的 score），拿不到就是 undefined */
-  risk: number | undefined
-  at: number
-}
-
-export interface MeterStats {
-  decisions: number
-  decisionMs: number
-  avgDecisionMs: number
-  modelCalls: number
-  modelMs: number
-  /** 判定次数 : 模型调用次数。没有模型调用时是 Infinity */
-  ratio: number
-  /** 判定耗时占「判定 + 模型」总耗时的比例 */
-  decisionShare: number
-  escalated: number
-  degraded: number
-  /** 审计留痕条数（`auto_audit` 动作触发） */
-  audits: number
-  inputTokens: number
-  outputTokens: number
-}
+export type { AuditRecord, DecisionRecord, MeterStats, ModelCallRecord } from './vocab-records.ts'
 
 export class Meter {
   readonly decisions: DecisionRecord[] = []
