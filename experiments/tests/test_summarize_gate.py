@@ -78,10 +78,14 @@ def test_a_cell_spanning_commits_is_flagged(tmp_path: Path) -> None:
 
     rows, _, _ = summarize.load_rows(tmp_path)
     table = summarize.summarize(rows)
-    assert len(table) == 1
-    assert table[0]["commits"] == 2, "跨了 commit 就要显示 2"
-    assert table[0]["runs"] == "one two", f"要列出 id,不是个数:{table[0]['runs']!r}"
-    assert table[0]["n"] == 2
+    # ★★ **修过之后:两批分成两行,不再并成一行。**
+    #   这张表报的是「一个格子内部跨了几个 commit」,而在 commit 进分组键之后
+    #   那**恒为 1** —— 跨版本的情况现在以「多行」的形式出现,由行级检查点名。
+    assert len(table) == 2, "两批应当分成两行"
+    assert {t["commits"] for t in table} == {1}
+    assert {t["commit"] for t in table} == {"c1", "c2"}, "版本要进表"
+    assert all(t["n"] == 1 for t in table)
+    assert all(t["runs"] for t in table), "要列出 run id,不是个数"
 
 
 def test_the_shipped_summary_only_contains_citable_runs() -> None:
@@ -162,3 +166,59 @@ def test_internal_fields_do_not_leak_into_the_table(tmp_path) -> None:
     assert any(k.startswith("_") for k in table[0]), "内部字段要存在（检查要用）"
     md = summarize.to_markdown(table)
     assert "_arm_commits" not in md
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★★ 批次分离：同一个 (dataset, arm, seed) 跑了两批
+# ═══════════════════════════════════════════════════════════
+
+
+def test_two_batches_of_the_same_cell_do_not_merge(tmp_path) -> None:
+    """★★★ 实测（2026-09-22）:同一个 `(gsm8k, direct, seed=0)` 跑过两批 ——
+    旧那批 300 题跨了 5 个 commit,新那批 100 题在单个 commit 上。
+
+    按 `(dataset, arm)` 分组会把它们**合并成一行 n=400、`commits=2`** ——
+    表上看不出这是两次跑,更看不出它们**不是一个代码版本**。
+
+    ★ 判据:**一张表里的一个格子,只该对应一个代码版本。**
+      所以 `commit` 进分组键,同时进表（读表的人要能看见自己在读哪一批）。
+    """
+    _write_run(tmp_path, run_id="d/a/old", dirty=False, commit="old123", framework=1.0)
+    _write_run(tmp_path, run_id="d/a/new", dirty=False, commit="new456", framework=1.0)
+
+    rows, _, _ = summarize.load_rows(tmp_path)
+    table = summarize.summarize(rows)
+    assert len(table) == 2, f"两批应当分成两行,而不是并成一行:{table}"
+    assert {t["commit"] for t in table} == {"old123", "new456"}
+    assert all(t["n"] == 1 for t in table)
+    assert all(t.get("commits") == 1 for t in table)
+
+
+def test_the_commit_filter_picks_one_batch(tmp_path, capsys) -> None:
+    """★ `--commit <前缀>` 取一批 —— 出表时应当给,不然多批并排列出来。"""
+    _write_run(tmp_path, run_id="d/a/old", dirty=False, commit="old123", framework=1.0)
+    _write_run(tmp_path, run_id="d/b/new", dirty=False, commit="new456", framework=1.0)
+
+    assert summarize.main(["--log-dir", str(tmp_path), "--out-dir", str(tmp_path / "o"),
+                           "--commit", "new"]) == 0
+    out = (tmp_path / "o" / "summary.md").read_text(encoding="utf-8")
+    assert "new456" in out and "old123" not in out
+    assert "只取 commit" in capsys.readouterr().out
+
+
+def test_the_clean_gsm8k_batch_is_recoverable_from_the_log() -> None:
+    """★★ 当前仓里那一批干净跑（单 commit、七条臂、各 100 题）**能单独取出来**。
+
+    ★ 这条防的是「修好了机制,但那一批数再也捞不回来」—— 那等于白跑。
+    """
+    rows, _, _ = summarize.load_rows(summarize.LOG_DIR)
+    target = [r for r in rows
+              if str((r.get("meta") or {}).get("commit") or "").startswith("5c8b0f73")]
+    assert len(target) == 700, f"应当是 7 臂 × 100 题:{len(target)}"
+    table = summarize.summarize(target)
+    assert len(table) == 7, "七条臂"
+    assert all(t["n"] == 100 for t in table)
+    assert all(t["commits"] == 1 for t in table)
+    # ★ 服务端实际给的模型版本要记着 —— 我们请求的是 deepseek-chat
+    versions = {(r["meta"].get("generator") or {}).get("version") for r in target}
+    assert versions == {"deepseek-flash"}, f"服务端报的版本:{versions}"

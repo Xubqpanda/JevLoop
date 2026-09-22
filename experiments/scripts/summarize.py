@@ -73,10 +73,21 @@ def summarize(rows: list[dict]) -> list[dict]:
     """按 (dataset, arm) 汇总。**每个格子带 n 和 std** —— 只报均值会藏掉方差。"""
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in rows:
-        groups[(row["meta"]["dataset"], row["meta"]["arm"])].append(row)
+        # ★★ **分组键必须有 commit。**
+        #
+        #   实测（2026-09-22）:同一个 `(dataset, arm, seed=0)` 跑过两批
+        #   （旧的 300 题跨了 5 个 commit、新的 100 题在单个 commit 上）,
+        #   而按 `(dataset, arm)` 分组会把它们**合并成 n=400、跨 2 个 commit 的一行** ——
+        #   表上看不出这是两次跑,更看不出它们不是一个代码版本。
+        #
+        #   ★ 判据是:**一张表里的一个格子,只该对应一个代码版本。**
+        #     所以 `commit` 是键的一部分,不是事后去日志里查的备注。
+        meta = row["meta"]
+        groups[(meta["dataset"], meta["arm"], meta["seed"],
+                meta.get("commit") or "unknown")].append(row)
 
     out: list[dict] = []
-    for (dataset, arm), items in sorted(groups.items()):
+    for (dataset, arm, _seed, commit), items in sorted(groups.items()):
         correct = [1.0 if r["correct"] else 0.0 for r in items]
         seeds = sorted({r["meta"]["seed"] for r in items})
         costs = [r["cost"] for r in items]
@@ -85,6 +96,8 @@ def summarize(rows: list[dict]) -> list[dict]:
             {
                 "dataset": dataset,
                 "arm": arm,
+                # ★ 版本进表 —— 「这一格是哪个代码版本跑出来的」是读表的必要信息。
+                "commit": commit[:8],
                 "n": len(items),
                 "seeds": len(seeds),
                 "acc": round(statistics.fmean(correct), 4),
@@ -130,11 +143,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="log/ → result/（单向）")
     parser.add_argument("--log-dir", type=Path, default=LOG_DIR)
     parser.add_argument("--out-dir", type=Path, default=RESULT_DIR)
+    parser.add_argument("--commit", default=None,
+                        help="只看某个 commit（前缀匹配）。**出表时应当给** —— "
+                             "不然同一个格子的多批跑会并排列出来")
     parser.add_argument("--allow-dirty", action="store_true",
                         help="把脏工作区跑出来的行也算进来（**开发时用,别用来出表**）")
     args = parser.parse_args(argv)
 
     rows, rejected, dirty_runs = load_rows(args.log_dir, allow_dirty=args.allow_dirty)
+
+    if args.commit:
+        want = args.commit
+        before = len(rows)
+        rows = [r for r in rows
+                if str((r.get("meta") or {}).get("commit") or "").startswith(want)]
+        print(f"只取 commit {want}*：{len(rows)}/{before} 行")
     table = summarize(rows)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
