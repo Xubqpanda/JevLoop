@@ -53,12 +53,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from experiments.benchmark.rewoo_port import (
-    REWOO_SEED,
-    normalize_answer,
-    rewoo_draw,
-    token_f1,
+from experiments.benchmark.official_scorers import (
+    MissingEvidence,
+    hotpot_exact_match,
+    hotpot_f1_score,
+    hotpot_joint,
+    hotpot_update_sp,
 )
+from experiments.benchmark.rewoo_port import REWOO_SEED, rewoo_draw
 from experiments.core.download import DATASET_DIR, DownloadSpec
 from experiments.core.types import Judgment, Task, Trajectory
 
@@ -192,9 +194,23 @@ class HotpotQa:
     # ── 判分 ────────────────────────────────────────────────
 
     def score_variants(self) -> dict[str, object]:
+        """★ 三个口径,而且**它们不是一回事**:
+
+        | 口径 | 是什么 | 能不能算 |
+        |---|---|---|
+        | `em` / `f1` | **answer-only** —— 正文里常引的那两个 | ✅ |
+        | `joint` | **`joint_em = em × sp_em`** —— **排行榜报的是这个** | ❌ 缺证据字段 |
+
+        ★★ 两者**差很远**,而表上看不出区别 —— 所以报 `em` 时必须写明是 answer-only。
+
+        ⚠️ `joint` 会抛 `MissingEvidence`:它要模型输出 supporting facts,
+          而我们的答案契约里只有最终答案。**这不能用近似值糊过去** ——
+          那会让一个接口缺口看起来像一个算法读数。
+        """
         return {
             "em": lambda t, tr: self._judge(t, tr, "em"),
             "f1": lambda t, tr: self._judge(t, tr, "f1"),
+            "joint": lambda t, tr: self._judge(t, tr, "joint"),
         }
 
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
@@ -208,14 +224,24 @@ class HotpotQa:
         want = str(task.gold)
         # ★ 金标是 yes/no 时取第一个 token —— 模型爱写「Yes, because ...」。
         got = answer.split()[0] if want.lower() in ("yes", "no") else answer
-        em = normalize_answer(got) == normalize_answer(want)
-        f1 = token_f1(got, want)
+
+        if mode == "joint":
+            raise MissingEvidence(
+                "HotpotQA 的 joint_em 需要模型输出 supporting facts —— "
+                "当前答案契约里没有这个字段。\n"
+                "  → 要算它得先让答案包含证据（接口改动）,不是打分器的改动"
+            )
+
+        # ★ 用**官方**的两个函数（`hotpot_evaluate_v1.py`）,逐字那一份。
+        em = hotpot_exact_match(got, want)
+        f1, prec, recall = hotpot_f1_score(got, want)
         if mode == "em":
-            return Judgment(correct=em, score=1.0 if em else 0.0,
-                            detail=f"{got[:40]!r} vs {want[:40]!r}（em）",
+            return Judgment(correct=bool(em), score=em,
+                            detail=f"em（**answer-only**,非 joint）：{got[:40]!r} vs {want[:40]!r}",
                             failure_class=None if em else "wrong_answer")
         return Judgment(correct=f1 >= 0.5, score=f1,
-                        detail=f"f1={f1:.3f}", failure_class=None if f1 >= 0.5 else "wrong_answer")
+                        detail=f"f1（answer-only）={f1:.3f} prec={prec:.3f} rec={recall:.3f}",
+                        failure_class=None if f1 >= 0.5 else "wrong_answer")
 
     def check(self, task: Task, answer: str) -> bool:
         """给 Reflexion 的 Evaluator 用。**它吃到金标信号。**"""

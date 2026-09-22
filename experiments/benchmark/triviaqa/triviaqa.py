@@ -56,11 +56,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from experiments.benchmark.official_scorers import (
+    triviaqa_get_ground_truths,
+    triviaqa_is_exact_match,
+)
 from experiments.benchmark.rewoo_port import (
     REWOO_SEED,
     normalize_answer,
     rewoo_draw,
-    token_f1,
 )
 from experiments.core.download import DATASET_DIR, DownloadSpec
 from experiments.core.types import Judgment, Task, Trajectory
@@ -141,8 +144,12 @@ class TriviaQa:
                 oracle_context=None,
                 meta={
                     "row": i,
+                    # ★ **整份 answer 对象都留着** —— 官方打分器的入参就是它
+                    #   （`get_ground_truths(answer)`）。
+                    #   只留一个别名列表的话,官方的 `HumanAnswers` 那一支
+                    #   就永远接不上,而那是**接口缺口**,不是数据缺口。
+                    "answer_object": dict(answer),
                     "aliases": list(answer.get("aliases") or []),
-                    "normalized_aliases": list(answer.get("normalized_aliases") or []),
                     "answer_kind": "free",
                 },
             )
@@ -192,17 +199,22 @@ class TriviaQa:
                             detail=f"{mode}：{answer[:40]!r} vs {task.gold!r}",
                             failure_class=None if hit else "wrong_answer")
 
-        # official：命中任意别名即算对
-        aliases = [str(a) for a in (task.meta.get("aliases") or [])] or [str(task.gold)]
-        norm_aliases = {normalize_answer(a) for a in aliases}
-        # ★ 完全相等优先;否则退回 token F1 —— **但只在官方口径下**,
-        #   因为官方口径本来就是「命中别名」,而模型的输出常带冠词/标点,
-        #   归一化已经处理了那些;再放 F1 会把「部分命中」也算对。
-        #   所以这里**只判相等**,不放 F1。放了就不是官方口径了。
-        hit = got in norm_aliases
+        # official：**命中任意别名即算对** —— 调官方函数,不自己写。
+        #
+        # ★★ 第一版我用的是 `aliases`（**未归一化**那一份），而官方吃的是
+        #    `NormalizedAliases + [normalize(HumanAnswers)]`
+        #    （`triviaqa_evaluation.py::get_ground_truths`）。
+        #    拿原始别名再归一化一次,在带标点或冠词的别名上会得到不同的字符串 ——
+        #    **一个只在部分样本上出现的偏差,而总分看起来正常。**
+        answer_object = task.meta.get("answer_object") or {}
+        truths = triviaqa_get_ground_truths(answer_object)
+        if not truths:
+            return Judgment(correct=False, score=0.0,
+                            detail="官方口径：这条没有别名可用", failure_class="scorer_error")
+        hit = triviaqa_is_exact_match(answer_object, answer)
         return Judgment(correct=hit, score=1.0 if hit else 0.0,
-                        detail=(f"official：{answer[:40]!r} "
-                                f"{'命中' if hit else '未命中'} {len(norm_aliases)} 个别名"),
+                        detail=(f"official（官方 max-over-aliases，{len(truths)} 个）:"
+                                f"{answer[:40]!r} {'命中' if hit else '未命中'}"),
                         failure_class=None if hit else "wrong_answer")
 
     def check(self, task: Task, answer: str) -> bool:

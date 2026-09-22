@@ -60,6 +60,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from experiments.benchmark.official_scorers import (
+    MissingEvidence,
+    fever_is_correct_label,
+)
 from experiments.benchmark.rewoo_port import normalize_answer, rewoo_draw, REWOO_SEED
 from experiments.core.download import DATASET_DIR, DownloadSpec
 from experiments.core.types import Judgment, Task, Trajectory
@@ -161,8 +165,20 @@ class Fever:
     # ── 判分 ────────────────────────────────────────────────
 
     def score_variants(self) -> dict[str, object]:
+        """★ 四个口径,而**官方的主指标是 `strict`,不是 `label`**:
+
+        | 口径 | 是什么 | 能不能算 |
+        |---|---|---|
+        | `label` | `acc_score` —— 三选一的标签准确率 | ✅ |
+        | `strict` | **FEVER score** —— 标签对 **且** 一整组金标证据在前 5 个预测里 | ❌ 缺证据字段 |
+        | `contains` | 宽松:回答里出现某个标签就算 | ✅（**两头堵会判对**）|
+
+        ⚠️ `strict` 抛 `MissingEvidence`。**NEI 类免检证据那一支不影响这件事** ——
+          非 NEI 的那些仍然要预测证据,而我们的答案契约里没有。
+        """
         return {
             "label": lambda t, tr: self._judge(t, tr, "label"),
+            "strict": lambda t, tr: self._judge(t, tr, "strict"),
             "contains": lambda t, tr: self._judge(t, tr, "contains"),
         }
 
@@ -176,14 +192,20 @@ class Fever:
                             detail="没有给出答案", failure_class="no_answer")
         want = str(task.gold)
 
+        if mode == "strict":
+            raise MissingEvidence(
+                "FEVER 的 strict（FEVER score）需要模型输出 predicted_evidence —— "
+                "当前答案契约里没有这个字段。\n"
+                "  → 报 `label` 是可以的,但要写明它是 acc,不是 strict"
+            )
+
         if mode == "label":
-            hit = normalize_answer(answer) == normalize_answer(want)
+            # ★ 用**官方**那个函数（`scorer.py::is_correct_label`）,逐字那一份。
+            hit = fever_is_correct_label(want, answer)
             return Judgment(correct=hit, score=1.0 if hit else 0.0,
-                            detail=f"label：{answer[:40]!r} vs {want!r}",
+                            detail=f"label（=官方 acc_score）：{answer[:40]!r} vs {want!r}",
                             failure_class=None if hit else "wrong_answer")
 
-        # ★ `contains`：宽松口径。**它会把两头堵的回答判成对** ——
-        #   所以它和 `label` 一起报,但表里必须写明是哪个。
         found = {label for label, rx in _LABEL_RE.items() if rx.search(answer)}
         hit = want in found
         detail = f"contains：命中 {sorted(found) or '无'}"

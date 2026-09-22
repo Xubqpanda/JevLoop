@@ -115,6 +115,42 @@ def test_a_partially_usable_split_is_still_allowed(monkeypatch) -> None:
 # ═══════════════════════════════════════════════════════════
 
 
+def test_triviaqa_official_uses_the_official_ground_truth_set() -> None:
+    """★★★ 官方的金标集是 `NormalizedAliases + [normalize(HumanAnswers)]`
+    （`triviaqa_evaluation.py::get_ground_truths`）—— **不是** `aliases`。
+
+    ⚠️ 第一版我用了 `aliases`（**未归一化**那一份）。官方的集合是**预先归一化好的**,
+      拿原始别名再归一化一次,在带标点或冠词的别名上会得到不同的字符串 ——
+      **一个只在部分样本上出现的偏差,而总分看起来正常。**
+
+    ★ 而 HF 版本**没有 `human_answers`** —— 所以官方那两个键名都要映射,
+      否则 `HumanAnswers` 那一支永远接不上,而那是**接口缺口**,不是数据缺口。
+    """
+    from experiments.benchmark.official_scorers import triviaqa_get_ground_truths
+
+    # HF 的形状（实测:`trivia_qa` 的 answer 有 normalized_aliases,没有 human_answers）
+    hf = {"value": "David Seville", "aliases": ["David Seville"],
+          "normalized_aliases": ["david seville"]}
+    assert triviaqa_get_ground_truths(hf) == ["david seville"]
+
+    # 原始 JSON 的形状（官方文档里的键,首字母大写 + HumanAnswers）
+    raw = {"NormalizedAliases": ["david seville"],
+           "HumanAnswers": ["Dave  Seville!"]}
+    assert triviaqa_get_ground_truths(raw) == ["david seville", "dave seville"]
+
+
+def test_triviaqa_marks_a_missing_answer_object_as_a_scorer_error() -> None:
+    """★ 没有 `answer_object` 时报 `scorer_error`,**不是**静默判错。
+
+    `scorer_error` 和 `wrong_answer` 是**不同的行动**:前者说明判分器的输入不对,
+    后者说明模型答错了。混在一起会让一个接错的字段看起来像模型不行。
+    """
+    bench = tq.TriviaQa(headline="official")
+    task = _task(gold="David Seville", aliases=[])   # 夹具故意不给 answer_object
+    j = bench.score(task, _traj("David Seville"))
+    assert j.correct is False and j.failure_class == "scorer_error"
+
+
 def test_triviaqa_has_both_conventions_and_they_disagree() -> None:
     """★★★ 官方口径是**命中任意别名**,ReWOO 的口径只比 `value`。
 
@@ -259,8 +295,12 @@ def test_both_declare_the_config_that_makes_them_the_same_dataset() -> None:
 def _task(*, gold: str, aliases: list[str]):
     from experiments.core.types import Task
 
+    # ★ `answer_object` 是官方打分器的入参 —— 夹具也要给,否则测的是「缺字段」
+    answer_object = {"value": gold, "aliases": list(aliases),
+                     "normalized_aliases": [a.lower() for a in aliases]}
     return Task(task_id="t", prompt="p", gold=gold, oracle_context=None,
-                meta={"aliases": aliases, "answer_kind": "free"})
+                meta={"aliases": aliases, "answer_object": answer_object,
+                      "answer_kind": "free"})
 
 
 def _traj(answer: str) -> Trajectory:

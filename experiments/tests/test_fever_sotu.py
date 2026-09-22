@@ -56,11 +56,23 @@ def test_fever_label_is_the_official_metric() -> None:
     assert bench.headline == "label"
 
 
-def test_fever_label_tolerates_case_and_punctuation() -> None:
-    """★ 归一化是 ReWOO 那一套（`rewoo_port`）—— 大小写和标点不该决定对错。"""
+def test_fever_label_matches_the_official_scorer_including_its_strictness() -> None:
+    """★★ **官方判据只做 `.upper()`,不去标点** —— 比手写的版本严。
+
+    `scorer.py::is_correct_label` 的原文就是
+    `instance["label"].upper() == instance["predicted_label"].upper()`。
+
+    ⇒ 模型答 `NOT ENOUGH INFO.`（**多一个句号**）**判错**。
+
+    ★ 这不是我实现得糙,是**官方就是这样**。我第一版按「归一化后比较」写,
+      那会给出一个**比官方高**的数 —— 而把它和文献里的数并排就是在比判分器。
+      **宁可跟着官方严,也不要自己「修好」它** —— 要修就得两边一起修。
+    """
     bench = fv.Fever()
     task = _task("NOT ENOUGH INFO", options=list(fv.LABELS))
-    assert bench.score(task, _traj("not enough info.")).correct is True
+    assert bench.score(task, _traj("not enough info")).correct is True, "大小写不该算错"
+    assert bench.score(task, _traj("NOT ENOUGH INFO.")).correct is False, \
+        "官方不去标点 —— 多一个句号就是判错（这是它的性质,不是 bug）"
 
 
 def test_fever_contains_is_loose_and_flags_two_sided_answers() -> None:

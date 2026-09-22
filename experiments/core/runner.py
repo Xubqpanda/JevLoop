@@ -142,6 +142,22 @@ def run_cell(
         log.progress(0, len(tasks))
 
         for i, task in enumerate(tasks, start=1):
+            # ★★ **在有状态的环境里,benchmark 必须知道「现在是哪个任务」。**
+            #
+            #   实测（2026-09-22,接 ALFWorld 时):那类数据集的每一题是一个
+            #   **可交互环境**（TextWorld),`tool_impls()` 要绑定到「这一题的那个
+            #   环境实例」上。而 `tool_impls()` 的签名里没有任务 ——
+            #   于是只有两条路:靠**调用顺序**碰巧对上（`tasks()` 和
+            #   `tool_impls()` 交替调用）,或者把这个钩子显式化。
+            #
+            #   顺序那条现在确实成立,但它是**隐式约定**:哪天有人把
+            #   `bench.tools()` 提到循环外、或者并行跑两题,它就静默错了 ——
+            #   而错法是「A 题的动作打在 B 题的环境上」,分数照出。
+            #
+            #   ★ 所以钩子是**可选**的（`getattr`),静态数据集一行都不用改。
+            on_task = getattr(bench, "on_task", None)
+            if on_task is not None:
+                on_task(task)
             # ★ 题级工具集优先 —— 见 types.Task.tools 的说明
             tools = list(task.tools) if task.tools else list(bench.tools())
             executor = ToolExecutor(tools, bench.tool_impls())
