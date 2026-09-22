@@ -116,41 +116,137 @@ def test_the_same_seed_gives_the_same_tasks() -> None:
 # ═══════════════════════════════════════════════════════════
 
 
-def test_running_the_env_without_textworld_says_what_is_missing() -> None:
-    """★★★ 环境那一半还没接线（或者 textworld 没装）时,必须**抛**。
+def test_the_missing_dependency_path_still_says_what_is_missing(monkeypatch) -> None:
+    """★★★ 环境**已经接上了**,但「缺依赖时怎么说」这条路径要留着。
 
-    ★ **一个缺依赖看起来像一个算法读数** —— 报 0 分的 ALFWorld 和
-      「所有方法都考零分」在表上长得一模一样。所以这里要 `NeedsTextWorld`,
-      而且报错里要写清**缺什么**和**怎么装**。
+    ★ 理由不是洁癖:**一个缺依赖看起来像一个算法读数** ——
+      报 0 分的 ALFWorld 和「所有方法都考零分」在表上长得一模一样。
+      所以这里用 monkeypatch 把 import 弄坏,确认它**抛**而不是给 0。
 
-    ★ 同时要说清**哪一半是好的**:`tasks()` 不依赖 textworld,
-      而那正是「我们跑的是哪 134 条」这个可比性锚点。
+    （这条现在是注入的,不是环境真的缺 —— 环境已经能跑了,见下面那条。）
     """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name in ("textworld", "alfworld"):
+            raise ImportError(f"injected: {name} unavailable")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
     bench = aw.AlfWorld()
     from experiments.core.types import Task
 
-    bench.on_task(Task(task_id="t", prompt="p", gold="g", oracle_context=None, meta={}))
-    with pytest.raises((aw.NeedsTextWorld, NotImplementedError)) as exc:
+    bench.on_task(Task(task_id="t", prompt="p", gold="g", oracle_context=None,
+                       meta={"game_dir": "x", "split": "valid_unseen"}))
+    with pytest.raises(aw.NeedsTextWorld) as exc:
         bench.tools()
-    text = str(exc.value)
-    assert "textworld" in text or "还没写" in text
-    assert "0" not in text.split("**")[0], "不要在报错里暗示一个分数"
+    assert "pip install alfworld" in str(exc.value), "报错要说清怎么装"
+    assert "任务枚举不需要它们" in str(exc.value), "要说清哪一半是好的"
 
 
-def test_scoring_without_the_env_does_not_return_zero() -> None:
-    """★ `score()` 在环境没接上时**抛**,绝不返回 `Judgment(correct=False)`。
+@needs_data
+def test_the_environment_actually_opens_and_gives_admissible_commands() -> None:
+    """★★★ 环境真的能开 —— 而且**候选是环境给的**,不是我们编的。
 
-    ★ 返回 `False` 会让「环境没跑起来」和「agent 失败了」在结果里同形 ——
-      而那正是这个项目反复记过的那一类错。
+    实测:一题开局有 **21 条**候选（`go to bed 1` / `go to desk 1` / …）。
+
+    ★★ 这正是「候选每步重建」（§8.4）在 ALFWorld 上**不是优化而是必需**的原因:
+      上一步的动作改变了可选项,固定的候选列表会立刻失效。
+
+    ★ 而它也是「判定模型只能从枚举里挑」那条硬约束**天然满足**的地方 ——
+      环境直接把候选给你,不用猜。
     """
-    bench = aw.AlfWorld()
-    from experiments.core.types import Task
+    if not pytest.importorskip("textworld", reason="没装 textworld"):
+        pytest.skip("no textworld")
+    import importlib.util
 
-    bench.on_task(Task(task_id="t", prompt="p", gold="g", oracle_context=None, meta={}))
-    traj = Trajectory(task_id="t", arm="x", steps=(), final_answer=None,
-                      decisions=(), usage=(), escalated=False, error=None)
-    with pytest.raises((aw.NeedsTextWorld, NotImplementedError)):
-        bench.score(Task(task_id="t", prompt="p", gold="g", oracle_context=None, meta={}), traj)
+    if not importlib.util.find_spec("alfworld"):
+        pytest.skip("no alfworld")
+
+    bench = aw.AlfWorld()
+    task = next(iter(bench.tasks(split="valid_unseen", limit=1, seed=0)))
+    bench.on_task(task)
+
+    obs = bench.reset_episode()
+    assert isinstance(obs, str) and obs.strip(), "环境要给一段观察"
+    candidates = bench.admissible()
+    assert len(candidates) >= 5, f"候选太少:{candidates[:3]}"
+    assert all(isinstance(c, str) and c.strip() for c in candidates)
+    # ★ 命令的语法是 TextWorld 给的（`go to X` / `take X from Y` …）——
+    #   我们自己拼一套语法的话,只要有一处对不上命令就会被拒,
+    #   而错误看起来像「agent 选错了」。
+    assert any(c.startswith("go to ") for c in candidates)
+
+
+@needs_data
+def test_the_env_reports_won_as_a_bool_and_a_wrong_action_is_not_a_crash() -> None:
+    """★ 判分是**二值**的 `won`。乱走一步应当返回 `won=False`,而不是抛异常。
+
+    ★ 而 `steps` 的返回值形状也要对 —— 报错「工具坏了」比「agent 选了错动作」
+      严重得多,两者必须分得开。
+    """
+    if not pytest.importorskip("textworld", reason="没装 textworld"):
+        pytest.skip("no textworld")
+    import importlib.util
+
+    if not importlib.util.find_spec("alfworld"):
+        pytest.skip("no alfworld")
+
+    bench = aw.AlfWorld()
+    task = next(iter(bench.tasks(split="valid_unseen", limit=1, seed=0)))
+    bench.on_task(task)
+    bench.reset_episode()
+    obs, won, done = bench.step("look")
+    assert isinstance(obs, str) and obs.strip()
+    assert isinstance(won, bool) and isinstance(done, bool)
+    assert won is False, "看一眼不该赢"
+
+
+@needs_data
+def test_scoring_replays_the_trajectory_rather_than_trusting_a_live_env() -> None:
+    """★★★ `score()` **回放轨迹**,不依赖「跑的时候那个环境实例」。
+
+    ★ 轨迹是**唯一的事实**:回放让评分可复现,也让「同一批轨迹换判据重判」
+      成为可能（`scripts/rescore.py` 要的正是这个）。
+
+    ★ 而空轨迹要给 `no_answer`,**不是**一个 `won=False` 的普通失败 ——
+      「一条动作都没有」和「走了几步没做成」是两种不同的失败。
+    """
+    from experiments.core.types import Action, Step, Task
+
+    bench = aw.AlfWorld()
+    task = Task(task_id="t", prompt="p", gold="g", oracle_context=None,
+                meta={"game_dir": next(iter(aw.AlfWorld().tasks(
+                    split="valid_unseen", limit=1, seed=0))).meta["game_dir"],
+                    "split": "valid_unseen"})
+
+    empty = Trajectory(task_id="t", arm="x", steps=(), final_answer=None,
+                       decisions=(), usage=(), escalated=False, error=None)
+    j = bench.score(task, empty)
+    assert j.correct is False and j.failure_class == "no_answer"
+
+    if not pytest.importorskip("textworld", reason="没装 textworld"):
+        pytest.skip("no textworld")
+    import importlib.util
+
+    if not importlib.util.find_spec("alfworld"):
+        pytest.skip("no alfworld")
+
+    # 走一步 `look`（几乎不可能完成任务）→ 回放后应当是「做了但没成」
+    traj = Trajectory(
+        task_id="t", arm="x", final_answer=None, decisions=(), usage=(),
+        escalated=False, error=None,
+        steps=(Step(index=0, action=Action(kind="tool", name="act",
+                                           arguments={"command": "look"}),
+                    observation="…"),),
+    )
+    j = bench.score(task, traj)
+    assert j.correct is False
+    assert j.failure_class == "task_not_completed", "有动作但没成 —— 和「没动作」要分开"
+    assert "回放 1 步" in j.detail
 
 
 def test_the_download_declares_all_three_archives_and_says_why() -> None:
@@ -160,9 +256,19 @@ def test_the_download_declares_all_three_archives_and_says_why() -> None:
       过滤器第 ④ 条会把**全部**题目筛掉,于是得到 **0 条**而不是 134 条。
     """
     specs = aw.AlfWorld().downloads()
-    assert len(specs) == 3
-    names = {Path(s.files[0]).name for s in specs}
-    assert names == {"json_2.1.1_json.zip", "json_2.1.1_pddl.zip", "json_2.1.3_tw-pddl.zip"}
-    assert "0.4.2/json_2.1.3_tw-pddl.zip" in " ".join(s.locator for s in specs), "标签不统一"
-    assert all(s.pinned for s in specs), "release 也要钉 —— main 等于哪天下的算哪天"
-    assert all("三个 zip 都要" in s.note for s in specs), "理由要跟着声明走"
+    assert len(specs) == 4, "三个数据包 + 一份仓库（logic 文件）"
+
+    zips = [s for s in specs if s.files[0].endswith(".zip")]
+    assert {Path(s.files[0]).name for s in zips} == {
+        "json_2.1.1_json.zip", "json_2.1.1_pddl.zip", "json_2.1.3_tw-pddl.zip"}
+    assert "0.4.2/json_2.1.3_tw-pddl.zip" in " ".join(s.locator for s in zips), "标签不统一"
+
+    # ★★ 第四份:logic 那两个文件**不在数据包里**,在仓库里。
+    #   少了它们环境起不来,而报错说的是「Unsupported game format」——
+    #   不指向真正的原因。
+    logic = [s for s in specs if not s.files[0].endswith(".zip")][0]
+    assert set(logic.files) == {"alfred.pddl", "alfred.twl2"}
+    assert logic.locator.endswith(aw.ALFWORLD_COMMIT), "仓库也要钉 commit"
+    assert "不在数据包里" in logic.note
+
+    assert all(s.pinned for s in specs), "release 和 tarball 都要钉 —— main 等于哪天下的算哪天"

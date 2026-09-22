@@ -129,6 +129,7 @@ class AlfWorld:
     max_steps: int = 50
     #: 当前题的环境（由 `on_task` 绑定）。**评分的回放不用它** —— 见 `score()`。
     _env: object = field(default=None, init=False, repr=False)
+    _actions: list[str] = field(default_factory=list, init=False, repr=False)
     _current: Task | None = field(default=None, init=False, repr=False)
 
     # ── 数据在哪 ────────────────────────────────────────────
@@ -264,8 +265,47 @@ class AlfWorld:
         self._current = task
         self._env = None          # 懒建:没装 textworld 时不该在出题阶段就炸
 
+    def _config(self) -> dict:
+        """读**我们自己那一份** config（`config.yaml`,和本文件同目录）。
+
+        ★ 为什么要自己带一份:`pip install alfworld` **不带 config** ——
+          实测包目录里一个 yaml 都没有。同目录那份的差别（每一处都有意）
+          写在它自己的头部。
+        """
+        import yaml
+
+        return yaml.safe_load((Path(__file__).parent / "config.yaml").read_text(encoding="utf-8"))
+
+    def _open_env(self, game_dir: Path):
+        """为**指定的一题**开一个环境。
+
+        ★ 手法是**覆盖 `game_files` 再 `init_env`** —— `AlfredTWEnv` 是按
+          `self.game_files` 注册游戏的,而它默认会收集整个划分（134 条）。
+          我们要的是「这一题」,所以把它换成单元素列表。
+        """
+        os.environ["ALFWORLD_DATA"] = str(self.data_dir)
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        from alfworld.agents.environment.alfred_tw_env import AlfredTWEnv
+
+        split = (self._current.meta.get("split") if self._current else None) or self.split
+        train_eval = {"valid_unseen": "eval_out_of_distribution",
+                      "valid_seen": "eval_in_distribution",
+                      "train": "train"}[split]
+        env = AlfredTWEnv(self._config(), train_eval=train_eval)
+        # ★ 要给到 **`game.tw-pddl` 文件**,不是目录 —— `collect_game_files()`
+        #   追加的就是这个文件路径,而 `textworld.gym.register_games` 认的是它。
+        #   给目录会报 `ValueError: Unsupported game format: <目录>`,
+        #   而那句话不会告诉你是「少了一层文件名」。
+        env.game_files = [str(self.data_dir / game_dir / "game.tw-pddl")]
+        env.num_games = 1
+        batch = env.init_env(batch_size=1)
+        obs, info = batch.reset()
+        info = dict(info)
+        info["observation"] = obs[0] if isinstance(obs, (list, tuple)) and obs else str(obs)
+        return batch, info
+
     def _ensure_env(self):
-        """建出这一题的环境。**缺依赖时明说缺什么。**"""
+        """建出**这一题**的环境。缺依赖时明说缺什么。"""
         if self._env is not None:
             return self._env
         if self._current is None:
@@ -273,8 +313,8 @@ class AlfWorld:
                 f"{self.name}: 没有绑定任务。`tool_impls()` 需要 runner 先调 `on_task(task)`"
             )
         try:
-            import textworld  # noqa: F401
             import alfworld  # noqa: F401
+            import textworld  # noqa: F401
         except ImportError as exc:
             raise NeedsTextWorld(
                 f"{self.name}: 跑环境需要 `textworld` 和 `alfworld` —— 没装（{exc}）。\n"
@@ -282,53 +322,140 @@ class AlfWorld:
                 f"  ★ **任务枚举不需要它们**（`tasks()` 只读数据文件）——"
                 f"   缺的只是环境和判分,别把这两件事混成一件"
             ) from exc
-        raise NotImplementedError(
-            f"{self.name}: TextWorld 环境接线**还没写**。\n"
-            f"  已经做完并验证的:数据下载、评估集过滤器（140/134 与论文一致）、任务枚举。\n"
-            f"  还没做:环境步进、`admissible_commands` 作为候选来源、回放判分。\n"
-            f"  ⚠️ 现在报 `NotImplementedError`,**不是返回一个 0 分** ——"
-            f"    缺一块和考零分在表上长得一样,而那是要避免的。"
-        )
+
+        game_dir = Path(self._current.meta["game_dir"])
+        batch, info = self._open_env(game_dir)
+        # ★ 观察在 `reset()` 的**第一个返回值**里（`obs, info = batch.reset()`）,
+        #   不在 `info` 里 —— `info` 装的是 `won` / `admissible_commands` 那些。
+        #   第一版从 `info.get("observation")` 取,拿到的是**空串**,
+        #   而空串看起来像「环境没话说」,不像一个取错字段的 bug。
+        self._env = {"batch": batch, "info": info, "obs": info.pop("observation", None) or ""}
+        self._actions = []
+        return self._env
+
+    def admissible(self) -> list[str]:
+        """★ **当前可执行的命令** —— TextWorld 的 `admissible_commands`。
+
+        实测一题开局有 **21 条**（`go to bed 1` / `go to desk 1` / …）。
+
+        ★★ 这是这个数据集上最值得单说的一处:**候选每步重建**（§8.4）
+          在这里**不是优化,是必需** —— 上一步的动作改变了可选项,
+          固定的候选列表会立刻失效。
+
+        ⚠️ 而它也是「判定模型只能从枚举里挑」那条硬约束**天然满足**的地方:
+          环境直接把候选给你了,不用猜。
+          但 `core/frame.py::candidate_provider` 读的是**静态** `enum`,
+          接不住这种**动态**候选 —— **那是一个还没做的接口改动**,
+          记在这里,别用「先传个空列表」糊过去。
+        """
+        env = self._ensure_env()
+        return [str(c) for c in ((env["info"].get("admissible_commands") or [[""]])[0])]
+
+    def reset_episode(self) -> str:
+        """重开这一题,返回第一段观察。**回放判分也用它。**"""
+        env = self._ensure_env()
+        return str(env["obs"])
+
+    def step(self, command: str) -> tuple[str, bool, bool]:
+        """走一步。返回 `(观察, 赢了没, 结束了没)`。"""
+        env = self._ensure_env()
+        obs, _scores, dones, infos = env["batch"].step([command])
+        env["info"] = {k: (v[0] if isinstance(v, list) and v and isinstance(v[0], (list, str, bool, int))
+                           else v) for k, v in infos.items()}
+        # ★ `infos` 来自 Gym 包装,按 batch 索引 —— 统一成「这一题的那一份」
+        env["info"] = {
+            "won": bool(infos["won"][0]),
+            "admissible_commands": [list(infos["admissible_commands"][0])],
+        }
+        self._actions.append(command)
+        return str(obs[0]), bool(infos["won"][0]), bool(dones[0])
 
     def tools(self) -> Sequence[Tool]:
-        """ALFWorld 的动作空间。
+        """ALFWorld 的动作空间 —— **一个工具,参数是命令原文**。
 
-        ★★ **它是逐步变化的,而且由环境给出** —— TextWorld 的
-        `admissible_commands` 就是当前可执行的命令列表（通常 10–40 条）。
-        所以这个数据集上「候选每步重建」（§8.4）**不是优化,是必需**:
-        固定的候选列表在这里会立刻失效,因为上一步的动作改变了可选项。
+        ★ 为什么不把动作拆成 `go_to` / `take` / `put` 那种结构化的:
+          命令文本是**环境给的**（`admissible_commands`）,拆开再拼回去
+          等于自己造一套语法,而那一套和 TextWorld 的解析器
+          **只要有一处对不上,命令就会被拒**,而错误看起来像「agent 选错了」。
 
-        ⚠️ 现在还没接（见 `_ensure_env`）。接上之后,
-        `pickInput` 的候选来源就是这个列表 —— 那正好是判定模型
-        「只能从枚举里挑」那条硬约束的**天然满足**的一个场景。
+        ⚠️ 参数是**自由文本**,所以它**没有静态候选来源** ——
+          见 `admissible()` 里那段关于动态候选的说明。
         """
         self._ensure_env()
-        raise AssertionError("unreachable")
+        return (Tool(
+            name="act",
+            description=("Execute one command in the environment. "
+                         "The command must be one that the environment currently allows."),
+            parameters={"type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"]},
+        ),)
 
     def tool_impls(self) -> dict[str, object]:
         self._ensure_env()
-        raise AssertionError("unreachable")
+
+        def act(command: str = "", **kwargs: object) -> str:
+            text = str(command or kwargs.get("arg") or "").strip()
+            if not text:
+                return "Error: empty command."
+            obs, won, done = self.step(text)
+            suffix = "  [task complete]" if won else ("  [episode ended]" if done else "")
+            return obs + suffix
+
+        return {"act": act}
 
     # ── 协议：判分 ──────────────────────────────────────────
 
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         """**回放轨迹里的动作,再看 `won`。**
 
-        ★ 为什么不依赖「跑的时候那个环境实例」:轨迹是**唯一的事实**,
-          而评分要在轨迹上可复现 —— 这也让**同一批轨迹换判据重判**
+        ★ 为什么回放而不是依赖「跑的时候那个环境实例」:轨迹是**唯一的事实**,
+          回放让评分**可复现**,也让「同一批轨迹换判据重判」
           （`scripts/rescore.py`）成为可能。
 
         ⚠️ 判分是**二值**的（`infos["won"]`）。**不要报 GCS** ——
           TextWorld 不提供 `goal_condition_success_rate`,报出来恒为 0
           （模块头「坑 ①」）。
         """
-        self._ensure_env()
-        raise AssertionError("unreachable")
+        commands = [str(s.action.arguments.get("command", ""))
+                    for s in trajectory.steps
+                    if getattr(s.action, "kind", "") == "tool"
+                    and not str(s.action.name).startswith("__")]
+        commands = [c for c in commands if c.strip()]
+
+        if not commands:
+            return Judgment(correct=False, score=0.0,
+                            detail="轨迹里一条动作都没有", failure_class="no_answer")
+
+        saved = self._current
+        try:
+            self.on_task(task)
+            self.reset_episode()
+            won, done = False, False
+            for cmd in commands:
+                _obs, won, done = self.step(cmd)
+                if won or done:
+                    break
+        finally:
+            self._current, self._env = saved, None
+
+        return Judgment(
+            correct=bool(won), score=1.0 if won else 0.0,
+            detail=f"won={won}（回放 {len(commands)} 步）",
+            failure_class=None if won else "task_not_completed",
+        )
 
     def check(self, task: Task, answer: str) -> bool:
-        """Reflexion 的 Evaluator 要的成败信号。ALFWorld 里它就是 `won`。"""
+        """Reflexion 的 Evaluator 要的成败信号。
+
+        ★ ALFWorld 的成败**不在答案字符串里,在环境状态里** ——
+          所以这个方法在这里**没有意义**,明说而不是返回一个 `False`。
+          要给它信号,得让 Reflexion 那一臂拿到 episode 的 `won`,
+          而那是**臂**的事（`session.check_answer`）,不是 benchmark 的事。
+        """
         raise NeedsTextWorld(
-            f"{self.name}: `check()` 要跑环境（`won`）—— 还没接,见 `score()`"
+            f"{self.name}: 成败由环境状态判定,不是对答案字符串打分。"
+            f"要用它请走 `score()`（回放轨迹）,或让臂通过 `session.check_answer` 接上 episode 的 `won`"
         )
 
     # ── 下载 ────────────────────────────────────────────────
@@ -357,6 +484,29 @@ class AlfWorld:
                       "解压到 `dataset/alfworld/json_2.1.1/<split>/`"),
             )
             for tag, fname in RELEASES
+        ] + [
+            # ★★ **第四份,而且少了它照样跑不起来。**
+            #   `logic/alfred.pddl` 和 `alfred.twl2` 是 TextWorld 的**领域与语法**
+            #   （环境用它解析命令、生成文本反馈),而它们在**仓库**的
+            #   `alfworld/data/` 下 —— **不在那三个数据包里**,也不在 `pip install`
+            #   装出来的包里（实测:装完连 config 都没有）。
+            #
+            #   ⇒ 「装了包」和「跑得起来」之间差着三样东西:这份数据包、
+            #     `logic/` 两个文件、以及一份 config。
+            #     前两样在这里声明,config 由我们**自带**
+            #     （`benchmark/alfworld/config.yaml`,差别写在它自己的头部）。
+            DownloadSpec(
+                dataset=self.name,
+                kind="http",
+                locator=(f"https://codeload.github.com/alfworld/alfworld/tar.gz/{ALFWORLD_COMMIT}"),
+                files=("alfred.pddl", "alfred.twl2"),
+                revision=ALFWORLD_COMMIT,
+                size_hint="~3.8 MB（整个仓库）",
+                note=("★ `logic/` 下那两个文件（PDDL 领域 + TextWorld 语法）"
+                      "**不在数据包里,在仓库里** —— 少了它们环境起不来,"
+                      "而报错说的是「Unsupported game format」,不指向真正的原因。"
+                      "解压到 `dataset/alfworld/logic/`"),
+            ),
         ]
 
 

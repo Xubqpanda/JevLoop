@@ -1,0 +1,57 @@
+# ALFWorld 的 config —— **我们自己这一份,不是官方那份。**
+#
+# ## 为什么要自己写一份
+#
+# ★ 实测（2026-09-22）:**`pip install alfworld` 不带 config** ——
+#   包目录里一个 yaml 都没有（`site-packages/alfworld/` 下 rglob('*.yaml') 是空的）。
+#   官方那份在仓库的 `configs/base_config.yaml` 里。
+#
+#   所以「装了包」和「跑得起来」之间差着**两个文件**:
+#   这份 config,以及 `logic/` 下的 `alfred.pddl` / `alfred.twl2`
+#   （那两个也**不在数据包里**,在仓库的 `alfworld/data/` 下）。
+#   ⇒ 两样都由 `downloads()` 声明,`scripts/datasets.py --fetch alfworld` 会取齐。
+#
+# ## 和官方那份的差别（每一处都是有意的）
+#
+# | 这里 | 官方 | 为什么 |
+# |---|---|---|
+# | `goal_desc_human_anns_prob: 1.0` | `0.0` | ★ 文献里 LLM agent 看到的是**人工标注**那句话（`'Look at a mug in lamp light.'`）,而 0.0 是模板生成的。**措辞会改分数** —— 要复现文献就选 1.0。模板那一份仍然留在 `Task.meta['synthetic_goal']` 里好对照 |
+# | `use_cuda: False` | `True` | 文本模式不需要 GPU,而 `True` 在没卡的机器上会炸 |
+# | 只留被读到的字段 | 全套 | 官方那份有一大半是 THOR / RL / 视觉训练的参数,文本 agent 一个都用不上。**少一个字段就少一处「它到底有没有生效」的疑问** |
+#
+# ★ 字段名不能改 —— `AlfredTWEnv.__init__` 直接按名字取,改了就是 KeyError。
+#   这份是**最小可跑集**,不是重新设计。
+
+dataset:
+  data_path: '$ALFWORLD_DATA/json_2.1.1/train'
+  eval_id_data_path: '$ALFWORLD_DATA/json_2.1.1/valid_seen'
+  eval_ood_data_path: '$ALFWORLD_DATA/json_2.1.1/valid_unseen'
+  num_train_games: -1
+  num_eval_games: -1
+
+logic:
+  domain: '$ALFWORLD_DATA/logic/alfred.pddl'
+  grammar: '$ALFWORLD_DATA/logic/alfred.twl2'
+
+env:
+  type: 'AlfredTWEnv'
+  domain_randomization: False
+  task_types: [1, 2, 3, 4, 5, 6]
+  expert_timeout_steps: 150
+  expert_type: "handcoded"
+  # ★ 1.0 = 用人工标注的 goal（见上表）
+  goal_desc_human_anns_prob: 1.0
+
+general:
+  random_seed: 42
+  use_cuda: False
+  visdom: False
+  task: 'alfred'
+  training_method: 'dagger'
+  save_path: './training/'
+  observation_pool_capacity: 3
+  hide_init_receptacles: False
+
+dagger:
+  training:
+    max_nb_steps_per_episode: 50

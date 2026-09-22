@@ -14,6 +14,7 @@
 
 | 数据集（loader）| 来源 | 定位 | 文件 | 版本 | 大概多大 | 备注 |
 |---|---|---|---|---|---|---|
+| `alfworld` | http | `https://codeload.github.com/alfworld/alfworld/tar.gz/aaba6870f86c5be6a08a491f32a50b906227bc3e` | `2` 个 | aaba6870f86c5be6a08a491f32a50b906227bc3e | ~3.8 MB（整个仓库） | ★ `logic/` 下那两个文件（PDDL 领域 + TextWorld 语法）**不在数据包里,在仓库里** —— 少了它们环境起不来,而报错说的是「Unsupported game format」,不指向真正的原因。解压到 `dataset/alfworld/logic/` |
 | `alfworld` | http | `https://github.com/alfworld/alfworld/releases/download/0.2.2/json_2.1.1_json.zip` | `1` 个 | aaba6870f86c5be6a08a491f32a50b906227bc3e | 69 MB | ★ 数据在 **release assets** 里,既不在仓库也不在 HF。★ **三个 zip 都要**:`solvable` 键在 `game.tw-pddl`（0.4.2 那个包）里,少了它过滤器会把全部题目筛掉。解压到 `dataset/alfworld/json_2.1.1/<split>/` |
 | `alfworld` | http | `https://github.com/alfworld/alfworld/releases/download/0.2.2/json_2.1.1_pddl.zip` | `1` 个 | aaba6870f86c5be6a08a491f32a50b906227bc3e | 34 MB | ★ 数据在 **release assets** 里,既不在仓库也不在 HF。★ **三个 zip 都要**:`solvable` 键在 `game.tw-pddl`（0.4.2 那个包）里,少了它过滤器会把全部题目筛掉。解压到 `dataset/alfworld/json_2.1.1/<split>/` |
 | `alfworld` | http | `https://github.com/alfworld/alfworld/releases/download/0.4.2/json_2.1.3_tw-pddl.zip` | `1` 个 | aaba6870f86c5be6a08a491f32a50b906227bc3e | 35 MB | ★ 数据在 **release assets** 里,既不在仓库也不在 HF。★ **三个 zip 都要**:`solvable` 键在 `game.tw-pddl`（0.4.2 那个包）里,少了它过滤器会把全部题目筛掉。解压到 `dataset/alfworld/json_2.1.1/<split>/` |
