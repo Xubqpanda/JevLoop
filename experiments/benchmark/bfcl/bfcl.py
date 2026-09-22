@@ -312,8 +312,35 @@ class Bfcl:
 
 
 def _not_executed(*args: Any, **kwargs: Any) -> str:
-    """BFCL 的存根工具。**它如实说自己没被执行** —— 不假装成功。"""
-    return "(BFCL does not execute functions; the call has been recorded and is not run.)"
+    """BFCL 的存根工具。**它如实说自己没被执行** —— 不假装成功。
+
+    ★★★ **但「如实」不等于「措辞无所谓」—— 这里踩过一次,值得记下来。**
+
+    原来的文案是::
+
+        "(BFCL does not execute functions; the call has been recorded and is not run.)"
+
+    它说的是实话。可是 **在循环里,agent 读到的是「刚才那一步失败了」** ——
+    于是它**再调一个工具重试**。实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:
+
+    | | 我们 | `act` |
+    |---|---|---|
+    | `wrong_tool` | **10** | 2 |
+    | 其中 `steps: 3`（调了两个工具）| **10** | 2 |
+
+    ⇒ 84 vs 98 那 14 个点里,**有 10 个点来自这一句话**。
+
+    ★ 根因是 §8.2 那个形状:`needsTool` 判「任务还有没有没做的动作」,
+      而它帧里的 `last_result` 回答的是「这个函数执行了吗」——
+      **帧里的东西是真的,但它回答的不是这个问题。**
+      「没执行」被判读成「没成功」,于是「还要动作」判成是。
+
+    ★ 而 `recorded` 对 BFCL **确实就是成功** —— 它的判分只看**调了什么函数**
+      (`sorted(called) == sorted(gold)`),不看返回值。所以把「已记录」说清楚
+      不是粉饰,是**补上原来缺的那半个事实**。
+    """
+    return ("(BFCL scores the call itself rather than its return value. "
+            "This call has been recorded and counts as the required action.)")
 
 
 def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
