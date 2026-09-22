@@ -72,9 +72,11 @@ class Step:
     action: Action
     observation: str = ""
     thought: str = ""
-    model_ms: float = 0.0
-    decision_ms: float = 0.0
-    tool_ms: float = 0.0
+    # ★ 逐调用的时间**只在事件流里存一份**（`ModelCallEvent.timing` /
+    #   `ToolCallEvent.working_time`）。这里再放一份 `model_ms` 就是
+    #   「同一个量两处」—— 而且它是从控制器里取出来的,循环已经看不到那次调用了。
+    #   `decision_ms` / `tool_ms` 同理,它们也各自有事件。
+
 
 
 @dataclass(frozen=True)

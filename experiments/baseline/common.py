@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from experiments.core.agent import AgentOutcome, Session, action_answer, action_ask, action_tool
+from experiments.core.controller import Controller, Decision, DecisionView
 from experiments.core.models import Message
 from experiments.core.types import Action, Step, Tool
 
@@ -84,21 +85,10 @@ def render_exemplars(exemplars: str) -> str:
 # ═══════════════════════════════════════════════════════════
 
 
-@dataclass(frozen=True)
-class ParsedStep:
-    """模型这一步说了什么。`kind` 只有三种,**没有第四种**。
-
-    解析不出来时必须是 `unparsed`,**不许猜**。
-    把 `unparsed` 当成答案是最坏的一种处理:它把「模型格式错了」变成「模型答了」。
-    """
-
-    kind: str  # "tool" | "answer" | "unparsed"
-    thought: str = ""
-    tool: str = ""
-    arguments: dict = field(default_factory=dict)
-    answer: str = ""
-    syntax: str = ""  # 用的是哪种写法 —— 失败分类要用
-    raw: str = ""
+# ★ `ParsedStep` 就是 `core.Decision` —— **同一个东西,不留两个类型**。
+#   把这个类型放在 `core/` 是因为**两种控制器都要返回它**:
+#   未解耦的那种从生成文本里解析出来,解耦的那种从枚举里挑出来。
+ParsedStep = Decision
 
 
 # ★ 函数名里的 **`.` 必须允许** —— BFCL 的函数合法地带点
@@ -292,6 +282,9 @@ class LoopConfig:
     exemplars: str = ""
     stop: tuple[str, ...] = REACT_STOP
     max_parse_retries: int = 2
+    # ★ **决策者**。默认就是今天在用的那个（生成 + 解析,决定藏在生成里）。
+    #   换成别的实现时,这一处是唯一要改的地方 —— 这正是「解耦」在代码里的样子。
+    controller: "Controller | None" = None
     # ★ 插在 Tools 之前的一段固定文本。`plan-then-execute` 的执行段就是
     #   「把计划塞进 preamble,然后跑同一个 run_loop」—— 一处也不用重写。
     preamble: str = ""
@@ -304,9 +297,9 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
     解析不出来时最多重试 `max_parse_retries` 次,再不行就**弃答**（`action_ask`）——
     弃答是一种**能被看见**的结果,比硬凑一个答案诚实。
     """
+    controller = cfg.controller or LLMController()
     tools = session.tools
     tool_names = [t.name for t in tools]
-    first_arg = {t.name: first_arg_name(t) for t in tools}
     steps: list[Step] = []
     retries = 0
 
@@ -317,9 +310,14 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
         #   有了它，「第几步慢」这种问题从日志里直接读得出,而不是靠各臂自己加计时器。
         with session.span(f"{cfg.name}/step-{len(steps)}"):
             prompt = build_prompt(session, cfg, steps)
-            reply = session.call_model([Message(role="user", content=prompt)])
-            parsed = parse_step(reply.text, tool_names,
-                                first_arg=first_arg.get(parsed_tool_guess(reply.text)))
+            # ★★ **岔路口在这里。** 循环只负责「把看得到的拼成一个 view」,
+            #   **由谁回答由 `controller` 决定** —— 现在只有一种实现
+            #   （`LLMController`:决定藏在生成出来的文本里）。
+            #   加 `TypedController` 时,这一行以下一个字都不用动。
+            view = DecisionView(prompt=prompt, tools=tuple(tools),
+                                task_id=session.task.task_id,
+                                step=len(steps), history=tuple(steps))
+            parsed = controller.decide(session, view)
             if parsed.kind == "unparsed":
                 retries += 1
                 # ★ 重试也要留下痕迹 —— 不然后面分不清「一次就对」和「纠了两次才对」
@@ -342,7 +340,7 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
             observation = session.call_tool(parsed.tool, parsed.arguments)
             steps.append(
                 Step(index=len(steps), action=action_tool(parsed.tool, parsed.arguments),
-                     observation=observation, thought=parsed.thought, model_ms=reply.model_ms)
+                     observation=observation, thought=parsed.thought)
             )
 
     # 步数用完 —— ★ 弃答,不是硬答
@@ -350,6 +348,26 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
         steps=steps, final_answer=None, escalated=True,
         error=f"用满 {session.max_steps} 步仍未给出答案",
     )
+
+
+class LLMController:
+    """**未解耦的那种控制器,而且它就是今天在用的那个。**
+
+    `decide()` = 一次生成 + 一次解析。**决定和生成是同一次调用** ——
+    这不是实现细节,这就是「未解耦」的定义,也是论文标题里那个「decoupling」要拆开的东西。
+
+    ★ 它住在 `baseline/` 而不是 `core/`:它实现的 `Action: tool[arg]` 是
+    **ReAct 的交互协议**,是某个范式的事,不是词汇。放错地方会让 `core/` 依赖 `baseline/`。
+    """
+
+    def __init__(self, name: str = "llm") -> None:
+        self.name = name
+
+    def decide(self, session: Session, view: DecisionView) -> Decision:
+        reply = session.call_model([Message(role="user", content=view.prompt)])
+        # ★ 决定**藏在生成里** —— 这一行就是「解耦前」的样子
+        return parse_step(reply.text, view.tool_names(),
+                          first_arg=view.first_arg().get(parsed_tool_guess(reply.text)))
 
 
 def parsed_tool_guess(text: str) -> str:
@@ -544,7 +562,7 @@ def substitute_evidence(text: str, evidence: dict[str, str]) -> tuple[str, list[
 
 
 __all__ = [
-    "LoopConfig", "ParsedStep", "PlanItem", "parse_step", "parse_plan", "render_plan",
+    "LoopConfig", "ParsedStep", "LLMController", "PlanItem", "parse_step", "parse_plan", "render_plan",
     "substitute_evidence", "extract_answer", "render_tools", "render_exemplars",
     "render_history", "first_arg_name",
     "render_step", "build_prompt", "run_loop", "REACT_STOP",

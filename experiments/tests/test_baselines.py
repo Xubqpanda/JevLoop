@@ -506,3 +506,76 @@ def test_dotted_tool_names_parse() -> None:
 def test_dotted_name_that_is_not_a_tool_is_still_unparsed_with_evidence() -> None:
     parsed = common.parse_step("Action: no.such[tool]", ["math.hcf"])
     assert parsed.kind == "unparsed" and "no.such" in parsed.raw
+
+
+# ═══════════════════════════════════════════════════════════
+# 决策接口 —— 论文标题里那个「decoupling」的代码形态
+# ═══════════════════════════════════════════════════════════
+
+
+def test_llm_controller_reproduces_the_loop_behaviour(tmp_path: Path) -> None:
+    """★★ **等价性:抽接口没有改行为。**
+
+    这条测试是「两条臂只差决策者」这句话的前提。没有它,以后加
+    `TypedController` 时,两个格子之间的差就**分不清是决策者换了、还是循环被动过了**。
+
+    所以这里把**未解耦形态的行为逐字钉住**:给定一段脚本化输出,
+    步序列（类型 / 工具名 / 参数 / 观察 / 思维链）必须完全确定。
+    """
+    from experiments.baseline.common import LLMController
+
+    model = ScriptedModel([
+        "Thought: look it up.\nAction: lookup_capital[Peru]",
+        "Thought: done.\nAction: finish[Lima]",
+    ])
+    outcome = _run(tmp_path, ReAct(), model)
+    got = [(s.index, s.action.kind, s.action.name, s.action.arguments, s.observation, s.thought)
+           for s in outcome.steps]
+    assert got == [
+        # 参数名是**工具定义里的第一个键**（`country`），不是国家名 ——
+        # `tool[arg]` 只有一个位置参数，名字按 `parameters` 的定义顺序取
+        (0, "tool", "lookup_capital", {"country": "Peru"}, "Lima", "look it up."),
+        (1, "answer", "", {}, "", "done."),
+    ], "循环行为变了 —— 抽接口不该改行为"
+    assert outcome.final_answer == "Lima"
+    assert LLMController().name == "llm"
+
+
+def test_the_controller_is_the_only_thing_that_decides(tmp_path: Path) -> None:
+    """★ 接缝是**活的**,不是装饰:换一个控制器,循环走出来就不同。
+
+    如果换了控制器行为还一样,那这个接口就是假的。
+    """
+    from experiments.baseline.common import LoopConfig, run_loop
+    from experiments.core.controller import Decision
+
+    class AlwaysFinish:
+        name = "always-finish"
+
+        def decide(self, session, view):
+            return Decision(kind="answer", answer="Lima", raw="<scripted>")
+
+    session = _session(tmp_path, arm="react")
+    session.model = ScriptedModel(["这个回复不该被用到"])
+    cfg = LoopConfig(name="react", instruction="i", controller=AlwaysFinish())
+    outcome = run_loop(session, cfg)
+
+    assert outcome.final_answer == "Lima"
+    assert not session.model_events(), "控制器没生成 → 就不该有模型调用事件"
+
+
+def test_the_controller_cannot_see_the_gold_answer() -> None:
+    """★★ **接口上拿不到,比「约定不许」强。**
+
+    `DecisionView` 只带 `task_id`,**不带 `Task`** —— 而 `Task` 带着 `gold`。
+    第一版放的是整个 `Task`,于是「控制器只能看这些」是空话:
+    它 `view.task.gold` 就把答案读出来了,而没有任何东西拦得住。
+
+    **偷看金标这件事必须是结构上做不到的** —— 因为约定会忘,类型不会。
+    （需要成败信号的臂走的是另一条显式的路:`needs_success_signal`,见 core/agent.py。）
+    """
+    from experiments.core.controller import DecisionView
+
+    fields = set(DecisionView.__dataclass_fields__)
+    assert "task" not in fields, "DecisionView 不许携带整个 Task（它带着 gold）"
+    assert "task_id" in fields
