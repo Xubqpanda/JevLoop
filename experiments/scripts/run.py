@@ -38,6 +38,7 @@ from experiments.core.types import Task, Tool
 from experiments.benchmark import bfcl as bfcl_bench  # noqa: F401
 # ★ 三个 BigBench 任务**共用一份 ReWOO tarball** —— 一次下载抽三个 CSV。
 from experiments.benchmark import bigbench as bigbench_bench  # noqa: F401
+from experiments.benchmark import alfworld as alfworld_bench  # noqa: F401
 from experiments.benchmark import fever as fever_bench  # noqa: F401
 from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import hotpotqa as hotpotqa_bench  # noqa: F401
@@ -149,6 +150,8 @@ BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
     triviaqa_bench.TriviaQa.name: triviaqa_bench.TriviaQa,
     fever_bench.Fever.name: fever_bench.Fever,
     sotuqa_bench.SotuQa.name: sotuqa_bench.SotuQa,
+    # ★ 交互式环境:需要 textworld,而且要用 `on_task` 绑定每题的环境
+    alfworld_bench.AlfWorld.name: alfworld_bench.AlfWorld,
 }
 # BFCL 一个数据集两个子集,各自是独立的 `log/<name>/` 目录
 for _sub in bfcl_bench.SUBSETS:
