@@ -12,7 +12,9 @@ JevLoop is an independent project. It is not affiliated with, or endorsed by, Ty
 
 **English** · [中文](README.zh-CN.md)
 
-![JevLoop: one demo run, twelve decisions and one model call](docs/demo.gif)
+![JevLoop: one demo run — the conversation, the decision trace, and the compiled DECISION.md](docs/demo.gif)
+
+*One session, three views: the conversation, the decision trace, and the compiled `DECISION.md`. The web UI is currently in Chinese — an English version is in progress.*
 
 ```
 $ npm run demo          # fresh clone: no key, no network, no npm install
@@ -438,7 +440,7 @@ It has no authentication and binds to loopback only. `HOST=0.0.0.0` means *anyon
 
 - **Not a replacement for an LLM.** Drafting, coding and summarising still need one.
 - **Not "zero hallucination".** A decision model can't return an answer outside the type you asked for, but the answer can still be wrong. That's what the threshold is for.
-- **Not benchmarked against a conventional agent on the same task yet.** The `12:1` above is from the bundled demo. That comparison is the obvious next step and it isn't done.
+- **Not a general accuracy claim.** Our own ReAct comparison above is seven tasks, one run each, on one model — and this loop was accepted on 6 of 7 against ReAct's 7 of 7.
 - **Not production-hardened.** Tool sandboxing covers path escape only. Read [`src/tools.ts`](src/tools.ts) before pointing it at anything you care about.
 
 ## Layout
