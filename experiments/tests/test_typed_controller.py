@@ -947,3 +947,46 @@ def test_requests_and_questions_are_counted_separately() -> None:
     assert b.questions_in_batch == b.requests_in_batch, (
         "现在每道题各发一次请求 —— 相等是对的,而**它本身就是要量的那个浪费**"
     )
+
+
+def test_a_single_tool_dataset_still_terminates_after_doing_it() -> None:
+    """★★★ 回归测试:`bfcl-v3-simple × react-typed` 曾经**从 97/100 掉到 0/100**。
+
+    那个子集只有 **1 个工具**。加 `DONE` 出口之后,工具做完时
+    `candidates()` 返回 `[DONE]` —— 而「唯一候选」那条捷径把它**当成工具名**
+    去 `view.tools` 里找,`next(...)` 直接 `StopIteration` → 整题 `agent_error`。
+
+    ★ **加出口时引入的回归,而它只打在「工具数 = 1」的子集上** ——
+      另一个子集（2–4 个工具）走 `else` 分支,完全没受影响。
+      所以「只在有工具的数据集上测」这条纪律要再加一条:
+      **同一处改动的两个子集都要测。**
+
+    这条测试用一个只有 1 个工具、且 `needsTool` 一直说「还要」的环境,
+    确认它**不会炸**,而是走到生成。
+    """
+    from experiments.core.controller import Decision
+    from experiments.core.frame import ctx_from_steps
+    from experiments.jloop.typed import DONE, TypedController
+
+    session = make_session()          # toy 只有一个工具
+    client = ScriptedClient(noul=0.9)  # needsTool 恒为「还要」
+
+    class Spy(TypedController):
+        def _generate(self, session, view, ctx, *, why, batch=0):
+            return Decision(kind="answer", answer="PARIS", syntax="generated")
+
+    ctrl = Spy(client)
+    # 第一步:调用唯一的工具
+    d1 = ctrl.decide(session, _view(session))
+    assert d1.kind == "tool" and d1.tool == "lookup_capital"
+
+    # 第二步:工具已做过 → 候选只剩 DONE → **必须走到生成,不许炸**
+    session.next_batch()
+    from experiments.core.types import Action, Step
+
+    step = Step(index=0, action=Action(kind="tool", name="lookup_capital",
+                                       arguments={"country": "France"}),
+                observation="Paris")
+    d2 = ctrl.decide(session, _view(session, history=(step,)))
+    assert d2.kind == "answer", f"做完之后必须能收尾,而不是炸:{d2}"
+    assert {t.get("answer") for t in ctrl.trace} >= {DONE}

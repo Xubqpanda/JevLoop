@@ -275,6 +275,23 @@ class TypedController:
             return self._generate(session, view, ctx, why="候选已空（做过的都做过了）",
                                   batch=batch)
 
+        # ★★★ **`DONE` 必须在「唯一候选」捷径之前处理。**
+        #
+        #   实测（2026-09-22）:加 `DONE` 出口之后 `bfcl-v3-simple × react-typed`
+        #   **从 97/100 掉到 0/100** —— 因为那个子集只有 **1 个工具**,
+        #   工具做完之后 `candidates()` 返回 `[DONE]`,而捷径把 `DONE`
+        #   当成了**工具名**去 `view.tools` 里找。
+        #
+        #   ★ 这是**加出口时引入的回归**,而且只打在「工具数 = 1」的子集上 ——
+        #     另一个子集（2–4 个工具）走的是 `else` 分支,完全没受影响。
+        #     **同一处改动在两个子集上一好一坏,是「只在有工具的数据集上测」
+        #     这条纪律的又一个例子 —— 但还得再加一条:两个子集都要测。**
+        if options == [DONE]:
+            self.trace.append({"step": view.step, "node": "pickTool",
+                               "answer": DONE, "top": 1.0, "provider": "typed"})
+            return self._generate(session, view, ctx,
+                                  why="候选只剩 done（工具都做过了）", batch=batch)
+
         if len(options) == 1:
             # ★ 只有一个候选就**不问** —— 「要不要用工具」刚由 `needsTool` 判过,
             #   再问「要哪一个（而只有一个）」是白花一次判定。
