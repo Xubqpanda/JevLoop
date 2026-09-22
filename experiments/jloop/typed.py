@@ -69,9 +69,28 @@ from experiments.core.models import Message
 #   `NODE_THRESHOLDS`:`DECISION.md` 里 `pick_tool` 是 0.6 而 `pick_input` 是 0.5,
 #   用一个全局值会把其中一个改错,而**两边都还是「看起来在卡门限」**。
 
-#: 生成答案时的格式要求。★ **不是 ReAct 的 `Action:` 格式** —— 那要求模型吐一个
-#: 动作行,而这里要的是最终答案本身。
-ANSWER_FORMAT = "Reply with the final answer only. Do not emit an action."
+# ★★★ `ANSWER_FORMAT` **已删** —— 它违了我们自己定的分工。
+#
+#   原来 `_answer_text` 拼的是:
+#
+#       Reply with the final answer only. Do not emit an action.   ← 我们加的
+#       # Task
+#       <题目>
+#       Give the final answer as a single number on its own line.  ← benchmark 的契约
+#
+#   ⇒ **两条输出契约并存**,而 `core/bench.py` 的分工表写着:
+#     「任务陈述 + **输出契约** → **benchmark**;交互协议 → baseline。
+#      **baseline 不许改任务陈述,只能加自己的协议块。**」
+#     我们加的那条**不是交互协议,是第二条输出契约**。
+#
+#   ★ 实测代价(GSM8K × 100,单 commit)`react-typed` **63%**、平均 **9.8** 个输出
+#     token;而同一个模型的 `direct` 是 **97%**、**131.7** 个 token。
+#     **第一条契约把推理一起禁掉了** —— 模型老老实实只吐一个数。
+#
+#   ★ 这正是已经记过的那条教训:「两条输出契约并存时,从 prompt 上看不出
+#     模型听了哪条」。教训记过了,我又犯了一次 —— 所以这次留注释在代码里。
+#
+#   ⇒ 生成那一步**就是生成**,用 benchmark 给的 `task_prompt`,一个字都不加。
 
 
 # ═══════════════════════════════════════════════════════════
@@ -319,16 +338,20 @@ class TypedController:
                         thought=f"生成答案（{why}）", syntax="generated")
 
     def _answer_text(self, session: Session, view: DecisionView) -> str:
-        prompt = "\n".join([
-            ANSWER_FORMAT,
-            "",
-            "# Task",
-            view.task_prompt,
-            "",
-            "# What was done",
-            "; ".join(f"{s.action.name or s.action.kind}" for s in view.history) or "(nothing)",
-        ])
-        return session.call_model([Message(role="user", content=prompt)]).text
+        """生成最终答案。**一个字都不加** —— 见上面 `ANSWER_FORMAT` 那段。
+
+        ★ `view.task_prompt` **已经包含 benchmark 的输出契约**
+          （GSM8K 的 `ANSWER_CONTRACT` 就拼在题目后面）。我们再补一条
+          就是第二条契约,而两条并存时模型听哪条从 prompt 上看不出来。
+
+        ★ 「这做过什么」那一行留着:它是**上下文**,不是契约 ——
+          多步任务里模型需要知道已经查过什么。
+        """
+        parts = [view.task_prompt]
+        done = "; ".join(f"{s.action.name or s.action.kind}" for s in view.history)
+        if done:
+            parts += ["", "# What was done", done]
+        return session.call_model([Message(role="user", content="\n".join(parts))]).text
 
     def _generate_argument(self, session: Session, view: DecisionView, tool, name: str) -> str:
         prompt = "\n".join([
@@ -496,4 +519,4 @@ def _wire(question: Question) -> dict:
 
 __all__ = ["TypedController", "candidates", "NODE_THRESHOLDS",
            "NEEDS_TOOL_ASK", "NEEDS_TOOL_CRITERIA", "PICK_TOOL_ASK",
-           "PICK_INPUT_ASK", "ANSWER_FORMAT"]
+           "PICK_INPUT_ASK"]

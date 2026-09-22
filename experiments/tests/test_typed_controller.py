@@ -192,13 +192,48 @@ def test_the_typed_arm_does_not_reuse_the_react_prompt() -> None:
     ))).solve(session)
 
     assert seen, "模型一次都没被调用?"
-    answer_prompts = [p for p in seen if "final answer" in p.lower()]
+
+    # ★ 认「生成答案那一次」的判据:**它带着任务原文**（ReAct 的提示词也带着,
+    #   但那条是 `build_prompt` 拼的,里面一定有 `Action:`）。
+    #   ⚠️ 原来这里用「含 final answer」来认,而后来我们把那句多余的契约删了 ——
+    #     **一条依赖措辞的测试,会因为我们改措辞而失效,而不是因为被测的东西坏了。**
+    answer_prompts = [p for p in seen if "What is the capital of" in p]
     assert answer_prompts, "没找到生成答案的那次调用"
     for prompt in answer_prompts:
         assert "Action:" not in prompt, (
             "生成答案的提示词里带着 ReAct 的动作格式 —— "
             "模型会照着吐一个动作,而我们把它当答案收下"
         )
+
+
+def test_the_typed_arm_does_not_add_a_second_output_contract() -> None:
+    """★★★ **一条输出契约就够了** —— 而且它归 benchmark。
+
+    `core/bench.py` 的分工表:「任务陈述 + **输出契约** → **benchmark**;
+    交互协议 → baseline。**baseline 不许改任务陈述,只能加自己的协议块。**」
+
+    实测代价(GSM8K × 100,单 commit):`react-typed` **63%**、9.8 个输出 token;
+    而 `direct` **97%**、131.7 个 token —— **同一个模型**。
+    我们那条 `ANSWER_FORMAT`(「只给最终答案」)**把推理一起禁掉了**。
+
+    ★ 这正是已经记过的教训(两条契约并存时看不出模型听了哪条)——
+      记过了还是又犯了一次,所以这条测试要**机械地**钉住。
+    """
+    session = make_session()
+    seen: list[str] = []
+    session.model = capital_model(seen)
+
+    ReAct(controller=TypedController(ScriptedClient(
+        noul=[0.9, 0.1], pick={"pickInput": "France"},
+    ))).solve(session)
+
+    answer_prompts = [p for p in seen if "What is the capital of" in p]
+    assert answer_prompts
+    for prompt in answer_prompts:
+        # 契约只该出现一次,而且只该是 benchmark 写的那一条
+        assert prompt.count("Answer with the city name only") == 1
+        assert "final answer only" not in prompt.lower(), "我们又加了一条输出契约"
+        assert "Do not emit an action" not in prompt, "同上"
 
 
 def test_the_view_carries_the_task_text_not_only_a_rendered_prompt() -> None:
