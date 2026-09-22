@@ -24,7 +24,13 @@ if str(REPO) not in sys.path:
 from experiments.baseline.direct import Direct  # noqa: E402
 from experiments.benchmark.toy import CAPITALS, ToyCapitals  # noqa: E402
 from experiments.core.agent import AgentOutcome, Session, action_ask, action_answer  # noqa: E402
-from experiments.core.models import CallableModel, Message  # noqa: E402
+from experiments.core.models import (  # noqa: E402
+    CallableModel,
+    Message,
+    ModelReply,
+    Thinking,
+    to_wire_messages,
+)
 from experiments.core.registry import AGENTS, BENCHMARKS, known, register_agent  # noqa: E402
 from experiments.core.runner import Cell, run_cell  # noqa: E402
 from experiments.core.spec import REQUIRED_RESULT_FIELDS, Result, missing_fields  # noqa: E402
@@ -263,3 +269,67 @@ def test_scorer_exception_does_not_become_a_pass(tmp_path: Path) -> None:
     )
     assert all(not r.correct for r in results)
     assert all(r.failure_class == "scorer_error" for r in results)
+
+
+# ═══════════════════════════════════════════════════════════
+# 思考模式 —— 三条会静默出错的地方
+# ═══════════════════════════════════════════════════════════
+
+
+def test_reasoning_content_is_carried_back_into_history() -> None:
+    """★★ 带 `tools` 时,历史里每一轮的 `reasoning_content` **必须回传,否则 400**。
+
+    DeepSeek 官方文档（思考模式 · 工具调用）:「携带了 `tools` 参数的请求，
+    在后续所有请求中，必须完整回传 `reasoning_content` —— 即使该轮模型
+    未实际进行工具调用。若未正确回传，API 会返回 400。」
+
+    也就是说:**任何多轮 + 带工具的实现（ReAct 就是）在思考模型上都会因此挂掉**，
+    而报错发生在**第二轮**,看起来像「工具定义写错了」。
+    """
+    reply = ModelReply(text="", reasoning_content="先查日期", tool_calls=({"id": "c1", "type": "function"},))
+    history = [
+        Message(role="user", content="明天天气?"),
+        reply.as_assistant_message(),
+        Message(role="tool", content="2026-04-20", tool_call_id="c1"),
+    ]
+
+    wire = to_wire_messages(history)
+    assert wire[1]["reasoning_content"] == "先查日期", "思维链没进请求体 → 下一轮 400"
+    assert wire[1]["tool_calls"], "工具调用没进请求体"
+    assert wire[2]["tool_call_id"] == "c1"
+
+
+def test_assistant_message_without_reasoning_omits_the_field() -> None:
+    """不带 `tools` 时该字段会被忽略 —— 没有就不要硬塞一个空串。
+
+    塞空串和「模型这轮没思考」在服务端是两回事,别替它编。
+    """
+    wire = to_wire_messages([ModelReply(text="答").as_assistant_message()])
+    assert "reasoning_content" not in wire[0]
+
+
+def test_thinking_medium_is_not_a_distinct_level() -> None:
+    """★ DeepSeek 官方映射:`minimal→low · low→low · medium→high · high→high · xhigh→high · max→max`。
+
+    所以照 {低, 中, 高} 跑,`中` 和 `高` 是**同一次运行** ——
+    表里两行一模一样,而人会以为测了两档。这个测试是那个坑的备忘。
+    """
+    mapping = {"minimal": "low", "low": "low", "medium": "high", "high": "high",
+               "xhigh": "high", "max": "max", "ultra": "max"}
+    assert mapping["medium"] == mapping["high"], "如果厂商改了映射,这条要跟着改,并重跑附录那一轴"
+    assert len({mapping["low"], mapping["medium"], mapping["high"], mapping["max"]}) == 3, (
+        "可选的真实档位只有 low / high / max 三个 —— 附录的表按这个列"
+    )
+
+
+def test_thinking_mode_silently_ignores_temperature() -> None:
+    """★ 官方原话:思考模式不支持 `temperature`，「设置参数不会报错，但也不会生效」。
+
+    后果:「所有 arm 温度相同」在「一臂开思考、一臂不开」时**做不到**。
+    这是**混淆变量,要记进结果**,不能假设掉。
+    """
+    payload = {"temperature": 0.0, "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    # 这一条不是断言服务端行为（测不到），而是把事实钉在代码里：
+    assert payload["thinking"]["type"] == "enabled"
+    # 记录口径:温度必须写进 meta,并且**注明它在思考模式下未生效**
+    assert "temperature" in payload
