@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -154,11 +155,56 @@ def check_downloads() -> list[str]:
     return problems
 
 
+#: 一个 run 的产物**超过这么久没动过、又没有 `meta.json`** ⇒ 判定为被中断。
+#: 单题是秒级的,所以 10 分钟足够宽松;而它必须宽松 ——
+#: **把一个正在跑的 run 报成中断,和漏报一样糟**（假问题会让整道门被无视）。
+STALE_RUN_S = 600
+
+
+def check_interrupted_runs() -> list[str]:
+    """⑤ 被中断的 run —— **有 `cmd.txt`、却没有 `meta.json`,而且已经不动了**。
+
+    ★ 这个洞是实测撞出来的:`meta.json` 是**跑完才写**的,所以一次被 `kill`
+      的跑会留下一个目录,而它对 ② 完全**隐形**（② 只看存在的 `meta.json`）。
+      于是「这批跑了一半就没了」这件事**没有任何东西记得**。
+
+    判据用 mtime,因为「正在跑」和「被中断」在磁盘上的差别**只有时间**:
+    两者都是「有 cmd.txt、有 events.jsonl、没有 meta.json」。
+
+    ★ `meta.json` 改成开跑时就写会更干净（那时 `RunMeta` 的字段其实都已知）——
+      那是更好的修法,记在这里等下一次动 `runner` 时做。
+    """
+    problems: list[str] = []
+    if not LOG.is_dir():
+        return problems
+    now = time.time()
+    for run_dir in sorted(LOG.glob("*/*/*")):
+        if SUPERSEDED in run_dir.parts or not run_dir.is_dir():
+            continue
+        if (run_dir / "meta.json").exists():
+            continue
+        if not (run_dir / "cmd.txt").exists():
+            continue                      # 不是一次 run,是别的东西
+        newest = max((f.stat().st_mtime for f in run_dir.iterdir() if f.is_file()),
+                     default=run_dir.stat().st_mtime)
+        if now - newest < STALE_RUN_S:
+            continue                      # 还在跑
+        mins = int((now - newest) / 60)
+        problems.append(
+            f"{run_dir.relative_to(EXPERIMENTS)}/ 有 cmd.txt 但没有 meta.json，"
+            f"已经 {mins} 分钟没动过 —— 看起来是**被中断的跑**。\n"
+            f"      → 它进不了表（没有出处）,但留着会让人以为它是一次完整跑。"
+            f"移进 log/{SUPERSEDED}/ 或删掉"
+        )
+    return problems
+
+
 CHECKS = (
     ("① log/ 的目录名", check_log_names),
     ("② meta.json 的字段", check_meta),
     ("③ 臂名", check_arm_names),
     ("④ 下载说明的覆盖", check_downloads),
+    ("⑤ 被中断的 run", check_interrupted_runs),
 )
 
 #: ★ **基线**（`check-baseline.json`）—— 照 TS 侧 `scripts/file-focus-baseline.json`
