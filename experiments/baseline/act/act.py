@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from experiments.baseline.common import LoopConfig, run_loop
+from experiments.core.controller import Controller  # noqa: F401  (类型注解用)
 from experiments.core.agent import AgentOutcome, Session
 
 INSTRUCTION = (
@@ -37,6 +38,9 @@ class Act:
     exemplars: str = ""
     max_parse_retries: int = 2
     name: str = "act"
+    # ★ **控制器** —— 论文第一根轴:同一个循环,换一个「谁来回答下一步」。
+    #   `None` = `LLMController`（生成 + 解析,决定藏在生成里）。
+    controller: "Controller | None" = None
     config: LoopConfig = field(init=False)
 
     def __post_init__(self) -> None:
@@ -47,6 +51,10 @@ class Act:
             with_thought=False,
             exemplars=self.exemplars,
             max_parse_retries=self.max_parse_retries,
+            # ★ **控制器** —— 论文第一根轴。默认 `None` = `LLMController`
+            #   （生成 + 解析,决定藏在生成里,也就是今天在用的那个）。
+            #   传 `TypedController` 就是同一循环的另一个格子。
+            controller=self.controller,
         )
 
     def solve(self, session: Session) -> AgentOutcome:

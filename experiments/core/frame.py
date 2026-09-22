@@ -131,6 +131,19 @@ class FrameField:
     label: str         # 进给判定模型时那行字
     # tail: 留尾巴（证据通常是**后面**才是结论）；head: 留开头；list: 只留前 N 条
     clip: str = "tail"
+    #: ★★ 这个字段是**判定的依据**吗?
+    #:
+    #: `True` = 节点判的就是它,缺了**没有对象可判**（`stepOk` 没有 `last_result`、
+    #: `canDeliver` 没有 `draft`）→ 缺席要让请求**发不出去**。
+    #:
+    #: `False`（默认）= 它只是**上下文**,缺席是**正常状态**:第 0 步本来就没有
+    #: `last_result`,`draft` 在生成之前本来就不存在。
+    #:
+    #: **为什么必须分开**:两类缺席混在一起报,结果是这条不变量**每一步都在响**,
+    #: 而那唯一一次真的缺了依据（`canDeliver` 的证据被 clip 到 100 字符,
+    #: 闸门**正确地**判出 `unsupported=0.67`）就淹没在噪声里。
+    #: 「天天误报」和「没有这条检查」在效果上没有区别 —— 两种都不再有人看。
+    required: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,6 +167,9 @@ class Frame:
     truncations: dict[str, tuple[int, int]]
     # 声明了但**这次没拿到**的字段（`AgentCtx` 上是空的）
     missing: tuple[str, ...]
+    # ★ 上面那些里,**判定真的靠它**的那些（`FrameField.required`）。
+    #   渲染时两者一视同仁（缺了就得说）,但**只有这一份**拦请求。
+    missing_required: tuple[str, ...]
     # ★ 声明里明说「不看」的字段 —— 一起进日志,这样「这一格当时看到什么」可核对
     excluded: tuple[tuple[str, str], ...]
 
@@ -208,16 +224,23 @@ def compile_frame(spec: FrameSpec, ctx: AgentCtx) -> Frame:
     2. **只给声明的字段** —— 没在 `fields` 里的**一个都不进**（`stepOk` 那条）
     3. **缺的要说** —— 声明了但 `ctx` 上是空的,记进 `missing`,**不静默留白**
        （留白会让判定模型以为「证据就这么多」）
+
+    ★ 第 3 条要分两档（`FrameField.required`）:**判定的依据**缺了,
+    这次判定没有对象;只是**上下文**的字段缺了,那本来就可能是正常状态。
+    两档都渲染（缺了就得说）,但只有前一档进 `missing_required`。
     """
     lines: list[str] = []
     truncations: dict[str, tuple[int, int]] = {}
     missing: list[str] = []
+    missing_required: list[str] = []
 
     for spec_field in spec.fields:
         raw = getattr(ctx, spec_field.name, None)
 
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             missing.append(spec_field.name)
+            if spec_field.required:
+                missing_required.append(spec_field.name)
             continue
 
         if isinstance(raw, (list, tuple)):
@@ -236,7 +259,8 @@ def compile_frame(spec: FrameSpec, ctx: AgentCtx) -> Frame:
         lines.append(f"{spec_field.label}: {body}")
 
     return Frame(node=spec.node, lines=tuple(lines), truncations=truncations,
-                 missing=tuple(missing), excluded=spec.excluded)
+                 missing=tuple(missing), missing_required=tuple(missing_required),
+                 excluded=spec.excluded)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -254,7 +278,8 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     "needsTool": FrameSpec(
         node="needsTool",
         fields=(
-            FrameField("task", 400, "task"),
+            # 判的就是「这个任务还有没有没做的动作」—— 没有 task 就没有对象可判
+            FrameField("task", 400, "task", required=True),
             FrameField("last_tool", 60, "last_tool"),
             FrameField("last_result", 300, "last_result"),
             # ★ 是一份**清单**,不是一个计数 —— `steps_done: 2` 那种写法分不出
@@ -266,7 +291,9 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     "pickTool": FrameSpec(
         node="pickTool",
         fields=(
-            FrameField("task", 400, "task"),
+            FrameField("task", 400, "task", required=True),
+            # ⚠️ **不是** required:第 0 步本来就没有上一步的结果。
+            #    标成 required 会让这条不变量每一步都响,然后被无视。
             FrameField("last_result", 300, "last_result"),
         ),
         # 候选在问题那一侧（`choice` 的选项），不占帧的字段 —— 见 §8.4「每步重建」
@@ -277,7 +304,7 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     ),
     "pickInput": FrameSpec(
         node="pickInput",
-        fields=(FrameField("task", 400, "task"),),
+        fields=(FrameField("task", 400, "task", required=True),),
         excluded=(
             ("last_result", "判的是**这一调**的目标,不是上一步返回了什么"),
             ("history", "候选由 `candidates` 每步算出来,历史是另外的事"),
@@ -286,7 +313,8 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     "gradeRisk": FrameSpec(
         node="gradeRisk",
         fields=(
-            FrameField("last_input", 200, "target"),
+            # 判的是**这一调**的风险 —— 没有 target 就没有可判的东西
+            FrameField("last_input", 200, "target", required=True),
             FrameField("task", 300, "task"),
         ),
         excluded=(("last_result", "判的是**调用之前**的风险,这时还没有结果"),),
@@ -296,7 +324,8 @@ NODE_FRAMES: dict[str, FrameSpec] = {
         fields=(
             FrameField("last_tool", 60, "tool"),
             FrameField("last_input", EVIDENCE_INPUT_CHARS, "input"),
-            FrameField("last_result", 500, "output"),
+            # ★ 判的就是「这一步成没成」—— 唯一没有它就没法判的字段
+            FrameField("last_result", 500, "output", required=True),
         ),
         # ★★★ **故意没有 `task`** —— 这是修出来的:
         #   以前帧带着 `task`、问题写着 "for the task"、判据写着 "what the task needed",
@@ -312,7 +341,7 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     "isDone": FrameSpec(
         node="isDone",
         fields=(
-            FrameField("task", 400, "task"),
+            FrameField("task", 400, "task", required=True),
             # ★ 是清单不是计数 —— 和 `needsTool` 同一条理由
             FrameField("history", 300, "already_done", clip="list"),
         ),
@@ -327,15 +356,182 @@ NODE_FRAMES: dict[str, FrameSpec] = {
     "canDeliver": FrameSpec(
         node="canDeliver",
         fields=(
-            FrameField("task", 400, "task"),
+            FrameField("task", 400, "task", required=True),
             # ★ 900,不是 100 —— 100 那次判定**正确地**判出 `unsupported=0.67`,
             #   是帧喂少了。这一格的预算直接决定闸门准不准。
-            FrameField("draft", 900, "answer"),
+            #   ★ 而且它是 required:**没有 draft 就没有可交付的东西**。
+            #   这次事故的形状正是「有 draft 但被截短了」—— 那走 `truncations`,
+            #   不在这里;这里是「压根没有」。
+            FrameField("draft", 900, "answer", required=True),
         ),
         excluded=(("history", "判的是**回答**与任务,历史会把回答挤掉"),),
     ),
 }
 
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★ 请求 = 帧 + 问题 —— **预算要一起算,而且超了必须有人接**
+#
+# 这一段是补第十轮 R2/R5 的。那一轮的两条住在帧编译里：
+#
+#   R5  `fileOptions` 的**选项数没有上界**,而同一个帧里的字段都老老实实截断了
+#       → **帧有界、选项无界**,恰好是 §8.2 说要避免的形态
+#   R2  `write_file` **永不从候选中移除**,而同文件 185 行把不变量写成了通则
+#       → 不变量写成通则、实现三个工具三种待遇
+#
+# 两条合起来是一条五步失效链（审计原文）：
+#
+#   选项超限 → 校验发现 → **无人接收** → 请求照发 → **判定静默掉点**
+#
+# ★ 我第一版的帧模块**三处全中**：候选被推到「问题那一侧」所以这里不管它（R5）、
+#   候选由调用方给所以没人检查它删没删做过的动作（R2）、
+#   `truncations` 只是渲染成正文里一句注释,**没有东西失败也没有东西降级**（无人接收）。
+#
+# 所以这一段做三件事：**把帧和选项合起来算一次预算**、**把不变量变成可检查的**、
+# **把违规变成调用方必须处理的东西,而不是一句注释**。
+# ═══════════════════════════════════════════════════════════
+
+#: 判定模型一次请求的选项上限。★ 实测 77 个候选时选中概率掉到 **0.425**（§8.2）。
+#: 20 是 TS 侧 `LIMITS[*].maxOptions` 的值,这里逐字对齐。
+MAX_OPTIONS = 20
+
+#: 一次请求（帧 + 问题 + 选项）的字符上限。判定模型上下文只有 512/1024 token。
+#: ★ **这是整个请求的预算,不是帧的预算** —— R5 的病就是只算了帧那一半。
+MAX_REQUEST_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class Question:
+    """一个类型化问题。
+
+    `kind` 决定 `policy` 怎么读答案:
+
+    - `noul`：P(true)
+    - `choice`：选中项的**概率**（卡阈值用它,**不是 `confidence`** —— §8.3）
+    - `score`：序数
+
+    ★ `options` 的**数量要受 `MAX_OPTIONS` 管** —— 它和帧的字段抢同一段上下文。
+    """
+
+    node: str
+    kind: str
+    ask: str
+    options: tuple[str, ...] = ()
+    #: 选中项概率的门限（`choice`）/ P(true) 的门限（`noul`）
+    threshold: float = 0.5
+
+    def option_labels(self) -> tuple[str, ...]:
+        return self.options
+
+
+@dataclass(frozen=True)
+class Violation:
+    """**一条必须有人接的违规。**
+
+    ★ 它不是注释、不是日志 —— `Request.check()` 返回它,
+    而 `Request.fatal` 为真时**调用方不许把请求发出去**
+    （要么修帧、要么标 degraded、要么弃答）。
+
+    「校验发现 → 无人接收 → 请求照发」正是 R2/R5 那条失效链的中间三步。
+    """
+
+    code: str          # options_over_budget | request_over_budget | candidate_already_done | field_missing
+    detail: str
+    fatal: bool = True
+
+
+@dataclass(frozen=True)
+class Request:
+    """**一次判定请求的完整形态**:帧（状态）+ 问题（问什么、选项是什么）。
+
+    ★ 预算必须在这个粒度上算 —— 分开算就是 R5。
+    """
+
+    frame: Frame
+    question: Question
+
+    def render(self) -> str:
+        """判定的正文:帧 + 问题 + 选项编号。
+
+        ★ 选项**带序号**列出来 —— 判定模型返回的是序号或标签,
+        而「第几个」在选项被截断时仍然要指向同一个东西。
+        """
+        parts = [self.frame.render(), "", f"# Question", self.question.ask]
+        if self.question.options:
+            parts.append("# Options")
+            parts.extend(f"{i}. {o}" for i, o in enumerate(self.question.options, start=1))
+        return "\n".join(parts)
+
+    def chars(self) -> int:
+        return len(self.render())
+
+    def check(self, ctx: AgentCtx | None = None) -> list[Violation]:
+        """**发请求之前**跑（§8.2 原话:「发请求之前就要校验」）。
+
+        返回空列表 = 可以发。否则**调用方必须处理**,不许照发。
+        """
+        out: list[Violation] = []
+
+        # R5:选项数 —— 它和帧抢同一段上下文,所以**在这里一起算**
+        if len(self.question.options) > MAX_OPTIONS:
+            out.append(Violation(
+                code="options_over_budget",
+                detail=(f"{self.question.node}: {len(self.question.options)} 个选项 > {MAX_OPTIONS}。"
+                        f"实测 77 个候选时选中概率掉到 0.425 —— "
+                        f"**必须裁到候选提供方那一侧,不是在这里切**"),
+            ))
+
+        # R5 的另一半:整个请求的预算,不只是帧那一半
+        total = self.chars()
+        if total > MAX_REQUEST_CHARS:
+            out.append(Violation(
+                code="request_over_budget",
+                detail=f"请求 {total} 字符 > {MAX_REQUEST_CHARS}（帧 {len(self.frame.render())} + 选项）",
+            ))
+
+        # R2:候选里有没有**已经做过的动作**
+        if ctx is not None:
+            done = {r.tool for r in ctx.records()}
+            repeated = sorted(done & set(self.question.options))
+            if repeated:
+                out.append(Violation(
+                    code="candidate_already_done",
+                    detail=(f"{self.question.node}: 候选里有做过的动作 {repeated}。"
+                            f"§8.4 要求**每步重建**、把做过的删掉 —— "
+                            f"固定候选会让模型去选一个已经不适用的动作（实测：写完文件后 "
+                            f"`write_file` 还在候选里,模型会再选它）"),
+                    # ⚠️ 不是 fatal:重读一个文件有时是合理的。
+                    #    **但必须报出来** —— R2 的病正是「没人看这个不变量」。
+                    fatal=False,
+                ))
+
+        # 帧里缺字段。**分两档** —— 这是把 §8.2 那条不变量从噪声里救出来的关键:
+        #
+        #   required 缺 → **判定的依据不在**,这次判定没有对象。发出去只会得到一个
+        #                 凭空生成的答案,而日志上它和一次正常判定长得一样（§8.10）。
+        #                 → fatal,调用方必须修帧 / 标 degraded / 弃答。
+        #   只是上下文缺 → 第 0 步没有 `last_result`、生成之前没有 `draft` ——
+        #                 **正常状态**,不进这个列表。
+        #
+        # ★ **不进列表不等于不说。** 它照旧渲染成 `(absent — last_result)`、
+        #   照旧记在 `Frame.missing` 上进日志 —— 信息一个字节没少,
+        #   少的是「每一步都喊一次」。
+        #   `Violation` 的含义是「必须处理」,把正常状态放进去就等于教会读的人跳过它。
+        if self.frame.missing_required:
+            out.append(Violation(
+                code="field_missing",
+                detail=(f"{self.question.node}: 帧里缺**判定依据** "
+                        f"{list(self.frame.missing_required)} —— 这一次判定没有对象可判。"
+                        f"（另外缺的上下文：{sorted(set(self.frame.missing) - set(self.frame.missing_required))}）"),
+                fatal=True,
+            ))
+        return out
+
+    @property
+    def fatal(self) -> list[Violation]:
+        """**必须处理的那些。** 调用方拿到非空就该：修帧 / 标 degraded / 弃答 —— 三选一。"""
+        return [v for v in self.check() if v.fatal]
 
 def frame_for(node: str) -> FrameSpec:
     """取一个节点的帧声明。**没有这个节点就炸** —— 打错名字不该静默给个空帧。"""
@@ -363,6 +559,7 @@ def candidate_provider(tool: Tool) -> Callable[[AgentCtx], list[str]] | None:
 
 __all__ = [
     "AgentCtx", "StepRecord", "Frame", "FrameField", "FrameSpec",
+    "Question", "Request", "Violation", "MAX_OPTIONS", "MAX_REQUEST_CHARS",
     "NODE_FRAMES", "MAX_LISTED_CANDIDATES", "EVIDENCE_INPUT_CHARS",
     "EVIDENCE_WRITE_INPUT_CHARS", "compile_frame", "ctx_from_steps", "frame_for",
     "candidate_provider",

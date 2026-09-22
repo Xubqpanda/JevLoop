@@ -37,6 +37,7 @@ from experiments.baseline.common import (
     run_loop,
 )
 from experiments.core.agent import AgentOutcome, Session, action_answer
+from experiments.core.controller import Controller  # noqa: F401  (类型注解用)
 from experiments.core.models import Message
 from experiments.core.types import Step
 
@@ -62,6 +63,9 @@ class PlanThenExecute:
     replan: bool = False
     exemplars: str = ""
     name: str = "plan-then-execute"
+    # ★ **控制器** —— 论文第一根轴:同一个循环,换一个「谁来回答下一步」。
+    #   `None` = `LLMController`（生成 + 解析,决定藏在生成里）。
+    controller: "Controller | None" = None
 
     def solve(self, session: Session) -> AgentOutcome:
         steps: list[Step] = []
@@ -108,6 +112,10 @@ class PlanThenExecute:
             with_thought=True,
             exemplars=self.exemplars,
             preamble=preamble,
+            # ★ **控制器** —— 论文第一根轴。默认 `None` = `LLMController`
+            #   （生成 + 解析,决定藏在生成里,也就是今天在用的那个）。
+            #   传 `TypedController` 就是同一循环的另一个格子。
+            controller=self.controller,
         )
         outcome = run_loop(session, cfg)
         # 把规划那一步并进轨迹,顺序不能反

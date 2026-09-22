@@ -21,6 +21,7 @@ if str(REPO) not in sys.path:
 
 from experiments.core.frame import (  # noqa: E402
     MAX_LISTED_CANDIDATES,
+    MAX_OPTIONS,
     AgentCtx,
     FrameField,
     FrameSpec,
@@ -218,3 +219,153 @@ def test_a_tool_with_an_enum_gets_a_provider() -> None:
     provider = candidate_provider(closed)
     assert provider is not None
     assert provider(AgentCtx()) == ["a.ts", "b.ts"]
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★ 第 10 轮 R2/R5 —— 那条失效链的回归
+# ═══════════════════════════════════════════════════════════
+
+
+def _req(node: str = "pickTool", n_options: int = 3, ctx: AgentCtx | None = None):
+    from experiments.core.frame import Question, Request, frame_for as _ff
+
+    opts = tuple(f"tool_{i}" for i in range(n_options))
+    q = Question(node=node, kind="choice", ask="选哪个工具？", options=opts)
+    return Request(frame=compile_frame(_ff(node), ctx or AgentCtx(task="t")), question=q)
+
+
+def test_a_request_over_the_option_budget_is_fatal() -> None:
+    """★★★ R5 前半:选项被推到问题那一侧 ⇒ **帧有界,选项无界**。
+
+    以前 `FrameSpec` 只声明字段预算,选项数**没有任何人管** —— 而两者抢的是
+    同一段上下文（实测 77 个候选时选中概率掉到 **0.425**）。
+
+    所以预算必须在 `Request` 这个粒度上算。30 > 20 时**必须**报出来。
+    """
+    req = _req(n_options=30)
+    codes = {v.code for v in req.check()}
+    assert "options_over_budget" in codes
+    assert [v.code for v in req.fatal] == ["options_over_budget"], "超预算是 fatal —— 不许照发"
+
+
+def test_a_request_at_the_option_budget_is_clean() -> None:
+    """边界:`MAX_OPTIONS` 本身**是允许的** —— 否则这条不变量会因为差一而天天误报,然后被无视。"""
+    assert _req(n_options=MAX_OPTIONS).check() == []
+
+
+def test_the_request_budget_covers_the_options_not_just_the_frame() -> None:
+    """★★ R5 后半:以前只算帧的字符数,选项那几百字符**不在账上**。
+
+    帧很短、选项很长 —— 这正是「帧有界、请求无界」的样子。
+    """
+    req = _req(n_options=3)
+    assert len(req.frame.render()) < 400, "帧确实很短"
+    assert req.chars() > len(req.frame.render()), "请求比帧长——选项要算进去"
+    for opt in req.question.options:
+        assert opt in req.render()
+
+
+def test_a_candidate_that_was_already_done_is_reported_but_not_fatal() -> None:
+    """★★★ R2:候选里混进了**已经做过的动作**,而没有任何东西检查过。
+
+    以前 `candidates` 是调用方塞进来的,帧编译器只管渲染 —— 于是
+    「做过的动作还在候选里」这件事**没有任何接收方**。
+
+    实测后果:写完文件后 `write_file` 还在候选里,模型**会再选它**（§8.4）。
+
+    ⚠️ **但不是 fatal**:重读一个文件有时是合理的。R2 的病不是「发生了重复」,
+    是「**没人看这个不变量**」—— 所以断言的是「报出来了」,不是「拦住」。
+    """
+    steps = [Step(index=0, action=Action(kind="tool", name="tool_1", arguments={}), observation="ok")]
+    ctx = ctx_from_steps("t", steps)
+    req = _req(node="pickTool", n_options=3, ctx=ctx)  # 候选里有 tool_1,而 tool_1 做过了
+
+    v = [x for x in req.check(ctx) if x.code == "candidate_already_done"]
+    assert len(v) == 1 and "tool_1" in v[0].detail
+    assert not v[0].fatal, "重复候选要报,但不能拦住整个请求"
+    assert req.fatal == [], "所以它对 fatal 没有贡献"
+
+
+def test_check_without_ctx_cannot_see_done_actions_and_that_is_the_api_saying_so() -> None:
+    """★ 不传 `ctx` 就查不了 R2 —— 但那是**签名上看得见的**,不是静默通过。
+
+    判定「候选是不是做过了」需要历史。没有历史时 `check()` 只能跳过这一条,
+    而调用方从「要传 ctx」这件事就知道自己放弃了什么。
+    """
+    req = _req(n_options=3)
+    assert req.check() == []
+    assert req.check(AgentCtx(task="t")) == [], "空历史里没有做过的动作"
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★ 缺字段要分两档 —— 否则这条不变量会被自己的噪声淹掉
+# ═══════════════════════════════════════════════════════════
+
+
+def test_a_field_that_does_not_exist_yet_does_not_raise_a_violation() -> None:
+    """★★★ **第 0 步没有 `last_result` 不是缺陷,是正常状态。**
+
+    这一条是修出来的。第一版把「声明了但这次是空的」一律当缺字段报,
+    于是 `pickTool` 在**每一步**都报一次 —— 而它唯一真正重要的那次
+    （`canDeliver` 的证据被 clip 到 100 字符,闸门**正确地**判出
+    `unsupported=0.67`）就淹没在里面了。
+
+    **「天天误报」和「没有这条检查」在效果上没有区别** —— 两种都不再有人看。
+    """
+    req = _req(node="pickTool", ctx=AgentCtx(task="把 a 抄到 b"))  # 第一步,没有 last_result
+    assert req.check() == [], "第一步就报缺字段 = 噪声"
+    # 但它**仍然**渲染出来（缺了就得说,只是不拦）
+    assert "last_result" in req.frame.missing
+    assert req.frame.missing_required == ()
+
+
+def test_a_missing_judgement_basis_blocks_the_request() -> None:
+    """★★★ 事故一的形状,但走的是**另一条路**:`canDeliver` 没有 `draft`。
+
+    判定模型不会说「我看不到」,它会当成「证据就这么多」——
+    于是**正确地**判出一个没有依据的结论。所以依据字段缺席必须**拦住请求**:
+    发出去只会得到一个凭空生成的答案,而日志上它和一次正常判定长得一样（§8.10）。
+
+    ⚠️ 注意区分:事故一那次是 draft **被截短了**,那是 `truncations` 的事
+    （有依据,只是不全）;这里是 draft **压根没有**（没有可判的对象）。
+    """
+    ctx = AgentCtx(task="把 a 抄到 b")  # 有 task,没有 draft
+    req = _req(node="canDeliver", ctx=ctx)
+    v = [x for x in req.check() if x.code == "field_missing"]
+    assert len(v) == 1 and v[0].fatal
+    assert "draft" in v[0].detail
+    assert [x.code for x in req.fatal] == ["field_missing"], "不许发"
+
+
+def test_truncation_is_not_an_absence() -> None:
+    """★ 有依据、只是不全 → 报截断,**不拦**。两件事别混。
+
+    截断的正文里留着 `原文→实际` 的痕迹,判定模型至少知道「这里少了」;
+    而缺席是「压根没有」。前者可以判,后者不能。
+    """
+    long = "证据" * 1000
+    req = _req(node="canDeliver", ctx=AgentCtx(task="t", draft=long))
+    assert req.frame.missing_required == ()
+    assert req.frame.truncations["draft"][0] == len(long)
+    assert req.fatal == [], "截断是报出来,不是拦住"
+
+
+def test_the_seven_nodes_all_declare_a_required_field() -> None:
+    """★ 每个节点都得至少有一个**判定依据** —— 否则它就是在没有对象的情况下判。
+
+    反过来也成立:九个 `required` 之外的多余标记会让噪声回来。所以这条测试
+    同时钉住「至少一个」和「清单就是这九个」。
+    """
+    from experiments.core.frame import NODE_FRAMES
+
+    got = {n: sorted(f.name for f in s.fields if f.required) for n, s in NODE_FRAMES.items()}
+    assert all(v for v in got.values()), f"有节点没有声明判定依据:{got}"
+    assert got == {
+        "needsTool": ["task"],
+        "pickTool": ["task"],
+        "pickInput": ["task"],
+        "gradeRisk": ["last_input"],
+        "stepOk": ["last_result"],
+        "isDone": ["task"],
+        "canDeliver": ["draft", "task"],
+    }

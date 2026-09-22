@@ -2,8 +2,13 @@
 
 ## 这个文件是论文那句话的代码形态
 
-论文名:**`JevLoop: Decoupling Decision from Generation for Efficient Language Model Agents`**。
+论文名:**`JevLoop: Decoupling Decision from Generation for Agent Paradigms`**。
 「解耦」在代码里就是这一个接口。
+
+★ 标题里**没有 `Efficient`** —— 那是 2026-09-22 去掉的。理由见
+`docs/NOTES-benchmark-rationale-2026-09-21.md` §2.10.2「Efficient 是哪一个效率」:
+我们要量的是**谁来决定**,效率是那个决定的一个**后果**、是结果里的一列,
+不是标题里的主张 —— 标题主张一件还没量的事,审稿人第一句话就会问它是哪个效率。
 
 ★★ **区别不是「哪个更好」,是「决定和生成是不是同一次调用」。**
 在未解耦的形态里,模型吐出的那段文本**既是它的推理,也是它的决定** ——
@@ -77,6 +82,20 @@ class DecisionView:
 
     prompt: str
     tools: tuple[Tool, ...]
+    # ★★ **任务原文。** 后加的 —— 加的时候才发现 `prompt` 顶替不了它。
+    #
+    #   `prompt` 是 `build_prompt` 渲染好的**那一种范式的**提示词:它带着
+    #   `Action: <tool>[<arg>]` 的格式说明和整段 scratchpad。对 `LLMController`
+    #   正合适（决定就藏在那个格式里）,对别的控制器**是错的** ——
+    #   它要求模型吐一个 `Action:` 行,而类型化那一路要的是**一个纯答案**。
+    #
+    #   写 `TypedController` 时撞上的:想自己拼生成提示词,却发现
+    #   **任务原文不在 view 里** —— 它只存在于 `prompt` 字符串的中间某处。
+    #   于是第二个实现只有两条路:去 `prompt` 里做字符串手术,或者照抄 ReAct 的格式。
+    #
+    #   **这就是「抽接口」的用处** —— 它把「view 其实不是中立的,它是一份渲染产物」
+    #   这件事在加第二个实现的那一天暴露出来,而不是在对比两条臂的数字时才暴露。
+    task_prompt: str = ""
     # ★★ **这里只有 `task_id`,没有 `Task`** —— 因为 `Task` 带着 `gold`。
     #
     #   第一版我放的是整个 `Task`,于是上面那句「控制器只能看这些」是**空话**:

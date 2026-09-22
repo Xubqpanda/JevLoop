@@ -145,13 +145,26 @@ def run_cell(
                 steps=len(outcome.steps), working_start=session.clock.elapsed(),
             ))
 
+            # ★★ **先封口,再建轨迹。** 这两行的顺序是个真 bug,修于 2026-09-22。
+            #
+            #   原来 `trajectory()` 在 `finish_events()` **之前** ——
+            #   而 `trajectory()` 里的 `decision_records()` 是从**事件流**里读的,
+            #   最后一批判定那时还躺在 `_batch_decisions` 里没进事件流。
+            #
+            #   所以**每一题的最后一批判定都缺席了**,而它恰恰是决策性的那批
+            #   （收尾那一步:判「不用再调工具了」的那次）。
+            #   `finish_events` 的文档自己就写着「不封口最后一批就会丢 ——
+            #   而它常常正是决策性的那批」—— 写那句警告和写这个调用顺序的是同一份代码。
+            #
+            #   ★ 这和第 10 轮那些事故是**同一个形状**:东西是对的,
+            #   但**没有任何东西检查「它有没有被送到该到的地方」**。
+            session.finish_events()
             trajectory = session.trajectory(outcome)
             judgment = _safe_score(bench, task, trajectory, outcome)
             log.progress(i, len(tasks))
 
             # ★ **一条事件流,不是一个调用摊在三张表里。**
             #   照 Inspect 的 transcript 模型做的（见 core/events.py 头部）。
-            session.finish_events()
             for event in session.events:
                 log.append_jsonl("events.jsonl", event)
 

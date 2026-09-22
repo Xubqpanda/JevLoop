@@ -315,6 +315,7 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
             #   （`LLMController`:决定藏在生成出来的文本里）。
             #   加 `TypedController` 时,这一行以下一个字都不用动。
             view = DecisionView(prompt=prompt, tools=tuple(tools),
+                                task_prompt=session.task.prompt,
                                 task_id=session.task.task_id,
                                 step=len(steps), history=tuple(steps))
             parsed = controller.decide(session, view)
