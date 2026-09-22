@@ -43,6 +43,7 @@ from experiments.benchmark import fever as fever_bench  # noqa: F401
 from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import hotpotqa as hotpotqa_bench  # noqa: F401
 from experiments.benchmark import sotuqa as sotuqa_bench  # noqa: F401
+from experiments.benchmark import tau2bench as tau2_bench  # noqa: F401
 from experiments.benchmark import triviaqa as triviaqa_bench  # noqa: F401
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
 from experiments.baseline import act as act_baseline  # noqa: F401
@@ -152,6 +153,8 @@ BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
     sotuqa_bench.SotuQa.name: sotuqa_bench.SotuQa,
     # ★ 交互式环境:需要 textworld,而且要用 `on_task` 绑定每题的环境
     alfworld_bench.AlfWorld.name: alfworld_bench.AlfWorld,
+    # ★ 两方任务:还需要一个 LLM 用户模拟器（见它文件头的说明）
+    tau2_bench.Tau2Bench.name: tau2_bench.Tau2Bench,
 }
 # BFCL 一个数据集两个子集,各自是独立的 `log/<name>/` 目录
 for _sub in bfcl_bench.SUBSETS:

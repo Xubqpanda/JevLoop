@@ -29,6 +29,9 @@
 | `sotuqa` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库；本数据集 22 KB） | ★ ReWOO 自带的 curated 数据集（74 条），全项目最小的一个。★ 国情咨文全文 `data/docs/state_of_the_union.txt` 也在这个 tarball 里,要接 oracle 就把它加进 `files` |
 | `sportsunderstanding` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库） | ReWOO 仓库自带的 BigBench CSV。★ 一次下载抽三个文件。原始出处是 `google/BIG-bench` 的 `benchmark_tasks/<task>/task.json`，但**这里刻意用 ReWOO 那份** —— 我们和它比的就是这三个数，回原站会引入一个在数字上看不出来的版本差（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404） |
 | `strategyqa` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库） | ReWOO 仓库自带的 BigBench CSV。★ 一次下载抽三个文件。原始出处是 `google/BIG-bench` 的 `benchmark_tasks/<task>/task.json`，但**这里刻意用 ReWOO 那份** —— 我们和它比的就是这三个数，回原站会引入一个在数字上看不出来的版本差（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404） |
+| `tau2-bench` | http | `https://codeload.github.com/sierra-research/tau2-bench/tar.gz/refs/tags/v0.1.0` | `9` 个 | 37199f36924c | ~56 MB（整个仓库；本数据集约 25 MB） | ★ **必须钉 v0.1.0** —— 仓库 HEAD 已经是 τ³-bench v1.0.1,而它自己的 README 写着 `<1.0.1` 的结果不能和 `>=1.0.1` 比。
+  ★ 而 v0.1.0 的 `tasks.json` **就是 base 划分**（278 条）;HEAD 上多了 `split_tasks.json`,base 要从里面挑 —— 换版本连哪 278 条都会变。
+  ★ `test` 那一列在排行榜口径下要跑 **pass^k = 4 次/任务**（`comb(success,k)/comb(trials,k)`） |
 | `triviaqa` | hf-dataset | `trivia_qa:rc.nocontext` | — | ⚠️ **main**（未钉） | ~700 MB（138,384 + 17,944 + 17,210） | ★ config 必须是 `rc.nocontext` —— ReWOO 用的就是它。★ 答案带**别名集**,官方口径与 ReWOO 口径不同,见本文件头部。`revision` 未钉,已用 fingerprint 记进 dataset_version |
 
 ## 怎么用
