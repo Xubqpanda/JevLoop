@@ -39,6 +39,12 @@ from experiments.core.types import Judgment, Step, Trajectory  # noqa: E402
 from experiments.scripts import summarize  # noqa: E402
 
 
+def read_events(root: Path, cell: str) -> list[dict]:
+    """把一个 run 的事件流读回来。**这是现在唯一的逐调用明细入口。**"""
+    path = next(root.glob(f"{cell}/*/events.jsonl"))
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def half_knowledge_model() -> CallableModel:
     """知道一半国家的假模型 —— 让「对」和「错」两条路都被走到。"""
     known_half = set(sorted(CAPITALS)[: len(CAPITALS) // 2])
@@ -130,7 +136,7 @@ def test_pipeline_end_to_end_writes_a_complete_log(tmp_path: Path) -> None:
     assert any(r.correct for r in results) and any(not r.correct for r in results)
 
     run_dir = next(tmp_path.glob("toy/direct/*"))
-    for name in ("cmd.txt", "meta.json", "exit.json", "results.jsonl", "usage.jsonl"):
+    for name in ("cmd.txt", "meta.json", "exit.json", "results.jsonl", "events.jsonl"):
         assert (run_dir / name).exists(), f"缺 {name}"
 
     exit_record = json.loads((run_dir / "exit.json").read_text(encoding="utf-8"))
@@ -153,16 +159,21 @@ def test_meta_stamps_dirty_so_unreproducible_numbers_are_visible(tmp_path: Path)
     assert meta["commit"]
 
 
-def test_direct_makes_no_typed_decisions_so_no_trace(tmp_path: Path) -> None:
-    """`direct` 不做类型化判定 → 没有 trace.jsonl。
+def test_direct_makes_no_typed_decisions(tmp_path: Path) -> None:
+    """`direct` 不做类型化判定 → 事件流里没有 `decision_batch`。
 
     如果它有,说明有人在 direct 里塞了判定 —— 那这一臂就不是下界了。
+
+    ⚠️ 断言要看**事件内容**,不能看「文件存不存在」:事件流现在总是被写,
+    所以「没有 trace.jsonl」这种写法会**因为文件改名而假通过**（旧版就是这样）。
     """
     run_cell(
         bench=ToyCapitals(), make_agent=lambda task, tools: Direct(), model=half_knowledge_model(),
         cell=Cell(dataset="toy", arm="direct", seed=0), log_root=tmp_path,
     )
-    assert not list(tmp_path.glob("toy/direct/*/trace.jsonl"))
+    events = read_events(tmp_path, "toy/direct")
+    assert events, "事件流必须有东西（模型调用本身也是事件）"
+    assert not [e for e in events if e["type"] == "decision_batch"], "direct 不该产生判定"
 
 
 class DecideOnce:
@@ -180,14 +191,20 @@ class DecideOnce:
         return AgentOutcome(steps=[Step(index=0, action=action_answer("Paris"))], final_answer="Paris")
 
 
-def test_trace_pairs_confidence_with_correctness(tmp_path: Path) -> None:
+def test_decisions_pair_confidence_with_correctness(tmp_path: Path) -> None:
+    """★ 判定落在 `decision_batch` 事件里,`confidence` 和 `correct` **同一行**。
+
+    RQ2 的全部指标（分桶 / ECE / Brier / AUC / 分离度 / 风险–覆盖）都从这一对算。
+    """
     run_cell(
         bench=ToyCapitals(), make_agent=lambda task, tools: DecideOnce(), model=half_knowledge_model(),
         cell=Cell(dataset="toy", arm="decide-once", seed=0), log_root=tmp_path,
     )
-    lines = [json.loads(s) for s in next(tmp_path.glob("toy/decide-once/*/trace.jsonl")).read_text().splitlines()]
-    assert lines, "带判定的臂必须留下 trace"
-    for row in lines:
+    batches = [e for e in read_events(tmp_path, "toy/decide-once") if e["type"] == "decision_batch"]
+    assert batches, "带判定的臂必须留下 decision_batch"
+    rows = [d for b in batches for d in b["decisions"]]
+    assert rows
+    for row in rows:
         assert {"node", "answer", "confidence", "correct", "batch", "latency_ms"} <= set(row)
         assert 0.0 <= row["confidence"] <= 1.0
 

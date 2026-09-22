@@ -94,6 +94,21 @@ class Benchmark(Protocol):
         """
         ...
 
+    def score_variants(self) -> dict[str, Callable[[Task, Trajectory], Judgment]]:
+        """**可选。** 同一个数据集的**多种判分口径**,给 `scripts/rescore.py` 用。
+
+        为什么需要它:`gsm8k` 的分数对「怎么从模型输出里抠出那个数」极其敏感,
+        而**两种抠法都有出处**（`strict` / `flexible`）。既然要报两个数,
+        就得能**给同一批轨迹换口径重判,而不是重跑** —— 重跑出来的不是同一批轨迹。
+
+        ★ 迁到官方评分器时这里是最有价值的一处:官方的 `bfcl-eval` 接进来之后,
+        **旧日志可以重判,不用重跑**,于是「换判分器 → 数字不可比」那条
+        从「要重跑一遍」降成「同一条命令换个参数」。
+
+        默认返回 `{默认口径: self.score}` —— 没实现也不算错。
+        """
+        return {"default": self.score}
+
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         """判对错。
 

@@ -168,26 +168,36 @@ class Gsm8k:
         """**可选方法**,给 Reflexion 的 Evaluator 用。这里就是「对不对」。"""
         return numeric_equal(extract_pred(answer, self.headline_extract), str(task.gold))
 
+    def score_variants(self) -> dict[str, Callable[[Task, Trajectory], Judgment]]:
+        """★ **两种口径都在这里** —— 报的时候必须写明报的是哪个。
+
+        `strict` 要模型写出 `####`,而 `flexible` 取最后一个数。同一段输出
+        在两种口径下会给出**相反的结论**（有测试盯着这一条）。
+        """
+        return {
+            "strict": lambda t, tr: self._judge(t, tr, "strict"),
+            "flexible": lambda t, tr: self._judge(t, tr, "flexible"),
+        }
+
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
+        return self._judge(task, trajectory, self.headline_extract)
+
+    def _judge(self, task: Task, trajectory: Trajectory, mode: str) -> Judgment:
         answer = trajectory.final_answer or ""
         if not answer.strip():
             return Judgment(correct=False, score=0.0, detail="没有给出答案", failure_class="no_answer")
 
-        got_strict = extract_pred(answer, "strict")
-        got_flexible = extract_pred(answer, "flexible")
-        got = got_strict if self.headline_extract == "strict" else got_flexible
+        got = extract_pred(answer, mode)
         want = str(task.gold)
 
         if numeric_equal(got, want):
-            return Judgment(correct=True, score=1.0,
-                            detail=f"{got} == {want}（口径 {self.headline_extract}）")
+            return Judgment(correct=True, score=1.0, detail=f"{got} == {want}（口径 {mode}）")
         if got == "":
             # 抠不出数 → 是**格式**失败,不是算错。分开报才能看出该怪谁。
             return Judgment(correct=False, score=0.0,
-                            detail=f"抠不出数值（{self.headline_extract}）",
-                            failure_class="no_numeric_answer")
+                            detail=f"抠不出数值（{mode}）", failure_class="no_numeric_answer")
         return Judgment(correct=False, score=0.0,
-                        detail=f"答 {got!r}，期望 {want!r}（口径 {self.headline_extract}）",
+                        detail=f"答 {got!r}，期望 {want!r}（口径 {mode}）",
                         failure_class="wrong_answer")
 
 

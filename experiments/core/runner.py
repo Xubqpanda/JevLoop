@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from experiments.core.agent import Agent, AgentOutcome, Session
+from experiments.core.events import AnswerEvent
 from experiments.core.bench import Benchmark
 from experiments.core.models import ModelClient, describe
 from experiments.core.runlog import EXPERIMENTS_DIR, RunLog, archive_hint, repo_commit
@@ -39,31 +40,35 @@ class Cell:
 
 
 def aggregate_cost(session: Session) -> Cost:
-    """从逐条记录汇总。**每个数都按 PLAN §3.2 的口径拆开。**"""
-    llm = [r for r in session.model_calls]
-    decisions = session.decisions
+    """从**事件流**汇总。**每个数都按 PLAN §3.2 的口径拆开。**
+
+    ★ 输入是 `session.events` —— 一次调用一条记录。以前要 join 三个文件,
+    现在读一处就够,而「token 和文本对不上」这类账目问题从结构上消失了。
+    """
+    llm = session.model_events()
+    batches = session.decision_batches()
     necessary, exploratory = session.executor.counts()
-    batches = {d.batch for d in decisions}
+    questions = sum(b.questions_in_batch for b in batches)
 
     return Cost(
         llm_calls=len(llm),
         decision_requests=len(batches),
-        questions_per_request=(len(decisions) / len(batches)) if batches else 0.0,
+        questions_per_request=(questions / len(batches)) if batches else 0.0,
         tool_calls=necessary + exploratory,
         tool_calls_necessary=necessary,
         tool_calls_exploratory=exploratory,
-        input_tokens_cached=sum(r.input_tokens_cached for r in llm),
-        input_tokens_uncached=sum(r.input_tokens_uncached for r in llm),
-        output_tokens_reasoning=sum(r.output_tokens_reasoning for r in llm),
-        output_tokens_visible=sum(r.output_tokens_visible for r in llm),
-        usd=sum(r.usd for r in llm),
+        input_tokens_cached=sum(e.usage.input_tokens_cache_read for e in llm),
+        input_tokens_uncached=sum(e.usage.input_tokens_uncached for e in llm),
+        output_tokens_reasoning=sum(e.usage.reasoning_tokens for e in llm),
+        output_tokens_visible=sum(e.usage.output_tokens_visible for e in llm),
+        usd=sum(e.usage.total_cost for e in llm),
     )
 
 
 def aggregate_timing(session: Session, *, wall_ms: float) -> Timing:
-    llm = session.model_calls
-    model_ms = sum(r.handshake_ms + r.ttft_ms + r.after_ttft_ms for r in llm)
-    decision_ms = sum(d.latency_ms for d in session.decisions)
+    llm = session.model_events()
+    model_ms = sum(e.timing.total_ms for e in llm)
+    decision_ms = sum(b.latency_ms for b in session.decision_batches())
     tool_ms = session.executor.total_ms()
     retry_ms = session.retry_ms()
 
@@ -73,15 +78,15 @@ def aggregate_timing(session: Session, *, wall_ms: float) -> Timing:
 
     return Timing(
         wall_ms=wall_ms,
-        model_handshake_ms=sum(r.handshake_ms for r in llm),
-        model_ttft_ms=sum(r.ttft_ms for r in llm),
-        model_after_ttft_ms=sum(r.after_ttft_ms for r in llm),
+        model_handshake_ms=sum(e.timing.handshake_ms for e in llm),
+        model_ttft_ms=sum(e.timing.ttft_ms for e in llm),
+        model_after_ttft_ms=sum(e.timing.after_ttft_ms for e in llm),
         decision_handshake_ms=0.0,  # 判定后端接进来时填（L2 接缝）
         decision_compute_ms=decision_ms,
         tool_ms=tool_ms,
         framework_ms=framework_ms,
         retry_ms=retry_ms,
-        round_trips=len(llm) + len({d.batch for d in session.decisions}),
+        round_trips=len(llm) + len(session.decision_batches()),
     )
 
 
@@ -133,18 +138,22 @@ def run_cell(
                 log.stop(f"task {task.task_id}: {outcome.error}")
             wall_ms = (time.perf_counter() - t0) * 1000
 
+            # ★ 先把答案落成事件 —— 没有它,日志不自足,重判无从下手
+            session.events.append(AnswerEvent(
+                run_id=log.run_id, task_id=task.task_id, step=len(outcome.steps),
+                text=outcome.final_answer, escalated=outcome.escalated, error=outcome.error,
+                steps=len(outcome.steps), working_start=session.clock.elapsed(),
+            ))
+
             trajectory = session.trajectory(outcome)
             judgment = _safe_score(bench, task, trajectory, outcome)
             log.progress(i, len(tasks))
 
-            for record in session.decisions:
-                log.append_jsonl("trace.jsonl", record)
-            for record in session.usage_records():
-                log.append_jsonl("usage.jsonl", record)
-            for prompt in session.prompts:
-                log.append_jsonl("prompts.jsonl", prompt)
-            for completion in session.completions:
-                log.append_jsonl("completions.jsonl", completion)
+            # ★ **一条事件流,不是一个调用摊在三张表里。**
+            #   照 Inspect 的 transcript 模型做的（见 core/events.py 头部）。
+            session.finish_events()
+            for event in session.events:
+                log.append_jsonl("events.jsonl", event)
 
             results.append(
                 Result(
@@ -182,21 +191,46 @@ def run_cell(
                     cost=aggregate_cost(session),
                     timing=aggregate_timing(session, wall_ms=wall_ms),
                     artifacts=("cmd.txt", "meta.json", "exit.json", "results.jsonl",
-                               "usage.jsonl", "prompts.jsonl", "completions.jsonl"),
+                               "events.jsonl"),
                 )
             )
 
         for result in results:
             log.append_jsonl("results.jsonl", result)
 
+        # ★ **完整的那套 RunMeta 要写进 `meta.json`**,不是一个薄壳。
+        #
+        #   之前这里只有 run_id / cell / tasks / commit / dirty / archive,
+        #   而完整的 RunMeta（含 `split` / `task_count` / 温度 / 版本 / 地区）
+        #   只重复躺在每一行 `results.jsonl` 里 —— 于是 `rescore.py` 想重建
+        #   **同一批题**时拿不到 `split`,直接 KeyError（实测）。
+        #
+        #   这条也是 PROTOCOL §3.2 要求的:「`meta.json` 装 PROTOCOL §3.7 那一套,一个不少」。
+        #   一行的身份不该靠「去第一行结果里翻」才能知道。
+        first = results[0].meta if results else None
         log.write_meta(
             {
                 "run_id": log.run_id,
                 "cell": {"dataset": cell.dataset, "arm": cell.arm, "seed": cell.seed},
-                "tasks": len(tasks),
-                "commit": commit,
-                "dirty": dirty,
                 "archive": archive_hint(log.dir),
+                # 完整 RunMeta 摊平 —— 这就是「这次运行是什么」
+                **({} if first is None else {
+                    "dataset": first.dataset,
+                    "dataset_version": first.dataset_version,
+                    "split": first.split,
+                    "task_count": first.task_count,
+                    "arm": first.arm,
+                    "generator": describe(model),
+                    "temperature": first.temperature,
+                    "max_tokens": first.max_tokens,
+                    "seed": first.seed,
+                    "prompt_hash": first.prompt_hash,
+                    "commit": first.commit,
+                    "dirty": first.dirty,
+                    "region": first.region,
+                    "cold_start": first.cold_start,
+                    "max_steps": first.max_steps,
+                }),
             }
         )
         return results

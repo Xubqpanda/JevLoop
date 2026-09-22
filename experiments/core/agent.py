@@ -26,8 +26,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from experiments.core.events import (
+    Clock,
+    DecisionBatchEvent,
+    Event,
+    ModelCallEvent,
+    SpanEvent,
+    Timing,
+    ToolCallEvent,
+    Usage,
+    hash_text,
+    now_iso,
+)
 from experiments.core.models import Message, ModelClient, ModelReply
-from experiments.core.spec import DecisionRecord, UsageRecord
+from experiments.core.spec import DecisionRecord
 from experiments.core.tools import ToolExecutor
 from experiments.core.types import Action, Step, Task, Tool, Trajectory
 
@@ -89,16 +101,23 @@ class Session:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        self.model_calls: list[UsageRecord] = []
-        self.decisions: list[DecisionRecord] = []
-        # ★ 每一步真正发出去的 prompt。
-        #   两个臂的差别如果只能靠读代码确认,那「baseline 含义一致」就没有证据。
-        #   而 ReAct 每步重发整个 scratchpad,所以这一份会长得很快 —— 它是 log,不进 git。
-        self.prompts: list[dict] = []
-        # ★ 每步模型的**原始输出**。
-        #   只记 prompt 不记输出,就查不出「为什么它只输出了 1 个 token」这类问题 ——
-        #   我们刚踩过:两条互相冲突的指令,从 prompt 上看不出来,只有输出证明它听了哪条。
-        self.completions: list[dict] = []
+        # ★★ **一条事件流,不是三份平行列表。**
+        #
+        #   移植自 Inspect 的 transcript 模型（`ModelEvent` / `SpanBeginEvent` …,
+        #   见 `core/events.py` 的说明与 `docs/PROBE-inspect-2026-09-22.md`）:
+        #   **一次调用一条记录,自己装齐请求 + 响应 + 用量 + 时间 + 重试 + 错误。**
+        #
+        #   在这之前是 `prompts.jsonl` / `completions.jsonl` / `usage.jsonl`
+        #   三个文件靠 `call` 序号 join —— 任何一处漏写,那次调用就**看起来像没发生过**,
+        #   或者更糟:token 数和文本对不上,而账面看不出来。
+        self.events: list[Event] = []
+        self.clock = Clock()
+        self._span_stack: list[str] = []
+        self._batch_uuid: str | None = None
+        self._batch_open_ms: float = 0.0
+        self._batch_decisions: list[DecisionRecord] = []
+        # 工具执行器把每次调用报回来 —— 见 tools.ToolExecutor.on_call
+        self.executor.on_call = self._on_tool_call
 
         # ★ 成功信号 —— **只有声明需要它的臂才拿得到。**
         #
@@ -116,60 +135,61 @@ class Session:
 
     def call_model(self, messages: list[Message]) -> ModelReply:
         """一次对话补全,并记账。"""
-        self.prompts.append(
-            {
-                "run_id": self.run_id,
-                "task_id": self.task.task_id,
-                "call": len(self.model_calls),
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-            }
-        )
+        working_start = self.clock.elapsed()
+        started = now_iso()
         t0 = time.perf_counter()
         reply = self.model.chat(messages, max_tokens=self.max_tokens, temperature=self.temperature)
         elapsed = (time.perf_counter() - t0) * 1000
-
-        self.completions.append(
-            {
-                "run_id": self.run_id,
-                "task_id": self.task.task_id,
-                "call": len(self.model_calls),
+        event = ModelCallEvent(
+            run_id=self.run_id,
+            task_id=self.task.task_id,
+            step=self.call_index(),
+            # ★ 请求和响应**装在同一条记录里** —— 这是从 Inspect 搬来的那条
+            request={
+                "model": self.model.model_id,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": m.role, "content": m.content} for m in messages],
+                "prompt_hash": hash_text("\n".join(m.content for m in messages)),
+            },
+            response={
                 "text": reply.text,
                 "reasoning_content": reply.reasoning_content,
                 "tool_calls": list(reply.tool_calls),
-                "output_tokens_visible": reply.output_tokens_visible,
-                "output_tokens_reasoning": reply.output_tokens_reasoning,
-            }
-        )
-
-        self.model_calls.append(
-            UsageRecord(
-                run_id=self.run_id,
-                task_id=self.task.task_id,
-                kind="llm",
-                name=self.model.name,
-                input_tokens_cached=reply.input_tokens_cached,
-                input_tokens_uncached=reply.input_tokens_uncached,
-                output_tokens_reasoning=reply.output_tokens_reasoning,
-                output_tokens_visible=reply.output_tokens_visible,
+            },
+            usage=Usage(
+                input_tokens_cache_read=reply.input_tokens_cached,
+                input_tokens=reply.input_tokens_cached + reply.input_tokens_uncached,
+                output_tokens=reply.output_tokens_visible + reply.output_tokens_reasoning,
+                reasoning_tokens=reply.output_tokens_reasoning,
+            ),
+            timing=Timing(
                 handshake_ms=reply.handshake_ms,
                 ttft_ms=reply.ttft_ms,
                 after_ttft_ms=reply.after_ttft_ms or elapsed,
-            )
+            ),
+            model=self.model.name,
+            timestamp=started,
+            completed=now_iso(),
+            working_start=working_start,
+            parent=self._span_stack[-1] if self._span_stack else None,
         )
+        event.working_time = event.timing.total_ms
+        self.events.append(event)
         return reply
 
     def call_tool(self, name: str, arguments: dict[str, Any], *, necessary: bool = True) -> str:
         return self.executor.call(self.run_id, self.task.task_id, name, arguments, necessary=necessary)
 
     def next_batch(self) -> int:
-        """开一批判定请求。
+        """开一批判定请求。**上一批在这里收口。**
 
         ★ **按批计时,不按记录。** 一次请求判多路时,每一路都记同一份 latency
         再求和,会多算几倍 —— 实测 `decisionMs` 一度比整轮墙钟还大。
         """
+        self._close_batch()
         self._batch += 1
+        self._batch_open_ms = time.perf_counter()
         return self._batch
 
     def record_decision(
@@ -184,7 +204,7 @@ class Session:
         batch: int | None = None,
     ) -> None:
         """★ `confidence` 和 `correct` **记在同一行**。RQ2 全靠这一对。"""
-        self.decisions.append(
+        self._batch_decisions.append(
             DecisionRecord(
                 run_id=self.run_id,
                 task_id=self.task.task_id,
@@ -202,10 +222,90 @@ class Session:
         """重试/退避的耗时。**单独攒着** —— 混进模型时间里会让失败的臂看起来更慢。"""
         self._retry_ms += ms
 
-    # —— 收账 ────────────────────────────────────────────────
+    def span(self, name: str):
+        """给一段工作计时。**`with session.span("decision"):`** —— 成对发事件。
 
-    def usage_records(self) -> list[UsageRecord]:
-        return [*self.model_calls, *self.executor.records]
+        移植自 `SpanBeginEvent` / `SpanEndEvent`。有了它,一步的耗时不用手写计时。
+        """
+        return _Span(self, name)
+
+    # —— 事件 ────────────────────────────────────────────────
+
+    def call_index(self) -> int:
+        return sum(1 for e in self.events if isinstance(e, ModelCallEvent))
+
+    def model_events(self) -> list[ModelCallEvent]:
+        return [e for e in self.events if isinstance(e, ModelCallEvent)]
+
+    def tool_events(self) -> list[ToolCallEvent]:
+        return [e for e in self.events if isinstance(e, ToolCallEvent)]
+
+    def decision_batches(self) -> list[DecisionBatchEvent]:
+        return [e for e in self.events if isinstance(e, DecisionBatchEvent)]
+
+    def decision_records(self) -> list[DecisionRecord]:
+        """把各批摊平 —— RQ2 的输入就是这一串。"""
+        return [DecisionRecord(**d) for b in self.decision_batches() for d in b.decisions]
+
+    @property
+    def prompts(self) -> list[dict]:
+        """兼容视图:每一步真正发出去的 prompt。
+
+        两个臂的差别如果只能靠读代码确认,那「baseline 含义一致」就没有证据。
+        底层已经是事件了,这里只是把它摊成旧形状给测试和调试用。
+        """
+        return [
+            {"call": i, "task_id": e.task_id, **e.request}
+            for i, e in enumerate(self.model_events())
+        ]
+
+    @property
+    def completions(self) -> list[dict]:
+        """兼容视图:每一步模型的**原始输出**。
+
+        只记 prompt 不记输出,就查不出「为什么它只输出了 1 个 token」这类问题 ——
+        我们刚踩过:两条互相冲突的指令,从 prompt 上看不出来,只有输出证明它听了哪条。
+        """
+        return [{"call": i, "task_id": e.task_id, **e.response}
+                for i, e in enumerate(self.model_events())]
+
+    def _close_batch(self) -> None:
+        if not self._batch_decisions:
+            return
+        working_start = self.clock.elapsed()
+        self.events.append(
+            DecisionBatchEvent(
+                run_id=self.run_id,
+                task_id=self.task.task_id,
+                step=self._batch_decisions[0].step,
+                questions_in_batch=len(self._batch_decisions),
+                latency_ms=(time.perf_counter() - self._batch_open_ms) * 1000 if self._batch_open_ms else 0.0,
+                decisions=[d.__dict__ for d in self._batch_decisions],
+                working_start=working_start,
+                parent=self._span_stack[-1] if self._span_stack else None,
+            )
+        )
+        self._batch_decisions = []
+
+    def _on_tool_call(self, name: str, arguments: dict, necessary: bool, ms: float, error: str | None) -> None:
+        self.events.append(
+            ToolCallEvent(
+                run_id=self.run_id,
+                task_id=self.task.task_id,
+                step=self.call_index(),
+                name=name,
+                arguments=dict(arguments),
+                necessary=necessary,
+                error=error,
+                working_start=self.clock.elapsed(),
+                working_time=ms,
+                parent=self._span_stack[-1] if self._span_stack else None,
+            )
+        )
+
+    def finish_events(self) -> None:
+        """收尾:把最后一批判定封口。**不封口最后一批就会丢** —— 而它常常正是决策性的那批。"""
+        self._close_batch()
 
     def trajectory(self, outcome: AgentOutcome) -> Trajectory:
         return Trajectory(
@@ -213,8 +313,8 @@ class Session:
             arm=self.arm,
             steps=tuple(outcome.steps),
             final_answer=outcome.final_answer,
-            decisions=tuple(d.__dict__ for d in self.decisions),
-            usage=tuple(r.__dict__ for r in self.usage_records()),
+            decisions=tuple(d.__dict__ for d in self.decision_records()),
+            usage=(),  # 逐调用明细在 events.jsonl 里,不在这里复制一份
             escalated=outcome.escalated,
             error=outcome.error,
         )
@@ -236,3 +336,36 @@ def action_ask(reason: str) -> Action:
     否则「拒答率」和「闸门假拒」这两个指标算不出来,而它们只有我们有。
     """
     return Action(kind="ask", content=reason)
+
+
+class _Span:
+    """`with session.span("name"):` —— 成对发 begin / end 事件。"""
+
+    def __init__(self, session: Session, name: str) -> None:
+        self.session = session
+        self.name = name
+        self.uuid = ""
+        self.t0 = 0.0
+
+    def __enter__(self) -> "_Span":
+        from experiments.core.events import new_uuid
+
+        self.uuid = new_uuid()
+        self.t0 = self.session.clock.elapsed()
+        self.session._span_stack.append(self.uuid)
+        self.session.events.append(SpanEvent(
+            run_id=self.session.run_id, task_id=self.session.task.task_id,
+            name=self.name, phase="begin", uuid=self.uuid, working_start=self.t0,
+        ))
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.session._span_stack.pop()
+        end = self.session.clock.elapsed()
+        self.session.events.append(SpanEvent(
+            run_id=self.session.run_id, task_id=self.session.task.task_id,
+            name=self.name, phase="end", uuid=self.uuid,
+            working_start=end, working_time=(end - self.t0) * 1000,
+            metadata={"error": f"{exc_type.__name__}: {exc}" if exc else None},
+        ))
+        return False  # 不吞异常

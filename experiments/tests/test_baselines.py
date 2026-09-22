@@ -315,7 +315,7 @@ def test_rewoo_plans_once_then_solves(tmp_path: Path) -> None:
     outcome = ReWOO().solve(session)
 
     assert outcome.final_answer == "Lima"
-    assert len(session.model_calls) == 2, "Planner 一次 + Solver 一次"
+    assert len(session.model_events()) == 2, "Planner 一次 + Solver 一次"
     assert [s.action.kind for s in outcome.steps if s.action.kind == "tool"] == ["tool"]
 
 

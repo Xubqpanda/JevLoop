@@ -173,24 +173,11 @@ class DecisionRecord:
     latency_ms: float
 
 
-@dataclass(frozen=True)
-class UsageRecord:
-    """逐调用一行。字段对应 `Cost` 里那些**必须拆开**的列。"""
-
-    run_id: str
-    task_id: str
-    kind: str  # "llm" | "decision" | "tool"
-    name: str
-    input_tokens_cached: int = 0
-    input_tokens_uncached: int = 0
-    output_tokens_reasoning: int = 0
-    output_tokens_visible: int = 0
-    usd: float = 0.0
-    handshake_ms: float = 0.0
-    ttft_ms: float = 0.0
-    after_ttft_ms: float = 0.0
-    compute_ms: float = 0.0
-    questions_in_batch: int = 0
+# ★ `UsageRecord` **已删** —— 它被 `core/events.py` 的 `ModelCallEvent` 取代了。
+#
+#   理由:一次调用的用量、时间和文本**分成三张表靠序号 join**,任何一处漏写
+#   都会让那次调用看起来像没发生过。现在是一条事件装齐。
+#   （这个改动是照 Inspect 的 transcript 模型做的,见 `core/events.py` 头部。）
 
 
 # ═══════════════════════════════════════════════════════════
