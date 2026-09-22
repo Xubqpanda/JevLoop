@@ -33,10 +33,23 @@ LOG_DIR = EXPERIMENTS_DIR / "log"
 RESULT_DIR = EXPERIMENTS_DIR / "result"
 
 
-def load_rows(log_dir: Path) -> tuple[list[dict], list[tuple[str, list[str]]]]:
-    """读所有 `results.jsonl`。返回 (好行, [(文件, 缺的字段)])。"""
+def load_rows(log_dir: Path, *, allow_dirty: bool = False
+              ) -> tuple[list[dict], list[tuple[str, list[str]]], list[str]]:
+    """读所有 `results.jsonl`。返回 `(好行, 拒收的, 因脏被排除的 run)`。
+
+    ★★ **脏工作区跑出来的行不进表。**
+
+    `repo_commit` 的文档写着「脏工作区跑出来的数字别人复现不了,连跑它的人
+    自己都复现不了」—— 而实测同一天两次 `bfcl × react-typed`,
+    `commit` 都是 `5e9aee6b`、都是 `dirty=True`,一次 `framework_ms=-1670`、
+    另一次 `=2`,**从日志里完全分不出这两次**。
+
+    所以 `dirty` 不是一条备注,是**引用资格**:一个从 commit 还原不出来的代码
+    状态,产出的数不能和别的数放在一张表里平均。
+    """
     rows: list[dict] = []
     rejected: list[tuple[str, list[str]]] = []
+    dirty_runs: list[str] = []
     for path in sorted(glob.glob(str(log_dir / "*" / "*" / "*" / "results.jsonl"))):
         for lineno, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
@@ -48,8 +61,12 @@ def load_rows(log_dir: Path) -> tuple[list[dict], list[tuple[str, list[str]]]]:
             if gaps:
                 rejected.append((f"{path}:{lineno}", gaps))
                 continue
+            if record.get("meta", {}).get("dirty"):
+                dirty_runs.append(record["run_id"])
+                if not allow_dirty:
+                    continue
             rows.append({**flat, "_file": path})
-    return rows, rejected
+    return rows, rejected, sorted(set(dirty_runs))
 
 
 def summarize(rows: list[dict]) -> list[dict]:
@@ -83,8 +100,14 @@ def summarize(rows: list[dict]) -> list[dict]:
                 "wall_ms": round(statistics.fmean(t["wall_ms"] for t in times), 1),
                 "framework_ms": round(statistics.fmean(t["framework_ms"] for t in times), 2),
                 "usd": round(statistics.fmean(c["usd"] for c in costs), 6),
-                # ★ 每一行都要能指回是哪次跑出来的
-                "run_ids": len({r["run_id"] for r in items}),
+                # ★★ **列出 id,不是数个数。**
+                #   第一版这里写的是 `len({...})`,于是这一列的值是 `2` ——
+                #   读表的人拿不到任何线索,而**这一列存在的全部理由**
+                #   就是「归档之后那是唯一的线索」（本文件的头一句）。
+                #   一个数个数把它变成了一个看起来正常的空壳。
+                "runs": " ".join(sorted({r["run_id"].split("/")[-1] for r in items})),
+                # ★ 一个格子跨了几个 commit。>1 就是在**把不同代码版本平均**
+                "commits": len({r["meta"].get("commit") for r in items}),
             }
         )
     return out
@@ -103,9 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="log/ → result/（单向）")
     parser.add_argument("--log-dir", type=Path, default=LOG_DIR)
     parser.add_argument("--out-dir", type=Path, default=RESULT_DIR)
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="把脏工作区跑出来的行也算进来（**开发时用,别用来出表**）")
     args = parser.parse_args(argv)
 
-    rows, rejected = load_rows(args.log_dir)
+    rows, rejected, dirty_runs = load_rows(args.log_dir, allow_dirty=args.allow_dirty)
     table = summarize(rows)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,6 +148,19 @@ def main(argv: list[str] | None = None) -> int:
             writer.writerows(table)
 
     print(f"读了 {len(rows)} 行，汇总 {len(table)} 个格子 → {args.out_dir}/summary.md")
+    if dirty_runs and not args.allow_dirty:
+        # ★ 静默排除 = 表格看起来是全的,而它不是
+        print(f"\n★ 排除 {len(dirty_runs)} 个**脏工作区**的 run（不可引用）:", file=sys.stderr)
+        for rid in dirty_runs[:10]:
+            print(f"    {rid}", file=sys.stderr)
+        print("    要包括它们就加 --allow-dirty —— 但那一批的数字不该进表。", file=sys.stderr)
+
+    mixed = [t for t in table if t.get("commits", 1) > 1]
+    if mixed:
+        print(f"\n★ {len(mixed)} 个格子跨了多个 commit —— 那是**把不同代码版本平均**:",
+              file=sys.stderr)
+        for t in mixed[:10]:
+            print(f"    {t['dataset']} × {t['arm']}: {t['commits']} 个 commit", file=sys.stderr)
     if rejected:
         # ★ 拒收要说出来。悄悄跳过 = 表格看起来是全的,而它不是
         print(f"\n★ 拒收 {len(rejected)} 行（缺字段）:", file=sys.stderr)

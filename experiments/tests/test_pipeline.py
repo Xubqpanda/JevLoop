@@ -86,7 +86,7 @@ def test_summarize_rejects_incomplete_rows(tmp_path: Path) -> None:
     (run / "results.jsonl").write_text(
         json.dumps({"run_id": "x", "task_id": "y", "correct": True}) + "\n", encoding="utf-8"
     )
-    rows, rejected = summarize.load_rows(tmp_path)
+    rows, rejected, _dirty = summarize.load_rows(tmp_path)
     assert rows == []
     assert len(rejected) == 1
     assert "score" in rejected[0][1]

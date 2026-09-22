@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,31 @@ def run_cell(
     """跑一个格子。**一个格子一个 log 目录,永不覆盖。**"""
     tasks = list(bench.tasks(split=split, limit=limit, seed=cell.seed))
     commit, dirty = repo_commit(EXPERIMENTS_DIR.parent)
+
+    # ★★★ **脏工作区要在开跑之前就说,不是在跑完之后记。**
+    #
+    #   实测（2026-09-22）:`dirty` 是写进 `meta.json` 的,而那份文件**跑完才写** ——
+    #   于是「这一整批数字不可引用」这件事,代价**随运行时长增长**:
+    #   一个 `--limit 300 × 6 臂` 的跑要 1.8 小时之后才告诉你它白跑了。
+    #
+    #   `repo_commit` 的文档早就写着「脏工作区跑出来的数字别人复现不了,
+    #   连跑它的人自己都复现不了」——**项目知道这件事,但没有任何东西据此行动。**
+    #   这和 §8.6 那条「要求写在文档里、没写在代码里」是同一个病。
+    #
+    #   ★ 同一个 commit 加 `dirty=True` 的两次跑**可以完全不同**:
+    #   实测同一天两次 `bfcl × react-typed`,commit 都是 `5e9aee6b`、都 dirty,
+    #   而一次 `framework_ms=-1670`、另一次 `=2` —— 中间的修复没提交。
+    #   **从日志里分不出这两次。**
+    if dirty:
+        print(
+            "\n" + "=" * 68 + "\n"
+            f"⚠️  工作区是脏的（HEAD={commit[:8]}）—— 这一批**不可引用**\n"
+            "    数字别人复现不了,连你自己也复现不了:同一个 commit 加 dirty,\n"
+            "    两次跑可以完全不同。\n"
+            "    → 提交之后再跑,或者明确接受这批只当**筛选**,不进表。\n"
+            + "=" * 68 + "\n",
+            file=sys.stderr,
+        )
 
     with RunLog(cell.dataset, cell.arm, cell.seed, root=log_root) as log:
         log.write_cmd(argv or ("<in-process>",))
