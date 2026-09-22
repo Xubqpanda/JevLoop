@@ -38,8 +38,10 @@ from experiments.core.types import Task, Tool
 from experiments.benchmark import bfcl as bfcl_bench  # noqa: F401
 # ★ 三个 BigBench 任务**共用一份 ReWOO tarball** —— 一次下载抽三个 CSV。
 from experiments.benchmark import bigbench as bigbench_bench  # noqa: F401
+from experiments.benchmark import fever as fever_bench  # noqa: F401
 from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import hotpotqa as hotpotqa_bench  # noqa: F401
+from experiments.benchmark import sotuqa as sotuqa_bench  # noqa: F401
 from experiments.benchmark import triviaqa as triviaqa_bench  # noqa: F401
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
 from experiments.baseline import act as act_baseline  # noqa: F401
@@ -145,6 +147,8 @@ BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
     # ReWOO 另外两个 —— 需要工具才有意义,见各自文件头的「偏离 ①」
     hotpotqa_bench.HotpotQa.name: hotpotqa_bench.HotpotQa,
     triviaqa_bench.TriviaQa.name: triviaqa_bench.TriviaQa,
+    fever_bench.Fever.name: fever_bench.Fever,
+    sotuqa_bench.SotuQa.name: sotuqa_bench.SotuQa,
 }
 # BFCL 一个数据集两个子集,各自是独立的 `log/<name>/` 目录
 for _sub in bfcl_bench.SUBSETS:
