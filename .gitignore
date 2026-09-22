@@ -26,6 +26,10 @@ experiments/dataset/*
 !experiments/dataset/DOWNLOADS.md
 experiments/log/*
 !experiments/log/.gitkeep
+#     ★ `README.md` 也要放行 —— **和上面 `dataset/` 同一个理由**。
+#     跑出来的东西不进 git,但「这些目录是什么、哪些能引用」必须写清楚:
+#     否则下一个人只会看到一堆旧目录,然后**挑一个引用**。
+!experiments/log/README.md
 
 # Python：字节码缓存不进仓库。
 # ★ 不只是体积问题 —— .pyc 里**存着注释和 docstring 的原文**，
