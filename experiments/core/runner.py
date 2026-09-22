@@ -111,7 +111,8 @@ def run_cell(
         log.progress(0, len(tasks))
 
         for i, task in enumerate(tasks, start=1):
-            tools = list(bench.tools())
+            # ★ 题级工具集优先 —— 见 types.Task.tools 的说明
+            tools = list(task.tools) if task.tools else list(bench.tools())
             executor = ToolExecutor(tools, bench.tool_impls())
             session = Session(
                 run_id=log.run_id, task=task, arm=cell.arm, tools=tools, executor=executor,
@@ -142,6 +143,8 @@ def run_cell(
                 log.append_jsonl("usage.jsonl", record)
             for prompt in session.prompts:
                 log.append_jsonl("prompts.jsonl", prompt)
+            for completion in session.completions:
+                log.append_jsonl("completions.jsonl", completion)
 
             results.append(
                 Result(
@@ -179,7 +182,7 @@ def run_cell(
                     cost=aggregate_cost(session),
                     timing=aggregate_timing(session, wall_ms=wall_ms),
                     artifacts=("cmd.txt", "meta.json", "exit.json", "results.jsonl",
-                               "usage.jsonl", "prompts.jsonl"),
+                               "usage.jsonl", "prompts.jsonl", "completions.jsonl"),
                 )
             )
 

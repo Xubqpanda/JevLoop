@@ -44,8 +44,11 @@ class Direct:
                 # ★ 不静默降级 —— 缺金标证据就等于这一臂没跑,不许悄悄当成普通 direct
                 return AgentOutcome(error="direct-oracle: 这道题没有 oracle_context")
             parts.append(session.task.oracle_context)
-        parts.append(ANSWER_INSTRUCTION)
 
+        # ★ **一个字都不加。** 任务陈述和输出契约归 benchmark（见 core/bench.py 的说明）。
+        #   早先这里追加过一句「Answer with the final answer only」,而 GSM8K 的题目里
+        #   写着「Show your reasoning」—— 两条指令打架,模型听最后一条,
+        #   于是这一臂实际测的是**提示词工程**,不是「不用工具直接答」。
         reply = session.call_model([Message(role="user", content="\n\n".join(parts))])
         answer = reply.text.strip()
 
@@ -54,7 +57,6 @@ class Direct:
             final_answer=answer,
         )
 
-
-ANSWER_INSTRUCTION = (
-    "Answer with the final answer only. No explanation, no preamble, no quotes."
-)
+# ★ 这里**故意什么都没有**。输出契约（「答案长什么样」）归 benchmark，
+#   因为它是任务的一部分；baseline 只管**怎么和环境交互**。
+#   各臂自己写一句输出格式 = 把提示词工程混进方法比较。

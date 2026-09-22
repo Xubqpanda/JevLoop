@@ -386,16 +386,28 @@ PARSE_NUDGE = (
     "  Action: finish[<answer>]"
 )
 
+# ★ 参数的两种写法都要说。ReAct 原文的 `tool[arg]` 是为**单参数**工具设计的
+#   （search[entity] / lookup[string]），而真实 benchmark 的函数常常要多个命名参数
+#   （BFCL 的 `calculate_triangle_area[base, height]`）。不说清楚,模型只能瞎猜格式,
+#   而那是**我们的格式问题**,不是它能力问题。
+_ARG_NOTE = (
+    "  · One argument:      Action: <tool_name>[<value>]\n"
+    "  · Several arguments: Action: <tool_name>[{\"arg1\": <v1>, \"arg2\": <v2>}]\n"
+    "  · No arguments:      Action: <tool_name>[]"
+)
+
 FORMAT_WITH_THOUGHT = (
     "Use exactly this format, one block per step:\n"
     "Thought: <your reasoning about what to do next>\n"
-    "Action: <tool_name>[<argument>]      (or)  Action: finish[<final answer>]\n"
+    "Action: <tool_name>[...]      (or)  Action: finish[<final answer>]\n"
+    + _ARG_NOTE + "\n"
     "Stop after the Action line. Do not write the Observation yourself."
 )
 
 FORMAT_WITHOUT_THOUGHT = (
     "Use exactly this format, one block per step:\n"
-    "Action: <tool_name>[<argument>]      (or)  Action: finish[<final answer>]\n"
+    "Action: <tool_name>[...]      (or)  Action: finish[<final answer>]\n"
+    + _ARG_NOTE + "\n"
     "Stop after the Action line. Do not write the Observation yourself.\n"
     "Do not output a Thought line."
 )

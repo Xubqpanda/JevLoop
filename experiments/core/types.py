@@ -36,6 +36,11 @@ class Task:
     gold: Any = None
     # 数据集自带的、可供裁判的证据（金标检索结果等）。`direct + 金标证据` 那一臂用它
     oracle_context: str | None = None
+    # ★ **这一道题自己的工具集。**
+    #   有些数据集每题给的函数不同（BFCL 就是:每条自带 `function`）,
+    #   给一个全局 `tools()` 会让模型去调一个这道题根本没给它的函数。
+    #   空元组 = 用 `Benchmark.tools()` 那个全局兜底。
+    tools: tuple[Tool, ...] = ()
     meta: dict[str, Any] = field(default_factory=dict)
 
 

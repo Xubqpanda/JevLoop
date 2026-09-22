@@ -25,6 +25,8 @@ from experiments.core.runner import Cell, run_cell
 from experiments.core.types import Task, Tool
 
 # 注册表是**显式**的：谁要跑，谁在这里 import。见 core/registry.py 的说明。
+from experiments.benchmark import bfcl as bfcl_bench  # noqa: F401
+from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
 from experiments.baseline import act as act_baseline  # noqa: F401
 from experiments.baseline import direct as direct_baseline  # noqa: F401
@@ -113,6 +115,22 @@ def build_model(args: argparse.Namespace) -> ModelClient:
     )
 
 
+# ★ **benchmark 的显式注册表。** 不做自动发现（见 core/registry.py 的说明）:
+#   七个人并行时,`benchmark/` 下任何一个文件写上语法错,自动发现会让全场一起挂。
+#   加一个数据集就在这里加一行,顺便把它加进 docs/PLAN-*.md §0.7 的命名表。
+#
+# ★ 放在**模块级**而不是 main() 里 —— `scripts/datasets.py` 要读它来汇总
+#   各 loader 的下载声明。藏在 main() 里就导不出来（早先就是这么写的）。
+BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
+    toy.ToyCapitals.name: toy.ToyCapitals,
+    gsm8k_bench.Gsm8k.name: gsm8k_bench.Gsm8k,
+}
+# BFCL 一个数据集两个子集,各自是独立的 `log/<name>/` 目录
+for _sub in bfcl_bench.SUBSETS:
+    BENCHMARK_FACTORIES[f"bfcl-{_sub}"] = (lambda s=_sub: bfcl_bench.Bfcl(subset=s))
+del _sub
+
+
 # arm 名 → 构造器。**名字必须和 docs/PLAN-*.md 的 baseline 清单一致。**
 _BUILTIN_ARMS = {
     "direct": direct_baseline.Direct,
@@ -155,13 +173,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-key", default=None)
     args = parser.parse_args(argv)
 
-    bench_factory = BENCHMARKS.get(args.benchmark)
+
+    bench_factory = BENCHMARKS.get(args.benchmark) or BENCHMARK_FACTORIES.get(args.benchmark)
     if bench_factory is None:
-        # toy 也走注册表，免得「有的能跑有的不能」两套规则
-        if args.benchmark == toy.ToyCapitals.name:
-            bench_factory = toy.ToyCapitals
-        else:
-            raise SystemExit(f"没有这个 benchmark: {args.benchmark!r}\n{known()}")
+        raise SystemExit(f"没有这个 benchmark: {args.benchmark!r}\n{known()}")
     bench = bench_factory()
 
     model = build_model(args)

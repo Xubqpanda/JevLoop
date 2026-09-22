@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterator, Protocol, Sequence
 
+from experiments.core.download import DownloadSpec
 from experiments.core.types import Judgment, Task, Tool, Trajectory
 
 
@@ -34,6 +35,19 @@ class Benchmark(Protocol):
     def tasks(self, *, split: str, limit: int | None, seed: int) -> Iterator[Task]:
         """产出题目。
 
+        ★★ **`Task.prompt` 由 benchmark 决定,而且它是完整的任务陈述 + 输出契约。**
+
+        分工是这样切的（这一条踩过才定下来）:
+
+        | 层 | 归谁 | 例 |
+        |---|---|---|
+        | 任务陈述 + **输出契约** | **benchmark** | 「解这道题，最终答案给一个数」/ 「判 SUPPORTS / REFUTES / NOT ENOUGH INFO」|
+        | **交互协议** | **baseline** | ReAct 的 `Thought/Action/Observation` 块、plan-then-execute 的计划要求 |
+
+        **baseline 不许改任务陈述，只能加自己的协议块。**
+        各臂自己写一句「答案格式」= 把**提示词工程**混进方法比较,
+        而各臂该只差在**交互**上。
+
         - `limit` 是**筛选阶段**用的:先跑 300 条看分数,再决定要不要全量。
           **抽样必须用传进来的 `seed`**,否则「我们跑的是哪 300 条」说不清。
         - `Task.gold` 只给评分器看。**实现时注意别把它泄进 prompt。**
@@ -41,7 +55,23 @@ class Benchmark(Protocol):
         ...
 
     def tools(self) -> Sequence[Tool]:
-        """这一批题可用的工具。**七个 baseline 拿到的是同一个列表。**"""
+        """这一批题可用的工具。**所有 baseline 拿到的是同一个列表。**
+
+        ★ 如果**每题的工具不同**（BFCL 就是），把工具挂在 `Task.tools` 上，
+        这里返回全集或空 —— runner 会优先用题级的那个。
+        全局列表会让模型去调一个这道题根本没给它的函数。
+        """
+        ...
+
+    def downloads(self) -> Sequence["DownloadSpec"]:
+        """★ **这个 loader 需要的数据从哪来。**
+
+        权威就住在这里 —— 不在文档里。`scripts/datasets.py --write` 会把所有
+        loader 的声明汇总成 `dataset/DOWNLOADS.md`,**那份文件是生成的,不许手改**。
+        两边各写一遍就会分叉,而分叉的后果是别人照文档下载、拿到的和我们对不上。
+
+        `build` 那一类（Wikipedia 索引）**要人确认**,不会自动跑。
+        """
         ...
 
     def tool_impls(self) -> dict[str, Callable[..., str]]:
@@ -89,6 +119,17 @@ class Unscored(Benchmark):
 
     def tools(self) -> Sequence[Tool]:
         return []
+
+    def downloads(self) -> Sequence["DownloadSpec"]:
+        """★ **这个 loader 需要的数据从哪来。**
+
+        权威就住在这里 —— 不在文档里。`scripts/datasets.py --write` 会把所有
+        loader 的声明汇总成 `dataset/DOWNLOADS.md`,**那份文件是生成的,不许手改**。
+        两边各写一遍就会分叉,而分叉的后果是别人照文档下载、拿到的和我们对不上。
+
+        `build` 那一类（Wikipedia 索引）**要人确认**,不会自动跑。
+        """
+        ...
 
     def tool_impls(self) -> dict[str, Callable[..., str]]:
         return {}

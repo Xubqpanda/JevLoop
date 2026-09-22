@@ -16,8 +16,14 @@ dist/
 # ★ 写法是 `dir/*` 加否定 `.gitkeep`，**不是**直接忽略整个目录 ——
 #   直接写 `experiments/dataset/` 的话连占位文件也进不来，
 #   于是别人 clone 出来那六个目录**根本不存在**，而 README 说它们存在。
+#   ★ `dataset/` 里**进 git 的只有两份说明**:`.gitkeep`（把目录留住）和
+#     `README.md`（约定）+ `DOWNLOADS.md`（**生成的**下载索引）。
+#     **数据一个字节都不进** —— 但「怎么把它拿回来」必须写清楚,
+#     否则别人 clone 下来只有一个空目录,这个仓库就不可复现了。
 experiments/dataset/*
 !experiments/dataset/.gitkeep
+!experiments/dataset/README.md
+!experiments/dataset/DOWNLOADS.md
 experiments/log/*
 !experiments/log/.gitkeep
 
@@ -34,3 +40,15 @@ __pycache__/
 #   而这些图是**我们的读书材料**，不是代码的一部分。
 #   放在本地 `baseline/<arm>/figures/` 里看就行。
 experiments/baseline/*/figures/
+
+# ★ 数据集二进制：**任何路径下都不进仓库。**
+#   上一条按目录 ignore 是不够的 —— 路径算错一次（实测发生过：
+#   缓存落到了 `experiments/benchmark/dataset/`），数据就进了暂存区。
+#   按扩展名挡是**与路径无关**的那一道防线。
+*.arrow
+*.parquet
+*.safetensors
+*.bin
+*.h5
+*.idx
+*.faiss

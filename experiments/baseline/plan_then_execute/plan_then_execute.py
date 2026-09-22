@@ -8,11 +8,6 @@
 2. **Plan-and-Execute 的工程写法**（LangChain 等）—— planner 出计划,
    executor 逐步执行并**看得到每步的观察**,必要时重新规划。
 
-⚠️ **不是** CHI 2025 那篇 *Plan-Then-Execute: An Empirical Study of User Trust and
-Team Performance...*（arXiv:2502.01390）。那是 **cs.HC 的实证用户研究**,
-它自己写的是「we **adopted** LLM agents in a plan-then-execute manner」——
-**采用这个范式做实验,不是提出它**。那一篇可以引成「有人用它做过人机协作研究」,
-不能引成方法出处。
 
 ★ **它和 `rewoo` 的区别,是这两条臂必须分开的理由**:
 

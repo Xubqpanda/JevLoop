@@ -63,10 +63,12 @@ Plan: <what this step is for>
 #E2 = <tool>[<input or #E1>]
 """
 
+# ★ Solver 那段只写 **ReWOO 自己的协议**（用计划和证据）。
+#   「答案长什么样」是**输出契约**,归 benchmark（见 core/bench.py）——
+#   搬到这里就等于 ReWOO 臂自己改任务陈述,而各臂该只差在**交互**上。
 SOLVER_INSTRUCTION = """Answer the task using the plan and the evidence collected for it.
 
 - Use only the evidence below. If it is insufficient, say so rather than guessing.
-- Answer with the final answer only. No explanation, no preamble, no quotes.
 """
 
 # 原文在 HotpotQA 用 6 条 exemplar（ReWOO 为了可比照抄了 ReAct 的那 6 条）。

@@ -95,6 +95,10 @@ class Session:
         #   两个臂的差别如果只能靠读代码确认,那「baseline 含义一致」就没有证据。
         #   而 ReAct 每步重发整个 scratchpad,所以这一份会长得很快 —— 它是 log,不进 git。
         self.prompts: list[dict] = []
+        # ★ 每步模型的**原始输出**。
+        #   只记 prompt 不记输出,就查不出「为什么它只输出了 1 个 token」这类问题 ——
+        #   我们刚踩过:两条互相冲突的指令,从 prompt 上看不出来,只有输出证明它听了哪条。
+        self.completions: list[dict] = []
 
         # ★ 成功信号 —— **只有声明需要它的臂才拿得到。**
         #
@@ -125,6 +129,19 @@ class Session:
         t0 = time.perf_counter()
         reply = self.model.chat(messages, max_tokens=self.max_tokens, temperature=self.temperature)
         elapsed = (time.perf_counter() - t0) * 1000
+
+        self.completions.append(
+            {
+                "run_id": self.run_id,
+                "task_id": self.task.task_id,
+                "call": len(self.model_calls),
+                "text": reply.text,
+                "reasoning_content": reply.reasoning_content,
+                "tool_calls": list(reply.tool_calls),
+                "output_tokens_visible": reply.output_tokens_visible,
+                "output_tokens_reasoning": reply.output_tokens_reasoning,
+            }
+        )
 
         self.model_calls.append(
             UsageRecord(
