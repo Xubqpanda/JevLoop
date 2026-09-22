@@ -279,3 +279,85 @@ def test_answer_only_em_is_clearly_labelled_as_answer_only() -> None:
     j = HotpotQa().score_variants()["em"](task, traj)
     assert "answer-only" in j.detail, j.detail
     assert "非 joint" in j.detail
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★★ 伪步骤不是函数调用
+# ═══════════════════════════════════════════════════════════
+
+
+def test_a_parse_error_step_is_not_a_tool_call() -> None:
+    """★★★ 实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:
+
+    `run_loop` 解析不出动作时会往轨迹里塞一步 `action_tool("__parse_error__", {})`
+    （好让下一轮 prompt 带着纠正提示）。它的 `kind` 是 `"tool"` ——
+    因为 `Action.kind` **只有三种,不许加第四种**。
+
+    ⇒ 任何「数一下调了几次工具」的地方都会把它算进去。BFCL 的判分器就是:
+
+        called = [... if s.action.kind == "tool"]
+
+    于是一次「**调对了 + 解析失败过一次**」被判成 `wrong_tool`。
+
+    ★ 而它**不产生 `ToolCallEvent`**（伪步骤不过 executor）——
+      所以**工具事件里看不见它,只在 `steps` 里**。这就是它藏了这么久的原因。
+    """
+    from experiments.core.agent import action_answer, action_ask, action_tool
+    from experiments.core.types import is_tool_call
+
+    assert is_tool_call(action_tool("lookup_capital", {"country": "Peru"})) is True
+    assert is_tool_call(action_tool("__parse_error__", {})) is False
+    assert is_tool_call(action_tool("__ask__", {})) is False, "弃答也不是调用"
+    assert is_tool_call(action_answer("42")) is False
+    assert is_tool_call(action_ask("不想猜")) is False
+
+
+def test_bfcl_scorer_ignores_the_parse_error_step() -> None:
+    """★★ 上一条的**后果版**:一次正确调用 + 一步解析失败,**必须判对**。
+
+    ★ BFCL 的判据是 `sorted(called) == sorted(gold)`。多了个 `__parse_error__`
+      就变成两个元素比一个 → 判错。而**模型那一步是调对了的**。
+    """
+    from experiments.benchmark.bfcl import Bfcl
+    from experiments.core.agent import action_tool
+    from experiments.core.types import Action, Step, Task, Trajectory
+
+    bench = Bfcl(subset="v3-simple")
+    task = Task(task_id="t", prompt="p", gold=["sculpture_price.calculate"],
+                oracle_context=None, meta={})
+    traj = Trajectory(
+        task_id="t", arm="x", final_answer=None, decisions=(), usage=(),
+        escalated=False, error=None,
+        steps=(
+            Step(index=0, action=Action(kind="tool", name="sculpture_price.calculate",
+                                        arguments={}), observation="recorded"),
+            # ★ 就是这一步曾经把它判错
+            Step(index=1, action=action_tool("__parse_error__", {}),
+                 observation="Could not parse an action."),
+        ),
+    )
+    j = bench.score(task, traj)
+    assert j.correct is True, f"调对了却被判错:{j.detail}"
+    assert j.failure_class is None
+
+
+def test_both_loaders_share_the_same_rule() -> None:
+    """★★ **同一条规则不许在两处各写一遍。**
+
+    我一开始在 `alfworld` 里手写了 `and not name.startswith("__")`,
+    而 **BFCL 里没写** —— 于是同一个 bug 只在一个 loader 里被挡住。
+    所以判据现在住在 `core/types.py`,两个 loader 都调它。
+    """
+    import inspect
+
+    from experiments.benchmark.alfworld import alfworld as aw
+    from experiments.benchmark.bfcl import bfcl as bf
+
+    for mod, cls in ((bf, "Bfcl"), (aw, "AlfWorld")):
+        src = inspect.getsource(getattr(mod, cls).score)
+        # ★ 去掉注释行再查 —— 否则**解释这条规则的注释本身**会被当成违规
+        #   （第一版就是这样误报的:我在注释里写了 `kind == "tool"` 这几个字）。
+        code = "\n".join(line for line in src.splitlines()
+                         if not line.strip().startswith("#"))
+        assert 'kind == "tool"' not in code, f"{mod.__name__}.{cls}.score 自己判了 kind"
+        assert "is_tool_call" in code, f"{mod.__name__}.{cls}.score 没用共用的判据"

@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from experiments.core.download import DATASET_DIR, DownloadSpec
-from experiments.core.types import Judgment, Task, Tool, Trajectory
+from experiments.core.types import Judgment, Task, Tool, Trajectory, is_tool_call
 
 #: ALFWorld 主干的 commit（树会动,这条是**我们读的那一份**）。
 ALFWORLD_COMMIT = "aaba6870f86c5be6a08a491f32a50b906227bc3e"
@@ -417,10 +417,10 @@ class AlfWorld:
           TextWorld 不提供 `goal_condition_success_rate`,报出来恒为 0
           （模块头「坑 ①」）。
         """
+        # ★ 用共用的 `is_tool_call` —— 手写过一次 `startswith("__")`,
+        #   而那条规则**在 BFCL 里漏了**（见 `core/types.py::is_tool_call`）。
         commands = [str(s.action.arguments.get("command", ""))
-                    for s in trajectory.steps
-                    if getattr(s.action, "kind", "") == "tool"
-                    and not str(s.action.name).startswith("__")]
+                    for s in trajectory.steps if is_tool_call(s.action)]
         commands = [c for c in commands if c.strip()]
 
         if not commands:

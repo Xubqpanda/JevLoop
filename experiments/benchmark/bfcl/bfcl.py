@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from experiments.core.download import DownloadSpec
-from experiments.core.types import Judgment, Task, Tool, Trajectory
+from experiments.core.types import is_tool_call, Judgment, Task, Tool, Trajectory
 
 DATASET_ID = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 EXPERIMENTS_DIR = Path(__file__).resolve().parents[2]  # experiments/
@@ -287,7 +287,10 @@ class Bfcl:
 
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         gold = task.gold if isinstance(task.gold, list) else []
-        called = [s.action.name for s in trajectory.steps if s.action.kind == "tool"]
+        # ★ **用 `is_tool_call`,不要自己判 `kind == "tool"`** ——
+        #   `__parse_error__` 那种伪步骤的 `kind` 也是 `"tool"`,而它不是函数调用。
+        #   实测:因为这个,一次「调对了 + 解析失败过一次」被判成了 `wrong_tool`。
+        called = [s.action.name for s in trajectory.steps if is_tool_call(s.action)]
 
         if not called:
             if not gold:

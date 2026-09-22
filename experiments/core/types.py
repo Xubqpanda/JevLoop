@@ -60,6 +60,35 @@ class Action:
     content: str = ""
 
 
+#: 伪工具的名字前缀。**它们不是函数调用,是循环控制。**
+PSEUDO_TOOL_PREFIX = "__"
+
+
+def is_tool_call(action: "Action") -> bool:
+    """这一步**真的调了一个工具**吗?
+
+    ★★ 为什么需要它,以及它是怎么被发现的（2026-09-22,`bfcl-v3-multiple`）:
+
+    `run_loop` 在解析不出动作时会往轨迹里塞一步
+    `action_tool("__parse_error__", {})` —— 好让**下一轮的 prompt 里带着纠正提示**。
+    它的 `kind` 是 `"tool"`,因为 `Action.kind` **只有三种,不许加第四种**。
+
+    于是**任何一个「数一下调了几次工具」的地方都会把它算进去**。BFCL 的判分器就是:
+
+        called = [s.action.name for s in trajectory.steps if s.action.kind == "tool"]
+
+    ⇒ 一步解析失败 + 一次正确调用 → `called = ['x', '__parse_error__']` ≠ 金标
+      → **判成 `wrong_tool`,而那一步其实调对了。**
+
+    ★ 而它**不产生 `ToolCallEvent`**（伪步骤不过 executor）——
+      所以**工具事件里看不见它,只在 `steps` 里**。这就是为什么它藏了这么久。
+
+    ★ 我当时在 `alfworld` 里手写了 `and not str(s.action.name).startswith("__")`,
+      而 BFCL 里没写 —— **同一条规则在两处、只写了一处。** 所以它现在住在这里。
+    """
+    return action.kind == "tool" and not str(action.name).startswith(PSEUDO_TOOL_PREFIX)
+
+
 @dataclass(frozen=True)
 class Step:
     """一步 = 一个动作 + 它的观察。`decision_ms` / `model_ms` 逐层留,理由见 PROTOCOL §3.4。
