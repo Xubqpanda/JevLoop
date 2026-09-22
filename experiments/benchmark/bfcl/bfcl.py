@@ -59,10 +59,31 @@ DEFAULT_HF_HOME = EXPERIMENTS_DIR / "dataset" / "hf"
 DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 
 # 子集名 → (题目文件, 金标文件或 None)
+# ★★ **这里是 v3，只能是 v3 —— 因为 HF 上只有 v3。**
+#
+#   `gorilla-llm/Berkeley-Function-Calling-Leaderboard` 里的文件全叫 `BFCL_v3_*`。
+#   **v4 的 agentic 部分（web search 200 / memory 465 / format sensitivity 5,200）
+#   只在 GitHub 仓库里，不在 HF 上。** 所以：
+#
+#     v3  →  HF 的散文件（这个 loader 现在走的路）
+#     v4  →  **必须 clone 官方仓库** `ShishirPatil/gorilla`，取
+#            `berkeley-function-call-leaderboard/bfcl_eval/data/`
+#
+#   ★ 两件事因此一起解决：**v4 的数据 + 官方评分器（`bfcl-eval` 包）**。
+#     自己按函数名判分是权宜之计（见模块头「不报官方分」那一节），
+#     一旦接了官方评分器就该换过去 —— 而且**换判分器之后数字不可比**，
+#     所以新旧数字要分开报。
+#
+#   子集名带版本号（`v3-simple`），因为 `bfcl-simple` 这个词在 v4 下含义不同：
+#   v4 把 v3 四个子集并进 30% 的 Multi-Turn 权重里，另加了 Memory 和 Web Search。
+VERSION = "v3"
+
 SUBSETS: dict[str, tuple[str, str | None]] = {
-    "simple": ("BFCL_v3_simple.json", "possible_answer/BFCL_v3_simple.json"),
-    "irrelevance": ("BFCL_v3_irrelevance.json", None),
-    "multiple": ("BFCL_v3_multiple.json", "possible_answer/BFCL_v3_multiple.json"),
+    "v3-simple": ("BFCL_v3_simple.json", "possible_answer/BFCL_v3_simple.json"),
+    "v3-irrelevance": ("BFCL_v3_irrelevance.json", None),
+    "v3-multiple": ("BFCL_v3_multiple.json", "possible_answer/BFCL_v3_multiple.json"),
+    "v3-live-simple": ("BFCL_v3_live_simple.json", "possible_answer/BFCL_v3_live_simple.json"),
+    # ⚠️ v4 的子集不在这里 —— 它们要 clone 官方仓库才有数据,见上面的说明。
 }
 
 # ★ 输出契约归 benchmark（见 core/bench.py 的分工表）。
@@ -79,7 +100,7 @@ ANSWER_CONTRACT = (
 class Bfcl:
     """BFCL 的一个子集。`subset` 见 `SUBSETS`。"""
 
-    subset: str = "simple"
+    subset: str = "v3-simple"
     rows: dict[str, list[dict[str, Any]]] | None = None  # 测试直接喂，不联网
     hf_home: Path = field(default_factory=lambda: DEFAULT_HF_HOME)
 
@@ -93,7 +114,7 @@ class Bfcl:
             raise ValueError(f"未知子集 {self.subset!r}，可选 {sorted(SUBSETS)}")
         # ★ 臂名和数据集名要能分开 —— `bfcl/simple` 和 `bfcl/irrelevance`
         #   是两张不同的表,`log/<name>/` 也必须是两个目录。
-        self.name = f"bfcl-{self.subset}"
+        self.name = f"bfcl-{self.subset}"  # 已经是 `bfcl-v3-simple` 这种带版本的形状
         os.environ.setdefault("HF_HOME", str(self.hf_home))
         os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -107,7 +128,7 @@ class Bfcl:
                 raise ValueError(f"喂进来的 rows 里没有 {subject!r}")
             self._questions = self.rows[subject]
             self._answers = {r["id"]: r["ground_truth"] for r in self.rows.get(answer_file or "", [])}
-            self.dataset_version = f"{DATASET_ID}#{self.subset}@fixture"
+            self.dataset_version = f"{DATASET_ID}#{VERSION}/{self.subset}@fixture"
             return self._questions
 
         from huggingface_hub import hf_hub_download
@@ -117,7 +138,7 @@ class Bfcl:
         if answer_file:
             a_path = hf_hub_download(DATASET_ID, answer_file, repo_type="dataset")
             self._answers = {r["id"]: r["ground_truth"] for r in _read_jsonl(a_path)}
-        self.dataset_version = f"{DATASET_ID}#{self.subset}"
+        self.dataset_version = f"{DATASET_ID}#{VERSION}/{self.subset}"
         return self._questions
 
     def tasks(self, *, split: str, limit: int | None, seed: int) -> Iterator[Task]:
@@ -160,7 +181,7 @@ class Bfcl:
         return [DownloadSpec(
             dataset=self.name,
             kind="hf-file",
-            locator=DATASET_ID,
+            locator=DATASET_ID,   # ★ HF 上只有 v3；v4 要 clone 官方仓库（见 SUBSETS 的说明）
             files=files,
             revision="main",
             size_hint="~1 MB（JSONL 散文件）",

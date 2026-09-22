@@ -14,9 +14,10 @@
 
 | 数据集（loader）| 来源 | 定位 | 文件 | 版本 | 大概多大 | 备注 |
 |---|---|---|---|---|---|---|
-| `bfcl-irrelevance` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `1` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
-| `bfcl-multiple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
-| `bfcl-simple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
+| `bfcl-v3-irrelevance` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `1` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
+| `bfcl-v3-live-simple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
+| `bfcl-v3-multiple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
+| `bfcl-v3-simple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
 | `gsm8k` | hf-dataset | `openai/gsm8k:main` | — | ⚠️ **main**（未钉） | ~2 MB（7,473 + 1,319 条） | 纯文本，无前置；`revision` 未钉 —— 已用 fingerprint 记进 dataset_version |
 
 ## 怎么用

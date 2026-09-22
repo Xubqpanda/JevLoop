@@ -479,3 +479,30 @@ def test_runner_only_wires_the_signal_for_arms_that_ask(tmp_path: Path) -> None:
         cell=Cell(dataset="toy", arm="snoop", seed=0), log_root=tmp_path,
     )
     assert seen["signal"] is None, "没声明 needs_success_signal 的臂不该拿到成败信号"
+
+
+def test_dotted_tool_names_parse() -> None:
+    """★★ 回归:BFCL 的函数名**合法地带点**（`math.hcf` / `triangle_properties.get`）。
+
+    早先 `_BRACKET` 的名字部分是 `[\\w-]*`，`.` 不在里面 —— 于是那些调用全被判成
+    「解析不出动作」→ 重试 → 弃答。**实测 bfcl-simple × act 的失败里 23 条有 8 条
+    是这一个字符造成的，而模型输出完全正确。**
+
+    解析器拒掉一个合法名字，在读数上看起来就是「模型不会用工具」。
+    """
+    names = ["math.hcf", "triangle_properties.get", "history_api.get_president_by_year"]
+    parsed = common.parse_step(
+        'Action: math.hcf[{"number1": 36, "number2": 24}]', names, first_arg="math.hcf",
+    )
+    assert parsed.kind == "tool", "带点的函数名被拒了"
+    assert parsed.tool == "math.hcf"
+    assert parsed.arguments == {"number1": 36, "number2": 24}
+
+    plain = common.parse_step("Action: history_api.get_president_by_year[1940]", names,
+                              first_arg="history_api.get_president_by_year")
+    assert plain.kind == "tool" and plain.syntax == "bracket"
+
+
+def test_dotted_name_that_is_not_a_tool_is_still_unparsed_with_evidence() -> None:
+    parsed = common.parse_step("Action: no.such[tool]", ["math.hcf"])
+    assert parsed.kind == "unparsed" and "no.such" in parsed.raw

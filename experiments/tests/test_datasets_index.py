@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]  # JevLoop/
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from experiments.benchmark.bfcl.bfcl import Bfcl  # noqa: E402
+from experiments.benchmark.bfcl.bfcl import SUBSETS, VERSION, Bfcl  # noqa: E402
 from experiments.benchmark.gsm8k.gsm8k import Gsm8k  # noqa: E402
 from experiments.core import download  # noqa: E402
 from experiments.core.download import (  # noqa: E402
@@ -97,6 +97,10 @@ def test_hf_cache_dir_for_a_plain_repo() -> None:
 # ═══════════════════════════════════════════════════════════
 
 
+def test_bfcl_loader_declares_which_version_it_is() -> None:
+    assert VERSION == "v3", "改了版本要把这条测试和 loader 头部的说明一起改"
+
+
 def test_gsm8k_declares_an_hf_dataset() -> None:
     specs = Gsm8k(rows={"test": []}).downloads()
     assert len(specs) == 1
@@ -112,15 +116,28 @@ def test_bfcl_declares_per_subset_because_each_is_its_own_loader() -> None:
     因为「谁需要这份数据」的那根线是 loader 的 `name`,不是 HF 仓库名。
     """
     rows = {"BFCL_v3_irrelevance.json": []}
-    specs = Bfcl(subset="irrelevance", rows=rows).downloads()
+    specs = Bfcl(subset="v3-irrelevance", rows=rows).downloads()
     assert len(specs) == 1
-    assert specs[0].dataset == "bfcl-irrelevance"
+    assert specs[0].dataset == "bfcl-v3-irrelevance"
     assert specs[0].files == ("BFCL_v3_irrelevance.json",), "irrelevance 没有金标文件,只有题目"
+
+
+def test_bfcl_subset_names_carry_the_version() -> None:
+    """★★ **`bfcl-simple` 这个词在 v3 和 v4 下含义不同**,所以名字必须带版本。
+
+    实测踩过:HF 上 `gorilla-llm/Berkeley-Function-Calling-Leaderboard` 里的文件
+    **全叫 `BFCL_v3_*`** —— v4 的 agentic 部分（web search / memory / format
+    sensitivity）只在 GitHub 仓库里。所以「我们跑了 BFCL」这句话如果不带版本,
+    读的人会以为是 v4,而 v4 的子集构成和判分权重都不一样。
+    """
+    for subset in SUBSETS:
+        assert subset.startswith("v3-"), f"子集名 {subset!r} 没带版本"
+        assert Bfcl(subset=subset, rows={SUBSETS[subset][0]: []}).name == f"bfcl-{subset}"
 
 
 def test_bfcl_simple_declares_both_question_and_answer_files() -> None:
     rows = {"BFCL_v3_simple.json": [], "possible_answer/BFCL_v3_simple.json": []}
-    files = Bfcl(subset="simple", rows=rows).downloads()[0].files
+    files = Bfcl(subset="v3-simple", rows=rows).downloads()[0].files
     assert "BFCL_v3_simple.json" in files
     assert "possible_answer/BFCL_v3_simple.json" in files, "simple 的金标在 possible_answer/ 下"
 

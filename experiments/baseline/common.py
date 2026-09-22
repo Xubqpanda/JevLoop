@@ -101,7 +101,12 @@ class ParsedStep:
     raw: str = ""
 
 
-_BRACKET = re.compile(r"^(?P<name>[A-Za-z_][\w-]*)\s*\[(?P<arg>.*)\]\s*$", re.S)
+# ★ 函数名里的 **`.` 必须允许** —— BFCL 的函数合法地带点
+#   （`math.hcf` / `triangle_properties.get` / `history_api.get_president_by_year`）。
+#   早先这里是 `[\w-]*`,于是那些调用全被判成「解析不出动作」→ 重试 → 弃答,
+#   而模型输出其实**完全正确**。实测:bfcl-simple × act 的失败里
+#   **8/23 全是这一个字符造成的**,不是模型的问题。
+_BRACKET = re.compile(r"^(?P<name>[A-Za-z_][\w.-]*)\s*\[(?P<arg>.*)\]\s*$", re.S)
 _ACTION = re.compile(r"^\s*Action\s*:\s*(?P<body>.+?)\s*$", re.I | re.M)
 _ACTION_INPUT = re.compile(r"^\s*Action\s*Input\s*:\s*(?P<body>.+?)\s*$", re.I | re.M)
 _THOUGHT = re.compile(r"^\s*Thought\s*:\s*(?P<body>.*?)(?=\n\s*(?:Action|Final|Answer)\s*:|\Z)",
