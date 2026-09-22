@@ -418,7 +418,11 @@ class Question:
     kind: str
     ask: str
     options: tuple[str, ...] = ()
-    #: 选中项概率的门限（`choice`）/ P(true) 的门限（`noul`）
+    #: **答得果不果断**的门限 —— 逐字对应 TS 的 `topGte`。
+    #:
+    #: ⚠️ `noul` 上判的是 `max(p, 1-p)`,**不是** `p`:一个果断的「否」也算果断。
+    #: 要「答是的概率」那个门限是另一件事（TS 的 `probGte`）——
+    #: `TypedController.yes` 就是它。**一道题有两个数、两个门限,别混。**
     threshold: float = 0.5
 
     def option_labels(self) -> tuple[str, ...]:

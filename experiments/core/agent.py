@@ -202,8 +202,15 @@ class Session:
         correct: bool,
         latency_ms: float,
         batch: int | None = None,
+        frame_digest: str = "",
+        note: str = "",
     ) -> None:
-        """★ `confidence` 和 `correct` **记在同一行**。RQ2 全靠这一对。"""
+        """★ `confidence` 和 `correct` **记在同一行**。RQ2 全靠这一对。
+
+        `frame_digest` 和 `note` 也要一起进 —— 见 `spec.DecisionRecord`:
+        帧的指纹让「同一个方法」这句话可核对（§8.14）,
+        而违规只写在内存里**不算有人接收**,进了事件流才算（第 10 轮 R2/R5）。
+        """
         self._batch_decisions.append(
             DecisionRecord(
                 run_id=self.run_id,
@@ -215,6 +222,8 @@ class Session:
                 correct=correct,
                 batch=self._batch if batch is None else batch,
                 latency_ms=latency_ms,
+                frame_digest=frame_digest,
+                note=note,
             )
         )
 

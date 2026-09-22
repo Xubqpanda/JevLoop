@@ -19,6 +19,12 @@ import os
 import sys
 
 from experiments.core.agent import Agent
+from experiments.core.deciding import (
+    DecisionClient,
+    FallbackClient,
+    HttpJevClient,
+    MockClient,
+)
 from experiments.core.models import CallableModel, Message, ModelClient, OpenAICompatModel
 from experiments.core.registry import AGENTS, BENCHMARKS, known
 from experiments.core.runner import Cell, run_cell
@@ -131,6 +137,34 @@ for _sub in bfcl_bench.SUBSETS:
 del _sub
 
 
+def build_decider(args: argparse.Namespace) -> DecisionClient:
+    """**判定后端**要单独解析,不和生成模型合成一个（§8.9）。
+
+    两者问的不是同一个问题:`resolve` 生成模型问「你想用哪个 LLM」,
+    这里问「哪里有可用的判定模型」。合成一个「配置」反而说不清,
+    而且判定后端**永远有兜底** —— 生成模型缺 key 就该报错,不猜。
+
+    - `mock`（默认）:保守答案,**离线可跑**。§8.6 要它让 policy 自己走到 `escalate`。
+    - `http`:`POST /v1/systemone`。挂了就降到 mock,**每一级降级都报一次**（§8.10）。
+    """
+    if args.decider == "mock":
+        return MockClient()
+
+    if args.decider == "http":
+        key = args.decider_key or os.environ.get("JEV_API_KEY")
+        if not key:
+            raise SystemExit(
+                "缺判定后端的 key：给 --decider-key，或设 JEV_API_KEY。\\n"
+                "（想离线验接口就用 --decider mock —— 那是默认值）"
+            )
+        return FallbackClient([
+            HttpJevClient(args.decider_url, key, model=args.decider_model),
+            MockClient(),
+        ])
+
+    raise SystemExit(f"没有这个判定后端: {args.decider!r}（有 mock / http）")
+
+
 # arm 名 → 构造器。**名字必须和 docs/PLAN-*.md 的 baseline 清单一致。**
 _BUILTIN_ARMS = {
     "direct": direct_baseline.Direct,
@@ -144,12 +178,38 @@ _BUILTIN_ARMS = {
 }
 
 
-def resolve_agent(name: str) -> "type[Agent] | callable":
+def typed_arms(decider: DecisionClient) -> dict[str, Callable[[], Agent]]:
+    """**换了决策者的那几格** —— `docs/PLAN-*.md` 表 2 的右列。
+
+    命名跟着现成的 `<arm>-<变体>`（`reflexion-selfeval` 就是这个形状）,
+    **不新造一套规则**。每一格和左列那个臂共用同一个 `run_loop`、
+    同一个 `build_prompt`、同一批工具 —— **唯一不同的就是决策者**。
+
+    ⚠️ 现在只有 `react` 和 `act` 两格。**不是漏了,是另外几个还不成立**:
+
+    - `plan-then-execute × typed`:它的计划藏在 `view.prompt` 的 preamble 里,
+      而类型化那一路不看 `prompt`（它用 `task_prompt` 自己拼）→ **计划会丢**。
+      要么把计划放进 view,要么不列这一格。**列上去会跑出一个看起来能跑、
+      其实没在做同一件事的臂** —— 那比缺一格糟。
+    - `rewoo × typed`:Worker 根本没有决策可换（`NOTES-*.md` §2.10.1）。
+    - `jevloop`:我们自己的完整臂,它有自己的循环,不是「react 换个控制器」。
+    """
+    from experiments.jloop.typed import TypedController
+
+    return {
+        "react-typed": lambda: react_baseline.ReAct(controller=TypedController(decider)),
+        "act-typed": lambda: act_baseline.Act(controller=TypedController(decider)),
+    }
+
+
+def resolve_agent(name: str, decider: DecisionClient | None = None) -> "type[Agent] | callable":
     if name in _BUILTIN_ARMS:
         return _BUILTIN_ARMS[name]
+    if decider is not None and name in typed_arms(decider):
+        return typed_arms(decider)[name]
     factory = AGENTS.get(name)
     if factory is None:
-        raise SystemExit(f"没有这个 agent: {name!r}\n{known()}")
+        raise SystemExit(f"没有这个 agent: {name!r}\\n{known()}")
     return factory
 
 
@@ -171,6 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", default="openai-compat")
     parser.add_argument("--base-url", default="https://api.deepseek.com/v1")
     parser.add_argument("--api-key", default=None)
+    # ── 判定后端 —— **和生成模型分开**（§8.9）────────────────────
+    parser.add_argument("--decider", default="mock", choices=("mock", "http"),
+                        help="判定后端。mock = 保守答案、离线可跑（默认）")
+    parser.add_argument("--decider-url", default="https://jev.example/v1",
+                        help="--decider http 时的 base url")
+    parser.add_argument("--decider-key", default=None,
+                        help="判定后端的 key。也给 JEV_API_KEY（**不进仓库**）")
+    parser.add_argument("--decider-model", default="jev-1.13")
     args = parser.parse_args(argv)
 
 
@@ -180,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
     bench = bench_factory()
 
     model = build_model(args)
-    agent_factory = resolve_agent(args.agent)
+    # ★ 判定后端**只在真要用的时候才建** —— `--decider http` 缺 key 要报错,
+    #   但一个跑 `direct` 的人不该被这个报错拦住。
+    needs_decider = args.agent.endswith("-typed")
+    decider = build_decider(args) if needs_decider else None
+    agent_factory = resolve_agent(args.agent, decider)
 
     def make_agent(task: Task, tools: list[Tool]) -> Agent:
         return agent_factory()

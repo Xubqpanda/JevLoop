@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -45,9 +46,13 @@ class ScriptedClient:
 
     def __init__(self, *, noul: float | list[float] = 0.9,
                  pick: dict[str, str] | None = None,
-                 omit: tuple[str, ...] = ()) -> None:
+                 omit: tuple[str, ...] = (),
+                 spread: float = 0.9) -> None:
         self.noul = noul if isinstance(noul, list) else [noul]
         self.pick = pick or {}
+        #: 选中项拿多少概率。**调低它就是「答得不果断」** ——
+        #: §8.6 要 Mock 走到的那条路,这里可以精确地只让它发生在一道题上。
+        self.spread = spread
         self.omit = set(omit)
         self.requests: list = []
         self._call = 0
@@ -65,8 +70,10 @@ class ScriptedClient:
                 opts = list(q["options"])
                 chosen = self.pick.get(qid, opts[0])
                 rest = max(1, len(opts) - 1)
+                leftover = max(0.0, 1.0 - self.spread)
                 raw[qid] = {"type": "choice", "choice": chosen,
-                            "probabilities": {o: (0.9 if o == chosen else 0.1 / rest)
+                            "probabilities": {o: (self.spread if o == chosen
+                                                  else leftover / rest)
                                               for o in opts}}
             else:
                 raw[qid] = {"noul": noul}
@@ -303,9 +310,10 @@ def test_a_fatal_violation_stops_the_request_from_being_sent() -> None:
     # 构造一个「判定依据不在」的帧:空 ctx 让 needsTool 的 task 缺失
     from experiments.core.frame import AgentCtx
 
+    from experiments.jloop.typed import DEFAULT_TOP, _noul_question
+
     blocked = ctrl._ask(session, 0, AgentCtx(), 0, "needsTool",
-                        __import__("experiments.jloop.typed", fromlist=["x"])
-                        ._noul_question("needsTool", "?"))
+                        _noul_question("needsTool", "?", threshold=DEFAULT_TOP))
     assert blocked is None, "缺判定依据时必须返回 None"
     assert client.requests == [], "★ 请求不许发出去"
     assert ctrl.trace[-1]["violation"] == "field_missing" and ctrl.trace[-1]["fatal"]
@@ -471,114 +479,256 @@ def test_confidence_and_correctness_land_on_the_same_row() -> None:
         assert isinstance(r.correct, bool)
 
 
-def test_a_low_confidence_decision_is_recorded_as_not_correct() -> None:
+def test_a_confident_no_is_decisive_even_though_it_is_a_no() -> None:
+    """★★★ **两个数是两件事,`top()` 和 `prob_true()` 不是同一个。**
+
+    这是照 TS 的 `topGte` / `probGte` 逐字对齐时发现的 —— 我第一版写反了。
+
+    | | 算什么 | TS |
+    |---|---|---|
+    | `top()` | **答得果不果断** —— `noul` 上是 `max(p, 1-p)` | `topGte` |
+    | `prob_true()` | **「是」的概率** —— `noul` 上就是 `p` | `probGte` |
+
+    所以 `noul=0.1` 是**一个果断的「否」**:`top()` 是 **0.9**,过得了果断度门限;
+    而 `prob_true()` 是 **0.1**,过不了「是」的门限。
+    同一个答案,两个门限,两个结论 —— 而它们**都对**。
+
+    ⚠️ 第一版我把 `top()` 写成返回 `noul`,于是「果断的否」被读成「不确定」,
+    而「要不要工具」那一支反而拿它当「很确定要工具」。**正好反了。**
+    """
+    from experiments.core.deciding import Answer
+
+    no = Answer(kind="noul", noul=0.1, confidence=0.1)
+    assert no.top() == pytest.approx(0.9), "果断的否也是果断"
+    assert no.prob_true() == pytest.approx(0.1), "但它不是「是」"
+
+    yes = Answer(kind="noul", noul=0.9, confidence=0.9)
+    assert yes.top() == pytest.approx(0.9) and yes.prob_true() == pytest.approx(0.9)
+
+    unsure = Answer(kind="noul", noul=0.5, confidence=0.5)
+    assert unsure.top() == pytest.approx(0.5), "0.5 才是不果断"
+
+
+def test_the_choice_top_is_the_selected_option_not_the_maximum() -> None:
+    """★ TS 取的是**被选中的那一项**的概率,不是概率表的最大值。
+
+    后端理论上可以给一个不是最大值的选项（概率表只是个分布,
+    而 `choice` 是它自己声明的选中项）。两边取的不是同一个东西时,
+    「同一个方法」这句话就有漏洞 —— 照抄 TS。"""
+    from experiments.core.deciding import Answer
+
+    a = Answer(kind="choice", choice="b",
+               probabilities={"a": 0.9, "b": 0.4, "c": 0.1})
+    assert a.top() == pytest.approx(0.4), "取选中项,不取最大值"
+
+
+def test_an_undecided_choice_is_recorded_as_not_correct() -> None:
     """★★ **别拿 `correct=True` 当护身符。**
 
-    门限没过就是没过 —— 把所有判定都记成 correct,`correct` 这一列就恒为真,
-    于是「置信度和正确性同现」这句话**在账面上永远成立**,而它本该是被检验的。
+    全填 True 的话 `correct` 那一列恒为真,于是
+    「置信度和正确性同现」这句话**在账面上永远成立** —— 而它本该被检验。
+    """
+    from experiments.jloop.typed import DEFAULT_TOP
+
+    session = make_session()
+    # ★ 只让 **pickInput** 不果断（选中项 0.2,其余 7 个分掉 0.8）——
+    #   抬高全局门限会把前面的 needsTool 也一起拦掉,那是另一条测试的事。
+    ctrl = TypedController(ScriptedClient(noul=0.9, pick={"pickInput": "France"},
+                                          spread=0.2))
+    ctrl.decide(session, _view(session))
+    session.finish_events()
+
+    rows = [r for r in session.decision_records() if r.node == "pickInput"]
+    assert rows, [r.node for r in session.decision_records()]
+    assert rows[-1].confidence == pytest.approx(0.2)
+    assert rows[-1].confidence < DEFAULT_TOP
+    assert rows[-1].correct is False, "没过果断度门限就该记 False"
+
+
+def test_an_undecided_choice_blocks_the_step_instead_of_guessing() -> None:
+    """★★★ **被迫的选择 ≠ 挑得对。**
+
+    选项是穷尽的,判定模型必须挑一个 —— 所以「挑了一个」本身不是证据。
+    `top()` 判的正是这件事,不过门就**不许拿它往下走**。
+
+    ★ 没有这道门的时候,`_arguments` 会照拿第一个候选,
+    于是「不确定就别猜」在代码里**从来没有被走到过** —— 而 §8.6 要求
+    Mock 必须让 policy 自己走到 `escalate`。
     """
     session = make_session()
-    # noul=0.1 < DEFAULT_YES ⇒ needsTool 判否
-    ctrl = TypedController(ScriptedClient(noul=0.1))
+    ctrl = TypedController(ScriptedClient(noul=0.9, pick={"pickInput": "France"},
+                                          spread=0.2))
     decision = ctrl.decide(session, _view(session))
-    session.finish_events()
 
-    assert decision.kind == "answer"
-    rows = [r for r in session.decision_records() if r.node == "needsTool"]
-    assert rows, "needsTool 这一次判定要记账"
-    assert rows[-1].confidence == pytest.approx(0.1)
-    assert rows[-1].correct is False, "没过门限就该记 False"
+    assert decision.kind == "unparsed", f"不该硬猜:{decision}"
+    assert "below_threshold" in {t.get("violation") for t in ctrl.trace}
+    assert "typed:" in decision.raw
 
 
-# ═══════════════════════════════════════════════════════════
-# 帧的指纹进轨迹 —— 「同一个方法」这句话要有依据
-# ═══════════════════════════════════════════════════════════
+def test_mock_actually_walks_to_escalate() -> None:
+    """★★★ §8.6 的原话:**Mock 一律保守,让 policy 的置信度门限自己走到 `escalate`。**
+
+    这条要求以前**没有被满足** —— Mock 把概率平均分给 8 个国家（每项 0.125）,
+    而 `_arguments` 根本不看门限,照拿第一个。于是
+    「不确定就别猜」这句话写在了文档里,在代码里走不到。
+
+    现在它走到了:整条臂对着 Mock 跑完,必须**弃答**而不是猜一个。
+    """
+    from experiments.core.deciding import MockClient
+
+    session = make_session()
+    outcome = ReAct(controller=TypedController(MockClient())).solve(session)
+
+    assert outcome.final_answer is None
+    assert outcome.escalated, "Mock 下必须弃答 —— 否则「不确定就别猜」没被走到"
 
 
-def test_the_trace_carries_the_frame_digest_and_what_was_hidden() -> None:
-    """★★ `Frame.digest()` 每次记（§8.14）。
+def test_one_decision_is_recorded_exactly_once() -> None:
+    """★★★ **判定次数是论文的头条指标之一 —— 一次调用绝不能记两行。**
 
-    **两次运行帧不一样而没人发现,「同一个方法」这句话就不成立。**
-    而且截断和缺失要一起进轨迹 —— 判定模型看不到「这里少了 900 字」,
-    它会当成「证据就这么多」,然后**正确地**判出一个错的结论。
+    第一版在「答得不果断」时**又记了一条**:一条 `note=""`、一条 `note="top<0.5"`,
+    两次都 `correct=False`。于是同一次判定在账上出现两遍 ——
+    而账面上**看不出来**,因为两行各自都长得合理。
+
+    这和 §8.10 那条「按批计时、按记录求和会多算几倍」是**同一类错**:
+    一个数被数了两遍,而没有任何东西会因此报错。
+
+    所以「为什么没成立」写在**同一行的 `note` 里**,不是另起一行。
     """
     session = make_session()
-    ctrl = TypedController(ScriptedClient(noul=0.9))
+    ctrl = TypedController(ScriptedClient(noul=0.9, pick={"pickInput": "France"},
+                                          spread=0.2))
     ctrl.decide(session, _view(session))
-
-    judged = [t for t in ctrl.trace if "frame_digest" in t]
-    assert judged, ctrl.trace
-    t = judged[0]
-    assert t["frame_digest"] and len(t["frame_digest"]) >= 8
-    assert "truncations" in t and "missing" in t
-    assert t["provider"] == "scripted"
-
-
-# ═══════════════════════════════════════════════════════════
-# ★★★ runner 里那两行的顺序 —— 每一题的最后一批判定曾经缺席
-# ═══════════════════════════════════════════════════════════
-
-
-def test_the_last_batch_is_missing_until_it_is_closed() -> None:
-    """★★★ 修于 2026-09-22:`runner.py` 里 `trajectory()` 曾经在 `finish_events()` **之前**。
-
-    而 `trajectory()` 的 `decision_records()` 是从**事件流**里读的 ——
-    最后一批判定那时还躺在 `_batch_decisions` 里没进事件流。于是
-    **每一题的最后一批判定都缺席了**,而它恰恰是决策性的那批
-    （收尾那一步:判「不用再调工具了」的那次）。
-
-    ★ 这条测试把「顺序有要求」这件事变成**看得见的**:
-    先建轨迹拿不到,封口之后再建才拿得到。少了它,下一个人把两行换回去
-    不会有任何东西变红 —— 而这次的 bug 就是这么进来的。
-    """
-    session = make_session()
-    ctrl = TypedController(ScriptedClient(noul=0.9))
-    ctrl.decide(session, _view(session))
-
-    from experiments.core.agent import AgentOutcome
-
-    before = session.trajectory(AgentOutcome(steps=[]))
     session.finish_events()
-    after = session.trajectory(AgentOutcome(steps=[]))
 
-    assert len(after.decisions) > len(before.decisions), (
-        "封口之后轨迹里的判定应该变多 —— 不变的话说明这一批本来就没丢,"
-        "那这条测试就测不到东西了"
-    )
-    assert before.decisions == (), "没封口时最后一批确实不在轨迹里"
+    picks = [r for r in session.decision_records() if r.node == "pickInput"]
+    assert len(picks) == 1, f"同一次判定记了 {len(picks)} 行:{[(r.answer, r.note) for r in picks]}"
+    assert picks[0].note, "不成立的原因要在这一行的 note 里"
+    assert picks[0].correct is False
 
 
-def test_the_runner_closes_the_batch_before_building_the_trajectory(tmp_path) -> None:
-    """★ 上一条的**整格版**:真的跑一次 `run_cell`,看**交给评测的那个 trajectory**。
+def test_a_violation_reaches_the_event_stream_not_just_memory() -> None:
+    """★★★ **写进内存里一个 list 不算「有人接收」。**
 
-    ⚠️ 第一版这条测试数的是 `events.jsonl` 里的判定批 —— **它抓不住这个 bug**。
-    把 runner 改回错的顺序,它照样是绿的:因为 `finish_events()` 虽然在
-    `trajectory()` 之后,却在**写事件之前**,所以事件流是全的。
-    丢的只有**传给 `score` 的那个 trajectory**。
+    第 10 轮那条失效链的中间三步是「校验发现 → **无人接收** → 请求照发」。
+    把违规放进 controller 的一个属性上,跑完之后**没人读得到** ——
+    下一个人重建现场时看到的只是「这里怎么少了一次判定」。
 
-    「测试通过」和「测试抓得住」是两件事 —— 这条测试是被这个区别教出来的:
-    写完先跑一遍是绿的,把 bug 改回去**还是绿的**,才知道测错了地方。
+    所以违规要按「一次没成立的判定」记账,并落进事件流（§8.14 的帧指纹同理）。
     """
-    from experiments.core.runner import Cell, run_cell
-    from experiments.core.types import Judgment
+    from experiments.core.frame import AgentCtx
+    from experiments.jloop.typed import DEFAULT_TOP, _noul_question
 
-    seen: list = []
+    session = make_session()
+    ctrl = TypedController(ScriptedClient())
+    # 空 ctx ⇒ needsTool 缺「判定依据」⇒ fatal ⇒ 请求不发
+    assert ctrl._ask(session, session.next_batch(), AgentCtx(), 0, "needsTool",
+                     _noul_question("needsTool", "?", threshold=DEFAULT_TOP)) is None
+    session.finish_events()
 
-    class Recording(ToyCapitals):
-        def score(self, task, trajectory) -> Judgment:
-            seen.append(trajectory)
-            return super().score(task, trajectory)
+    rows = session.decision_records()
+    assert rows, "违规没进事件流 —— 那就还是「无人接收」"
+    assert rows[0].node == "needsTool" and rows[0].correct is False
+    assert "field_missing" in rows[0].answer
+    assert "判定依据" in rows[0].note, f"原因要可读:{rows[0].note!r}"
+    assert rows[0].frame_digest, "帧的指纹也要在（§8.14）"
 
-    run_cell(
-        bench=Recording(),
-        make_agent=lambda task, tools: ReAct(controller=TypedController(
-            ScriptedClient(noul=[0.9, 0.1], pick={"pickInput": "France"}))),
-        model=capital_model(),
-        cell=Cell(dataset="toy", arm="typed-probe", seed=0), log_root=tmp_path,
-    )
 
-    assert seen, "评测一次都没被调用?"
-    steps = {d["step"] for t in seen for d in t.decisions}
-    assert steps, f"轨迹里一条判定都没有:{[t.decisions for t in seen]}"
-    # ★ **收尾那一步的判定必须在里面** —— 那正是曾经丢掉的那一批
-    assert max(steps) >= 1, f"判定只记到第 {max(steps)} 步,收尾那批缺席了"
+def test_the_frame_digest_separates_nodes_that_see_different_frames() -> None:
+    """★★ §8.14:`Frame.digest()` 每次都记。
+
+    这条同时验证两件事,少一件这个串就没有意义:
+
+    ① 同一个节点在**历史不同**时指纹要变 —— 否则「两次运行帧不一样」
+       永远发现不了,而「同一个方法」这句话就没有依据;
+    ② 只看 `task` 的那一格指纹**不该变** —— 它确实什么都没多看。
+
+    ② 是这条测试的另一半,而且它防的是反过来的错:
+    一个**恒变**的指纹(比如掺了时间戳）看起来也在「记录帧」,其实什么都说明不了。
+    """
+    from experiments.core.frame import AgentCtx, StepRecord, compile_frame, frame_for
+
+    empty = AgentCtx(task="把 a 抄到 b")
+    did = AgentCtx(task="把 a 抄到 b",
+                   history=(StepRecord(step=0, tool="read_file", input="a", result="..."),),
+                   last_tool="read_file", last_input="a", last_result="...")
+
+    # ① 历史进了 `needsTool` 的帧 → 指纹必须变
+    needs = frame_for("needsTool")
+    assert compile_frame(needs, empty).digest() != compile_frame(needs, did).digest()
+
+    # ② `pickInput` 只看 task（它的 excluded 里明说了不看 last_result / history）
+    pick = frame_for("pickInput")
+    assert compile_frame(pick, empty).digest() == compile_frame(pick, did).digest()
+    # 而 task 一变它就得变 —— 否则它连「看 task」这件事都没做到
+    assert compile_frame(pick, empty).digest() != compile_frame(
+        pick, AgentCtx(task="换个任务")).digest()
+
+
+# ═══════════════════════════════════════════════════════════
+# 注册 —— 「能跑」和「表里有数」之间差着这一步
+# ═══════════════════════════════════════════════════════════
+
+
+def test_the_typed_cells_are_reachable_by_name() -> None:
+    """★ 一条臂写在文件里不等于**能被跑起来**。
+
+    `scripts/run.py` 的名字解析是**显式**的（见 `core/registry.py` 的说明）——
+    没登记的名字就是「没有这个 agent」,哪怕实现就在旁边。
+    """
+    from experiments.scripts.run import resolve_agent, typed_arms
+
+    decider = ScriptedClient()
+    assert set(typed_arms(decider)) == {"react-typed", "act-typed"}
+    for name in ("react-typed", "act-typed"):
+        agent = resolve_agent(name, decider)()
+        assert agent.config.controller is not None, f"{name} 没接上控制器"
+
+
+def test_the_honest_gaps_are_gaps_not_silent_wrong_arms() -> None:
+    """★★ **`plan-then-execute × typed` 故意不在表里。**
+
+    它的计划藏在 `view.prompt` 的 preamble 里,而类型化那一路**不看 `prompt`**
+    （它用 `task_prompt` 自己拼）—— 接上去的话计划会丢。
+
+    列上去会跑出一个**看起来能跑、其实没在做同一件事**的臂 —— 那比缺一格糟得多:
+    缺一格是空的,错的格子是**一个数**,而那个数会被当成「换了决策者」的对照。
+    """
+    from experiments.scripts.run import resolve_agent, typed_arms
+
+    decider = ScriptedClient()
+    assert "plan-then-execute-typed" not in typed_arms(decider)
+    assert "rewoo-typed" not in typed_arms(decider), "ReWOO 的 Worker 没有决策可换"
+
+
+def test_a_typed_arm_needs_a_decider_and_a_plain_arm_does_not() -> None:
+    """★ 判定后端**只在真要用的时候才建** —— 一个跑 `direct` 的人
+    不该被判定后端的配置拦住。两者问的是不同的问题（§8.9）。
+
+    而且 `--decider http` 缺 key 时**要报错,不许静默退回 mock**:
+    静默退回会让「判定后端是官方 Jev」和「判定后端是 mock」在日志上长得一样 ——
+    而两者跑出来的数不能放在同一张表里。
+    """
+    import argparse
+
+    from experiments.core.deciding import MockClient
+    from experiments.scripts.run import build_decider
+
+    def ns(**kw):
+        return argparse.Namespace(**{"decider": "mock", "decider_url": "http://x/v1",
+                                     "decider_key": None, "decider_model": "m", **kw})
+
+    assert isinstance(build_decider(ns()), MockClient), "默认是 mock（离线可跑）"
+
+    # 没有 key ⇒ 报错退出，不是静默降级
+    old = os.environ.pop("JEV_API_KEY", None)
+    try:
+        with pytest.raises(SystemExit, match="JEV_API_KEY"):
+            build_decider(ns(decider="http"))
+    finally:
+        if old is not None:
+            os.environ["JEV_API_KEY"] = old
+
+    # 有 key ⇒ 真的建出 HTTP 客户端，而且**挂着 mock 兜底**（§8.10 每级都报）
+    decider = build_decider(ns(decider="http", decider_key="k"))
+    assert decider.name == "http:m→mock", decider.name

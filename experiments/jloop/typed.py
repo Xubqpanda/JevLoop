@@ -65,10 +65,13 @@ from experiments.core.frame import (
 )
 from experiments.core.models import Message
 
-#: `noul` 判「是」的门限。**和 TS 侧 `LIMITS` 的默认值一致。**
+#: **「是」的概率**门限（TS 的 `probGte`）。`needsTool` 用它:
+#: 「还要不要动作」—— 一个果断的「否」就该去生成答案。
 DEFAULT_YES = 0.5
-#: `choice` 判「就是它」的门限。★ 卡的是**选中项的概率**,不是 `confidence`
-#: （§8.3:后者是归一化香农熵,`p=[0.8,0.2]` 时是 0.269）。
+#: **果断程度**门限（TS 的 `topGte`）。`choice` 用它,判的是「答得确定吗」——
+#: `noul` 上是 `max(p, 1-p)`,**不是** `p`。
+#: ★ 这两个数是两件事,而 §8.3 那条「别用 `confidence` 卡 choice」说的是
+#: **别用归一化熵**,两个都不是它。
 DEFAULT_TOP = 0.5
 
 #: 生成答案时的格式要求。★ **不是 ReAct 的 `Action:` 格式** —— 那要求模型吐一个
@@ -76,12 +79,12 @@ DEFAULT_TOP = 0.5
 ANSWER_FORMAT = "Reply with the final answer only. Do not emit an action."
 
 
-def _noul_question(node: str, ask: str, *, threshold: float = DEFAULT_YES) -> Question:
+def _noul_question(node: str, ask: str, *, threshold: float) -> Question:
     return Question(node=node, kind="noul", ask=ask, threshold=threshold)
 
 
 def _choice_question(node: str, ask: str, options: list[str],
-                     *, threshold: float = DEFAULT_TOP) -> Question:
+                     *, threshold: float) -> Question:
     return Question(node=node, kind="choice", ask=ask, options=tuple(options),
                     threshold=threshold)
 
@@ -132,11 +135,16 @@ class TypedController:
         need = self._ask(session, batch, ctx, view.step, "needsTool",
                          _noul_question("needsTool",
                                         "Does this task still require a tool call "
-                                        "before it can be answered?"))
+                                        "before it can be answered?",
+                                        threshold=self.top))
         if need is None:
             return self._blocked(session, view, "needsTool")
 
-        if need.noul < self.yes:
+        if need.prob_true() < self.yes:
+            # ★ 用 `prob_true()`（「是」的概率）,不是 `top()`（果断程度）——
+            #   这里问的是「还要不要动作」,答案本身是「是/否」。
+            #   一个**果断的「否」**（noul=0.05）在 `top()` 上是 0.95,
+            #   拿它来比就会得出「很确定还要工具」—— 正好反了。
             return self._generate(session, view, ctx, why=f"needsTool={need.noul:.3f}",
                                   batch=batch)
 
@@ -164,7 +172,8 @@ class TypedController:
         else:
             picked = self._ask(session, batch, ctx, view.step, "pickTool",
                                _choice_question("pickTool",
-                                                "Which tool should be called next?", options))
+                                                "Which tool should be called next?",
+                                                options, threshold=self.top))
             if picked is None:
                 return self._blocked(session, view, "pickTool")
             picked_choice = picked.choice
@@ -223,7 +232,7 @@ class TypedController:
         picked = self._ask(session, batch, ctx, view.step, "pickInput",
                            _choice_question("pickInput",
                                             f"Which {first} should `{tool.name}` be called with?",
-                                            options))
+                                            options, threshold=self.top))
         if picked is None:
             return {}, "pickInput"
         if picked.choice not in options:
@@ -300,9 +309,20 @@ class TypedController:
         for v in req.check(ctx):
             self.trace.append({"step": step, "node": node, "violation": v.code,
                                "fatal": v.fatal, "detail": v.detail})
+            # ★★ **违规必须落到事件流里,否则不算有人接收。**
+            #
+            #   第 10 轮那条失效链是「校验发现 → **无人接收** → 请求照发 → 静默掉点」。
+            #   写进内存里一个 list 仍然不是接收 —— 跑完之后没人读得到它,
+            #   于是下一个人重建现场时,看到的是「这里怎么少了一次判定」。
+            #   所以按「一次没成立的判定」记账:`correct=False` + 说明原因。
+            session.record_decision(
+                step=step, node=node, answer=f"({v.code})", confidence=0.0,
+                correct=False, latency_ms=0.0, batch=batch,
+                frame_digest=req.frame.digest(), note=v.detail,
+            )
             if not v.fatal:
                 continue
-            # ★ 不发。为什么发不出去要留在轨迹里 —— 否则调用方只知道「没判定」。
+            # ★ 不发。为什么发不出去已经记在账上了 —— 否则调用方只知道「没判定」。
             return None
 
         resp = self.client.decide(DecideRequest(
@@ -311,9 +331,14 @@ class TypedController:
         answer = resp.answers.get(node)
         if answer is None:
             # 后端没给 / 给了畸形的 —— §8.10:报出来,不假装
+            detail = f"dropped={resp.dropped} missing={resp.missing} {resp.warnings}"
             self.trace.append({"step": step, "node": node, "violation": "answer_unusable",
-                               "fatal": True, "detail": f"dropped={resp.dropped} "
-                                                        f"missing={resp.missing} {resp.warnings}"})
+                               "fatal": True, "detail": detail})
+            session.record_decision(
+                step=step, node=node, answer="(answer_unusable)", confidence=0.0,
+                correct=False, latency_ms=(time.perf_counter() - t0) * 1000, batch=batch,
+                frame_digest=req.frame.digest(), note=detail,
+            )
             return None
 
         self.trace.append({
@@ -323,15 +348,45 @@ class TypedController:
             "truncations": dict(req.frame.truncations),
             "missing": list(req.frame.missing),
         })
+
+        # ★★ **果断程度不够就不许往下走。**
+        #
+        #   这是一个**被迫的选择**:选项是穷尽的,判定模型必须挑一个 ——
+        #   所以「挑了一个」不等于「挑得对」。`top()` 判的正是这件事
+        #   （`choice` 看被选中那项的概率;`noul` 看 `max(p,1-p)`）。
+        #
+        #   §8.6 要求 Mock 必须让 policy **自己走到 `escalate`** ——
+        #   而 Mock 给的是平均分布（8 个选项时每项 0.125）。
+        #   没有这道门,`_arguments` 会照拿第一个候选,
+        #   于是「不确定就别猜」在代码里**从来没有被走到过**。
+        decided = answer.top() >= question.threshold
         session.record_decision(
             step=step, node=node, answer=str(answer.choice or f"{answer.noul:.3f}"),
             confidence=answer.top(),
-            # ★ `correct` 在这里是「判定**成立**吗」—— 选了候选外的选项由调用方
-            #   在下面改判。RQ2 要的是「置信度和正确性同现」,所以这里不能瞎填 True
-            #   当护身符:门限没过就是没过。
-            correct=(answer.top() >= question.threshold),
+            # ★ 帧的指纹进日志（§8.14）—— 两次运行帧不一样而没人发现,
+            #   「同一个方法」这句话就不成立。
+            frame_digest=req.frame.digest(),
+            # ★ `correct` 是「这次判定**成立**吗」,不是「护身符」。
+            #   全填 True 的话,`correct` 那一列恒为真,
+            #   于是「置信度和正确性同现」这句话**在账面上永远成立** —— 而它本该被检验。
+            correct=decided,
+            # ★★ **一条判定只记一行。**
+            #
+            #   第一版这里在「不果断」时**又记了一条** —— 于是同一次判定在账上出现两遍,
+            #   而**判定次数正是论文的头条指标之一**。这和 §8.10「按批计时、按记录求和
+            #   会多算几倍」是同一类错:账目上的一个数被数了两遍,而账面上看不出来。
+            #
+            #   所以原因写在**同一行的 `note` 里**,不是另起一行。
+            note="" if decided else f"top={answer.top():.3f} < {question.threshold}",
             latency_ms=(time.perf_counter() - t0) * 1000, batch=batch,
         )
+        if not decided:
+            self.trace.append({
+                "step": step, "node": node, "violation": "below_threshold", "fatal": True,
+                "detail": (f"{node}: top={answer.top():.3f} < {question.threshold}"
+                           f"（答得不果断,不许拿它往下走）"),
+            })
+            return None
         return answer
 
     def _blocked(self, session: Session, view: DecisionView, why: str,

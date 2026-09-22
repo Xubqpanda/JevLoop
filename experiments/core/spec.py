@@ -171,6 +171,18 @@ class DecisionRecord:
     correct: bool
     batch: int
     latency_ms: float
+    #: ★ **帧的指纹**（§8.14:「`Frame.digest()` 每次都记」）。
+    #:
+    #: 两次运行帧不一样而没人发现,「同一个方法」这句话就不成立。
+    #: 它覆盖 `Frame.render()` 的全文,而全文里**带着截断和缺失的痕迹** ——
+    #: 所以这一个短串同时回答了「这一格看到了什么」和「少了什么」。
+    frame_digest: str = ""
+    #: ★ **这次判定为什么没成立**（空 = 一切正常）。
+    #:
+    #: 第 10 轮 R2/R5 那条失效链是「校验发现 → **无人接收** → 请求照发 → 静默掉点」。
+    #: 违规写进内存里的一个 list 不算有人接收 —— **进了事件流才算**,
+    #: 因为只有那里是跑完之后还读得到的。
+    note: str = ""
 
 
 # ★ `UsageRecord` **已删** —— 它被 `core/events.py` 的 `ModelCallEvent` 取代了。

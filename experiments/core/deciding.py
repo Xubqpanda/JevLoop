@@ -65,26 +65,39 @@ class Answer:
     confidence: float = 0.0
 
     def top(self) -> float:
-        """**卡阈值要用的那个数**（§8.3）。
+        """**这道题答得果不果断。** 逐字对齐 TS 的 `topGte`（`src/policy.ts`）。
 
-        三种形状各有各的「选中项概率」:
+        ★★ 这个名字在两份实现里是**同一个语义**,必须逐字对齐 ——
+        差一点就会变成「同一个方法」这句话的漏洞（§8.7.2）。
 
-        - `noul` → **`noul` 自己**（P(true)）
-        - `choice` / `score` → **概率表里的最大值**
+        | 形状 | 算什么 |
+        |---|---|
+        | `choice` | **被选中的那一项**的概率（不是概率表的最大值）|
+        | `noul` | **`max(noul, 1 - noul)`** —— 注意:**不是** `noul` |
+        | `score` | `confidence` |
 
-        ★★ 第一版这里只写了「概率表为空就退回 `confidence`」——
-        而 `noul` 答案**没有概率表**,`confidence` 也没设,于是 `top()` **恒为 0.0**。
+        ★ `noul` 那一格是最容易搞错的:一个**果断的「否」**（`noul=0.05`）
+        在这里是 **0.95**,是**过得了门限**的。因为这个问题问的是
+        「答得确定吗」,不是「答的是吗」。
 
-        后果不是「少了一个数」,是**所有 `noul` 门限永远判否**:
-        「不需要工具」这一支永远走不到,而日志上每一行都长得像一次正常判定。
-        这和在 `parse_answers` 里警告过的「伪造的 `0`」是**同一个东西**,
-        只是从另一扇门进来的 —— 那边是值缺失被补成 0,这边是值在、但没人读它。
+        **要「答是的概率」用 `prob_true()`** —— 那对应 TS 的 `probGte`。
+        两个数是两件事,一个 `Question` 上也有两个门限,别混。
         """
+        if self.kind == "choice":
+            # ⚠️ **被选中的那一项**,不是 `max(probabilities)`。
+            #    后端理论上可能给一个不是最大值的选项,那时两者不同 ——
+            #    而 TS 取的是前者。照抄它。
+            return self.probabilities.get(self.choice, 0.0) if self.probabilities else self.confidence
         if self.kind == "noul":
-            return self.noul
-        if self.probabilities:
-            return max(self.probabilities.values())
+            return max(self.noul, 1.0 - self.noul)
         return self.confidence
+
+    def prob_true(self) -> float:
+        """**「是」的概率。** 对应 TS 的 `probGte`。
+
+        `noul` 上就是 `noul` 本身;别的形状没有「是/否」可言,退回 `top()`。
+        """
+        return self.noul if self.kind == "noul" else self.top()
 
 
 @dataclass
