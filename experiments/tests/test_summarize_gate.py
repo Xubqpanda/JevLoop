@@ -94,3 +94,71 @@ def test_the_shipped_summary_only_contains_citable_runs() -> None:
     assert all(not r["meta"].get("dirty") for r in rows)
     # 而且被排除的要能数得出来 —— 静默排除等于伪装成「表是全的」
     assert isinstance(dirty_runs, list)
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★★ 行级检查：**几条臂之间**跨了几个 commit
+# ═══════════════════════════════════════════════════════════
+
+
+def test_a_row_whose_arms_span_commits_is_reported(tmp_path, capsys) -> None:
+    """★★★ 实测（2026-09-22）:一次 `--limit 300 × 7 臂` 的后台跑跨了 **5 个 commit** ——
+    因为跑的时候一直在提交。**七条臂各在一个代码版本上。**
+
+    而每一格单独看都是 `commits=1` —— 按格分组的检查**一条都不会报**。
+
+    ★ 比较的意义在于「只差被测变量」。几条臂跑在不同代码版本上,
+      差的就是不止一个变量了,而**这一行看起来和受控比较一模一样**。
+
+    ★★ 这条测试的判据是「**臂与臂之间**一共几个 commit」。
+      第一版写成了「某一条臂内部几个」,于是**一条都没报** ——
+      而**一个把判据写反的检查,和没有这个检查在输出上完全一样**。
+    """
+    for arm, commit in (("direct", "c1"), ("react", "c2"), ("act", "c3")):
+        _write_run(tmp_path, run_id=f"d/{arm}/run", dirty=False, commit=commit, framework=1.0)
+        # 让每一行属于不同的臂
+        p = tmp_path / f"d/{arm}/run" / "results.jsonl"
+        import json as _json
+
+        row = _json.loads(p.read_text(encoding="utf-8"))
+        row["meta"]["arm"] = arm
+        p.write_text(_json.dumps(row) + "\n", encoding="utf-8")
+
+    rows, _, _ = summarize.load_rows(tmp_path)
+    table = summarize.summarize(rows)
+    assert len(table) == 3, "三条臂三个格子"
+
+    assert summarize.main(["--log-dir", str(tmp_path), "--out-dir", str(tmp_path / "out")]) == 0
+    err = capsys.readouterr().err
+    assert "几条臂跑在不同 commit 上" in err
+    assert "不是受控比较" in err
+    for commit in ("c1", "c2", "c3"):
+        assert commit in err, f"要点名每条臂在哪个 commit:{commit}"
+
+
+def test_a_row_whose_arms_share_one_commit_is_silent(tmp_path, capsys) -> None:
+    """★ 反面:几条臂都在同一个 commit 上时**不许出声**。
+
+    ★ 假警告和真警告一样有害 —— 它会让这一行被无视。
+    """
+    for arm in ("direct", "react"):
+        _write_run(tmp_path, run_id=f"d/{arm}/run", dirty=False, commit="same", framework=1.0)
+        import json as _json
+
+        p = tmp_path / f"d/{arm}/run" / "results.jsonl"
+        row = _json.loads(p.read_text(encoding="utf-8"))
+        row["meta"]["arm"] = arm
+        p.write_text(_json.dumps(row) + "\n", encoding="utf-8")
+
+    assert summarize.main(["--log-dir", str(tmp_path), "--out-dir", str(tmp_path / "out")]) == 0
+    assert "不是受控比较" not in capsys.readouterr().err
+
+
+def test_internal_fields_do_not_leak_into_the_table(tmp_path) -> None:
+    """★ 下划线开头的是**内部字段**（行级检查的中间量),不许进 markdown / csv。"""
+    _write_run(tmp_path, run_id="d/a/run", dirty=False, commit="c1", framework=1.0)
+    rows, _, _ = summarize.load_rows(tmp_path)
+    table = summarize.summarize(rows)
+    assert any(k.startswith("_") for k in table[0]), "内部字段要存在（检查要用）"
+    md = summarize.to_markdown(table)
+    assert "_arm_commits" not in md

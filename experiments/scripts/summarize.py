@@ -106,6 +106,9 @@ def summarize(rows: list[dict]) -> list[dict]:
                 #   就是「归档之后那是唯一的线索」（本文件的头一句）。
                 #   一个数个数把它变成了一个看起来正常的空壳。
                 "runs": " ".join(sorted({r["run_id"].split("/")[-1] for r in items})),
+                # ★ 内部用:这一格各条臂各自的 commit 集合（行级检查要用,不进表）
+                "_arm_commits": {(r["meta"].get("arm") or "?"):
+                                 {r["meta"].get("commit") or "?"} for r in items},
                 # ★ 一个格子跨了几个 commit。>1 就是在**把不同代码版本平均**
                 "commits": len({r["meta"].get("commit") for r in items}),
             }
@@ -116,7 +119,8 @@ def summarize(rows: list[dict]) -> list[dict]:
 def to_markdown(table: list[dict]) -> str:
     if not table:
         return "_没有可汇总的行。_\n"
-    cols = list(table[0])
+    # ★ 下划线开头的是**内部字段**,不进表（它是给行级检查用的中间量）
+    cols = [c for c in table[0] if not c.startswith("_")]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     lines += ["| " + " | ".join(str(row[c]) for c in cols) + " |" for row in table]
     return "\n".join(lines) + "\n"
@@ -143,7 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     if table:
         with (args.out_dir / "summary.csv").open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(table[0]))
+            writer = csv.DictWriter(
+                fh, fieldnames=[c for c in table[0] if not c.startswith("_")],
+                extrasaction="ignore")
             writer.writeheader()
             writer.writerows(table)
 
@@ -154,6 +160,41 @@ def main(argv: list[str] | None = None) -> int:
         for rid in dirty_runs[:10]:
             print(f"    {rid}", file=sys.stderr)
         print("    要包括它们就加 --allow-dirty —— 但那一批的数字不该进表。", file=sys.stderr)
+
+    # ★★ **行级检查:同一个数据集的那几条臂跨了几个 commit。**
+    #
+    #   实测（2026-09-22）:一次 `--limit 300 × 7 臂` 的后台跑,因为跑的时候
+    #   一直在提交,**七条臂各在一个 commit 上**（5 个不同 commit）。
+    #   而每一格单独看都是 `commits=1` —— **表上完全看不出来**。
+    #
+    #   ★ 比较的意义在于「只差被测变量」。一个数据集的几条臂跑在不同代码版本上,
+    #     差的就是不止一个变量了,而**这一行看起来和受控比较一模一样**。
+    per_dataset: dict[str, dict[str, set]] = {}
+    for row in table:
+        d = per_dataset.setdefault(row["dataset"], {})
+        for arm, cs in row.get("_arm_commits", {}).items():
+            d.setdefault(arm, set()).update(cs)
+    # ★★ 判据是「**这几条臂之间**一共有几个 commit」,不是「某一条臂内部有几个」。
+    #
+    #   第一版写成了后者（只留下 `len(c) > 1` 的臂），于是**它一条都没报** ——
+    #   因为这次每一格内部都只有一个 commit,跨度全在**臂与臂之间**。
+    #   **一个把判据写反的检查,和没有这个检查在输出上完全一样。**
+    cross = {
+        d: {a: sorted(c) for a, c in arms.items()}
+        for d, arms in per_dataset.items()
+        if len({x for cs in arms.values() for x in cs}) > 1
+    }
+    if cross:
+        print("\n" + "!" * 68, file=sys.stderr)
+        print("★ 有的数据集**几条臂跑在不同 commit 上** —— 那不是受控比较:", file=sys.stderr)
+        for d, arms in cross.items():
+            allc = sorted({c for cs in arms.values() for c in cs})
+            print(f"    {d}: 跨 {len(allc)} 个 commit", file=sys.stderr)
+            for a, cs in sorted(arms.items()):
+                print(f"        {a:22} {', '.join(x[:8] for x in cs)}", file=sys.stderr)
+        print("    → 要么在一个 commit 上重跑,要么在表里写明这一行不是受控比较",
+              file=sys.stderr)
+        print("!" * 68 + "\n", file=sys.stderr)
 
     mixed = [t for t in table if t.get("commits", 1) > 1]
     if mixed:

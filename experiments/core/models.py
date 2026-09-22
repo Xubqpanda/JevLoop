@@ -56,6 +56,17 @@ class ModelReply:
     # 这一轮的思维链原文。**下一轮要原样带回去**,见 `Message.reasoning_content`
     reasoning_content: str | None = None
     tool_calls: tuple[dict[str, Any], ...] = ()
+    #: ★★ **服务端说它实际用哪个版本。** OpenAI 兼容的响应里就有这个字段。
+    #:
+    #: 为什么不是我们请求的那个:`--model deepseek-chat` 是**别名**,
+    #: 而别名会动。实测 2026-09-22:同一个 `direct`、同样 300 题,
+    #: 几小时前 65.3%、之后 97.0%,中间只改过 loader ——
+    #: **而日志区分不出「模型换了」和「代码换了」,因为记的是 `unpinned`。**
+    #:
+    #: 这正是我们已经给判定模型写过的那条注释
+    #: （`deciding.py::PINNED_JEV_MODEL`）:alias 会在你这边什么都没改的情况下换掉答案。
+    #: **我们把判定模型钉住了,把生成模型留成了别名。**
+    reported_model: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -279,6 +290,13 @@ class OpenAICompatModel:
         # **不假装知道 TTFT** —— 想拆开就得走 SSE，那是另一件事。
         usage = payload.get("usage") or {}
         self.last_usage_reported = bool(usage)
+
+        # ★ 把服务端实际用的版本记下来,**并覆盖掉 `unpinned`** ——
+        #   记的是事实,不是我们请求的别名。第一次拿到就定住,
+        #   之后若变了会由 runner 报警（同一批跑里换模型是必须知道的事）。
+        served = str(payload.get("model") or "")
+        if served and self.model_version in ("", "unpinned"):
+            self.model_version = served
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
 
@@ -296,6 +314,7 @@ class OpenAICompatModel:
             handshake_ms=0.0,
             ttft_ms=0.0,
             after_ttft_ms=elapsed,
+            reported_model=served,
             raw=payload,
         )
 

@@ -141,6 +141,17 @@ def run_cell(
         results: list[Result] = []
         log.progress(0, len(tasks))
 
+        # ★★ **跑到一半树变了要说出来。**
+        #
+        #   实测（2026-09-22）:一次 `--limit 300 × 7 臂` 的后台跑跨了 **5 个 commit** ——
+        #   因为我在它跑的时候一直在提交。结果那一行的七条臂**各在一个代码版本上**,
+        #   而每一格单独看都是 `commits=1`,**表上完全看不出来**。
+        #
+        #   「跑之前干净」已经有警告了（见上面那段）;这一段管的是**跑的中途变了** ——
+        #   而那种情况更隐蔽:开始是干净的,所以第一道警告不会响。
+        start_commit = commit
+        mid_run_change: str | None = None
+
         for i, task in enumerate(tasks, start=1):
             # ★★ **在有状态的环境里,benchmark 必须知道「现在是哪个任务」。**
             #
@@ -165,6 +176,24 @@ def run_cell(
                 run_id=log.run_id, task=task, arm=cell.arm, tools=tools, executor=executor,
                 model=model, max_steps=max_steps, temperature=temperature, max_tokens=max_tokens,
             )
+
+            # 每题查一次「树还是不是那个」。★ 用 `repo_commit` 而不是逐文件 stat ——
+            #   它读的是 git 的状态,和我们开头那次判据**同一个**,不会两套口径。
+            if mid_run_change is None and i % 10 == 1:
+                now_commit, now_dirty = repo_commit(EXPERIMENTS_DIR.parent)
+                if now_dirty or now_commit != start_commit:
+                    mid_run_change = (
+                        f"第 {i} 题时工作区已经不是开始时那个了"
+                        f"（开始 {start_commit[:8]} 干净,现在 {now_commit[:8]}"
+                        f"{' 脏' if now_dirty else ''}）"
+                    )
+                    print(
+                        "\n" + "!" * 68 + "\n"
+                        f"⚠️  {mid_run_change}\n"
+                        "    → 这一批的**不同题跑在不同代码版本上**,不能当受控比较。\n"
+                        "      跑完之前不要改仓库。\n" + "!" * 68 + "\n",
+                        file=sys.stderr,
+                    )
 
             agent = make_agent(task, tools)
             if getattr(agent, "needs_success_signal", False):
@@ -288,6 +317,9 @@ def run_cell(
                 }),
             }
         )
+        # ★ 中途变过就记进 `exit.json` 的 `stop_reason` —— 归档之后那是唯一线索。
+        if mid_run_change:
+            log.stop(f"★ 这一批跨了多个代码版本：{mid_run_change}")
         return results
 
 
