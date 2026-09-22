@@ -28,7 +28,10 @@ from experiments.core.types import Task, Tool
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
 from experiments.baseline import act as act_baseline  # noqa: F401
 from experiments.baseline import direct as direct_baseline  # noqa: F401
+from experiments.baseline import plan_then_execute as pte_baseline  # noqa: F401
 from experiments.baseline import react as react_baseline  # noqa: F401
+from experiments.baseline import reflexion as reflexion_baseline  # noqa: F401
+from experiments.baseline import rewoo as rewoo_baseline  # noqa: F401
 
 
 def offline_demo_model() -> CallableModel:
@@ -58,6 +61,27 @@ def offline_demo_model() -> CallableModel:
 
         wants_react = "Action:" in text and "finish[" in text
         if not wants_react:
+            # ★ 顺序有意义:Solver 的 `# Evidence` 块里也含 `#E1 =`,
+            #   先判蓝图会把 Solver 误认成 Planner —— 实测踩过。
+            #
+            # ReWOO 的 Solver:证据已在 prompt 里,直接给答案
+            if "# Evidence" in text:
+                return toy.CAPITALS[country]
+            # ReWOO 的 Planner:要的是蓝图
+            if "Devise a plan" in text:
+                return (
+                    f"Plan: Look up the capital of {country}.\n"
+                    f"#E1 = lookup_capital[{country}]\n"
+                    f"Plan: Read the capital off the evidence.\n"
+                    f"#E2 = LLM[What is #E1?]"
+                )
+            # plan-then-execute 的 Planner:编号列表
+            if "Break the task into" in text:
+                return f"1. Look up the capital of {country}.\n2. Report it."
+            # plan-then-execute 的执行段（它带 `# Plan`,且带 Action 格式——
+            # 一般走不到这里,留着是为了完整）
+            if "# Plan" in text:
+                return toy.CAPITALS[country]
             # direct 那一臂:直接给答案
             return toy.CAPITALS[country] if country in known_half else "I don't know."
 
@@ -95,6 +119,10 @@ _BUILTIN_ARMS = {
     "direct-oracle": lambda: direct_baseline.Direct(with_evidence=True),
     "act": act_baseline.Act,
     "react": react_baseline.ReAct,
+    "rewoo": rewoo_baseline.ReWOO,
+    "plan-then-execute": pte_baseline.PlanThenExecute,
+    "reflexion": reflexion_baseline.Reflexion,
+    "reflexion-selfeval": lambda: reflexion_baseline.Reflexion(uses_success_signal=False),
 }
 
 

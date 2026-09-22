@@ -19,7 +19,10 @@ if str(REPO) not in sys.path:
 from experiments.baseline import common  # noqa: E402
 from experiments.baseline.act import Act  # noqa: E402
 from experiments.baseline.direct import Direct  # noqa: E402
+from experiments.baseline.plan_then_execute import PlanThenExecute  # noqa: E402
 from experiments.baseline.react import ReAct  # noqa: E402
+from experiments.baseline.reflexion import Reflexion  # noqa: E402
+from experiments.baseline.rewoo import ReWOO  # noqa: E402
 from experiments.benchmark.toy import ToyCapitals  # noqa: E402
 from experiments.core.agent import AgentOutcome, Session  # noqa: E402
 from experiments.core.models import ScriptedModel  # noqa: E402
@@ -256,3 +259,223 @@ def _run(tmp_path: Path, agent, model, *, max_steps: int = 20) -> AgentOutcome:
     session = _session(tmp_path, arm=agent.name, max_steps=max_steps)
     session.model = model
     return agent.solve(session)
+
+
+# ═══════════════════════════════════════════════════════════
+# 计划解析 —— ReWOO 与 plan-then-execute 共用
+# ═══════════════════════════════════════════════════════════
+
+
+def test_parses_rewoo_blueprint_with_evidence_variables() -> None:
+    items = common.parse_plan(
+        "Plan: Find the author.\n#E1 = lookup_capital[Peru]\nPlan: Answer it.\n#E2 = LLM[#E1]",
+        TOOL_NAMES,
+    )
+    assert len(items) == 2
+    assert items[0].evidence_var == "#E1" and items[0].tool == "lookup_capital"
+    assert items[0].known is True
+    # ★ `LLM` 是原文的伪工具,我们没有 —— 名字要**保留**,不能抹掉塞进 text
+    assert items[1].tool == "LLM" and items[1].known is False
+
+
+def test_parses_numbered_and_bulleted_plans() -> None:
+    assert len(common.parse_plan("1. first\n2. second", TOOL_NAMES)) == 2
+    assert len(common.parse_plan("- first\n- second", TOOL_NAMES)) == 2
+
+
+def test_unparsable_plan_is_empty_not_one_big_step() -> None:
+    """★ 把整段当成一步,会让一次解析失败看起来像一个很长的计划 —— 失败模式就此消失。"""
+    assert common.parse_plan("嗯……我想想", TOOL_NAMES) == []
+
+
+def test_evidence_substitution_reports_missing_variables() -> None:
+    """★ ReWOO 是**盲规划**,可以引用一个根本不存在的 `#E`。
+
+    原样把 `#E9` 传给工具会变成一次莫名其妙的检索失败,而真正的原因是计划错了。
+    所以第二个返回值（没解析出来的变量名）必须被用上。
+    """
+    text, missing = common.substitute_evidence("answer is #E1 and #E9", {"#E1": "Lima"})
+    assert text == "answer is Lima and #E9"
+    assert missing == ["#E9"]
+
+
+# ═══════════════════════════════════════════════════════════
+# ReWOO —— Plan / Work / Solve
+# ═══════════════════════════════════════════════════════════
+
+
+def test_rewoo_plans_once_then_solves(tmp_path: Path) -> None:
+    """★ 它的本质:**一次规划到底,中途不看观察。** 两次调用,不是每步一次。"""
+    model = ScriptedModel([
+        "Plan: Look it up.\n#E1 = lookup_capital[Peru]",
+        "Lima",
+    ])
+    session = _session(tmp_path, arm="rewoo")
+    session.model = model
+    outcome = ReWOO().solve(session)
+
+    assert outcome.final_answer == "Lima"
+    assert len(session.model_calls) == 2, "Planner 一次 + Solver 一次"
+    assert [s.action.kind for s in outcome.steps if s.action.kind == "tool"] == ["tool"]
+
+
+def test_rewoo_pseudo_tool_is_not_a_failure(tmp_path: Path) -> None:
+    """★★ 回归:早先 `LLM[...]` 被记成 unresolved → `error` 被置上 →
+    **runner 一看到 error 就把答案判否,一个正确答案就这么丢了**（实测）。
+
+    `LLM[...]` 是原文的伪工具,而且我们在 prompt 里明确承诺过它可用 ——
+    它是 Solver 的活,不是失败。
+    """
+    model = ScriptedModel([
+        "Plan: Look it up.\n#E1 = lookup_capital[Peru]\nPlan: Read it.\n#E2 = LLM[#E1]",
+        "Lima",
+    ])
+    session = _session(tmp_path, arm="rewoo")
+    session.model = model
+    outcome = ReWOO().solve(session)
+
+    assert outcome.final_answer == "Lima"
+    assert outcome.error is None, "伪工具不该让整次运行变成 error"
+    skipped = [s for s in outcome.steps if "skipped" in s.observation]
+    assert len(skipped) == 1, "跳过的步骤要留在轨迹里,失败分类从那里抓"
+
+
+def test_rewoo_unknown_tool_is_recorded_but_does_not_discard_the_answer(tmp_path: Path) -> None:
+    """不认识的工具名 = 计划错了 —— **记下来,但别因此丢掉 Solver 给出的答案**。"""
+    model = ScriptedModel([
+        "Plan: Use a tool we do not have.\n#E1 = imaginary_tool[x]",
+        "Lima",
+    ])
+    session = _session(tmp_path, arm="rewoo")
+    session.model = model
+    outcome = ReWOO().solve(session)
+    assert outcome.final_answer == "Lima"
+    assert outcome.error is None
+    assert any("imaginary_tool" in s.observation for s in outcome.steps)
+
+
+def test_rewoo_unparsable_plan_escalates(tmp_path: Path) -> None:
+    """计划都解析不出来 → **弃答**。不许把整段当计划硬跑。"""
+    session = _session(tmp_path, arm="rewoo")
+    session.model = ScriptedModel(["嗯……我不想做这个"])
+    outcome = ReWOO().solve(session)
+    assert outcome.escalated and outcome.final_answer is None
+    assert "解析" in (outcome.error or "")
+
+
+# ═══════════════════════════════════════════════════════════
+# plan-then-execute —— 执行段**看得到观察**
+# ═══════════════════════════════════════════════════════════
+
+
+def test_plan_then_execute_shows_the_plan_to_the_executor(tmp_path: Path) -> None:
+    """★ 与 ReWOO 的关键差别:执行段是**有观察的循环**,而且计划进了 prompt。"""
+    model = ScriptedModel([
+        "1. Look up the capital.\n2. Report it.",
+        "Action: lookup_capital[Peru]",
+        "Action: finish[Lima]",
+    ])
+    session = _session(tmp_path, arm="plan-then-execute")
+    session.model = model
+    outcome = PlanThenExecute().solve(session)
+
+    assert outcome.final_answer == "Lima"
+    assert len(outcome.steps) >= 3  # 计划 + 工具 + 收尾
+    # 计划确实进了执行段的 prompt
+    exec_prompt = session.prompts[1]["messages"][-1]["content"]
+    assert "# Plan" in exec_prompt and "Look up the capital" in exec_prompt
+
+
+def test_plan_then_execute_still_executes_when_the_plan_is_unparsable(tmp_path: Path) -> None:
+    """解析不出计划 → **仍然执行**（带空计划）。
+
+    理由:它的执行段本身是有观察的循环,有能力自己把任务做掉 ——
+    这一点和 ReWOO 不同（ReWOO 的执行段是盲的,没计划就真的没得跑）。
+    """
+    model = ScriptedModel(["嗯……", "Action: lookup_capital[Peru]", "Action: finish[Lima]"])
+    session = _session(tmp_path, arm="plan-then-execute")
+    session.model = model
+    outcome = PlanThenExecute().solve(session)
+    assert outcome.final_answer == "Lima"
+
+
+# ═══════════════════════════════════════════════════════════
+# Reflexion —— 臂名把 Evaluator 的选择写死
+# ═══════════════════════════════════════════════════════════
+
+
+def test_reflexion_retries_with_its_own_reflection(tmp_path: Path) -> None:
+    model = ScriptedModel([
+        "Action: finish[Wrong]",       # trial 1：答错
+        "我查错了地方，下次直接查工具。",  # 反思
+        "Action: finish[Lima]",        # trial 2：答对
+    ])
+    session = _session(tmp_path, arm="reflexion")
+    session.model = model
+    session.check_answer = lambda answer: answer == "Lima"
+
+    outcome = Reflexion(max_trials=3).solve(session)
+
+    assert outcome.final_answer == "Lima" and not outcome.escalated
+    # ★ 反思是这个方法的**产物**,必须进轨迹 —— 审稿人最会问的就是它反思出了什么
+    assert any(s.action.kind == "ask" and "reflection" in s.action.content for s in outcome.steps)
+    # 第二次 trial 的 prompt 里带着上次的反思
+    second_trial = session.prompts[-1]["messages"][-1]["content"]
+    assert "# Memory" in second_trial
+
+
+def test_reflexion_exhausting_trials_discards_the_last_answer(tmp_path: Path) -> None:
+    """★ 三次都没过 Evaluator → **弃答,并把最后一次的答案丢掉**。
+
+    留着一个「我们自己判定它没答对」的答案当结果,是在假装成功。
+    """
+    model = ScriptedModel(["Action: finish[Wrong]"] * 1 + ["反思"] * 1 + ["Action: finish[Wrong]"] * 1
+                          + ["反思"] * 1 + ["Action: finish[Wrong]"] * 1)
+    session = _session(tmp_path, arm="reflexion")
+    session.model = model
+    session.check_answer = lambda answer: False
+
+    outcome = Reflexion(max_trials=3).solve(session)
+    assert outcome.escalated and outcome.final_answer is None
+    assert "3 次尝试" in (outcome.error or "")
+
+
+def test_reflexion_arm_name_encodes_which_evaluator_was_used() -> None:
+    """★★ **一个吃了金标信号的臂,不能和没吃的同列一张表。**
+    表里的主键就是臂名,所以臂名必须把 Evaluator 的选择写死。
+    """
+    assert Reflexion(uses_success_signal=True).name == "reflexion"
+    assert Reflexion(uses_success_signal=False).name == "reflexion-selfeval"
+    assert Reflexion().needs_success_signal is True
+    assert Reflexion(uses_success_signal=False).needs_success_signal is False
+
+
+def test_reflexion_refuses_to_silently_fall_back_to_self_evaluation(tmp_path: Path) -> None:
+    """★ 声明要吃信号、benchmark 却没实现 `check()` → **抛,不许静默退回自评**。
+
+    静默退回会让两个臂在同一张表里混着两种强度的 Evaluator,
+    而表上看不出来 —— 那比直接报错糟得多。
+    """
+    session = _session(tmp_path, arm="reflexion")
+    session.model = ScriptedModel(["Action: finish[Lima]"])
+    session.check_answer = None
+    with pytest.raises(RuntimeError, match="check\\(\\)"):
+        Reflexion(uses_success_signal=True).solve(session)
+
+
+def test_runner_only_wires_the_signal_for_arms_that_ask(tmp_path: Path) -> None:
+    """★ 接缝是显式的:没声明的臂**拿不到** `check_answer`,而不是靠自觉不读。"""
+    seen: dict[str, object] = {}
+
+    class Snoop:
+        name = "snoop"
+
+        def solve(self, session: Session) -> AgentOutcome:  # type: ignore[override]
+            seen["signal"] = session.check_answer
+            return AgentOutcome(final_answer="x")
+
+    run_cell(
+        bench=ToyCapitals(), make_agent=lambda task, tools: Snoop(), model=ScriptedModel(["x"]),
+        cell=Cell(dataset="toy", arm="snoop", seed=0), log_root=tmp_path,
+    )
+    assert seen["signal"] is None, "没声明 needs_success_signal 的臂不该拿到成败信号"

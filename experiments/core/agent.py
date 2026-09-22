@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from experiments.core.models import Message, ModelClient, ModelReply
 from experiments.core.spec import DecisionRecord, UsageRecord
@@ -50,6 +50,11 @@ class Agent(Protocol):
     """
 
     name: str
+
+    # ★ 声明「这个臂要吃环境给的成败信号」。默认 False。
+    #   runner 只在它为 True 时才把 `session.check_answer` 接上 ——
+    #   于是「谁偷看了答案」这件事在代码里是显式的,而不是靠自觉。
+    needs_success_signal: bool = False
 
     def solve(self, session: "Session") -> AgentOutcome:
         ...
@@ -90,6 +95,16 @@ class Session:
         #   两个臂的差别如果只能靠读代码确认,那「baseline 含义一致」就没有证据。
         #   而 ReAct 每步重发整个 scratchpad,所以这一份会长得很快 —— 它是 log,不进 git。
         self.prompts: list[dict] = []
+
+        # ★ 成功信号 —— **只有声明需要它的臂才拿得到。**
+        #
+        #   Reflexion 原文的 Evaluator 用的是环境的成败信号（ALFWorld 那种）,
+        #   而在这里「成败」只有 benchmark 知道。所以它必须是一条**显式的接缝**,
+        #   不能靠 agent 偷看 `task.gold`（那就成了每个臂都能作弊）。
+        #
+        #   谁用了它,谁的名字里就写清楚（`reflexion` vs `reflexion-selfeval`）——
+        #   **一个吃了金标信号的臂,读数时不能和没吃的一样。**
+        self.check_answer: "Callable[[str], bool] | None" = None
         self._retry_ms = 0.0
         self._batch = 0
 

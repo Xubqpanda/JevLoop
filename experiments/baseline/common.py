@@ -64,6 +64,17 @@ def render_tools(tools: Sequence[Tool]) -> str:
     return "\n".join(lines)
 
 
+def first_arg_name(tool: Tool) -> str | None:
+    """工具的第一个位置参数名。
+
+    ★ `tool[arg]` 这种写法只有一个位置参数,所以**名字必须按 `parameters` 里的
+    定义顺序取** —— 这就是为什么 loader 写工具定义时键的顺序是有意义的。
+    取不到就返回 None,让调用方自己决定（而不是猜一个 `"input"`）。
+    """
+    props = tool.parameters.get("properties", {}) or {}
+    return next(iter(props), None)
+
+
 def render_exemplars(exemplars: str) -> str:
     return f"\n{exemplars.strip()}\n" if exemplars.strip() else ""
 
@@ -276,7 +287,9 @@ class LoopConfig:
     exemplars: str = ""
     stop: tuple[str, ...] = REACT_STOP
     max_parse_retries: int = 2
-    answer_is_final: bool = True
+    # ★ 插在 Tools 之前的一段固定文本。`plan-then-execute` 的执行段就是
+    #   「把计划塞进 preamble,然后跑同一个 run_loop」—— 一处也不用重写。
+    preamble: str = ""
 
 
 def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
@@ -288,8 +301,7 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
     """
     tools = session.tools
     tool_names = [t.name for t in tools]
-    first_arg = {t.name: next(iter(t.parameters.get("properties", {}) or {"input": None}))
-                 for t in tools}
+    first_arg = {t.name: first_arg_name(t) for t in tools}
     steps: list[Step] = []
     retries = 0
 
@@ -351,6 +363,7 @@ def build_prompt(session: Session, cfg: LoopConfig, steps: Sequence[Step]) -> st
     scratchpad = render_history(steps, with_thought=cfg.with_thought)
     parts = [
         cfg.instruction,
+        cfg.preamble,
         "",
         "# Tools",
         render_tools(session.tools),
@@ -388,8 +401,132 @@ FORMAT_WITHOUT_THOUGHT = (
 )
 
 
+# ═══════════════════════════════════════════════════════════
+# 五、计划 —— ReWOO 与 plan-then-execute 共用
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class PlanItem:
+    """计划里的一步。
+
+    `evidence_var` 是 ReWOO 的 `#E1` 那种变量名;**只有 ReWOO 会填它**。
+    `plan-then-execute` 只用 `text` —— 两条臂的区别之一就在这里:
+    **ReWOO 的计划里显式声明了「这一步的产出叫什么」,于是后面的步骤可以引用它;
+    plan-then-execute 只是把子任务排个序。**
+    """
+
+    text: str
+    evidence_var: str = ""
+    tool: str = ""
+    argument: str = ""
+    # 工具名不在 `tool_names` 里 → False。**名字保留,不塞进 text** ——
+    # ReWOO 的蓝图里本来就有 `LLM[...]` 这种我们没提供的伪工具,
+    # 把名字抹掉会让「它计划了一个我们没有的工具」这件事查不出来。
+    known: bool = True
+
+
+_NUMBERED = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(?P<body>.+?)\s*$")
+_PLAN_LINE = re.compile(r"^\s*Plan\s*\d*\s*:\s*(?P<body>.+?)\s*$", re.I)
+_EVIDENCE = re.compile(
+    r"^\s*(?P<var>#E\d*)\s*=\s*(?P<tool>[A-Za-z_][\w-]*)\s*\[(?P<arg>.*)\]\s*$"
+)
+
+
+def parse_plan(text: str, tool_names: Sequence[str]) -> list[PlanItem]:
+    """把 Planner 的输出解析成步骤列表。
+
+    认三种写法,足够覆盖 ReWOO 原文和常见的 plan-then-execute 提示:
+    1. ReWOO 原文:`Plan: <描述>` + `#E1 = Tool[input]`
+    2. 编号列表:`1. <描述>`
+    3. 项目符号:`- <描述>`
+
+    ★ **认不出来就返回空列表,不返回「把整段当成一步」。** 后者会让一个
+    解析失败看起来像一次很长的单个计划,而失败模式就此消失。
+    """
+    items: list[PlanItem] = []
+    pending_text = ""
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+
+        ev = _EVIDENCE.match(line)
+        if ev:
+            items.append(
+                PlanItem(
+                    text=pending_text or f"{ev.group('tool')}[{ev.group('arg')}]",
+                    evidence_var=ev.group("var"),
+                    tool=ev.group("tool"),
+                    argument=ev.group("arg").strip(),
+                )
+            )
+            pending_text = ""
+            continue
+
+        plan = _PLAN_LINE.match(line)
+        if plan:
+            pending_text = _strip_plan_prefix(plan.group("body"))
+            continue
+
+        num = _NUMBERED.match(line)
+        if num:
+            items.append(PlanItem(text=_strip_plan_prefix(num.group("body"))))
+            pending_text = ""
+            continue
+
+    if pending_text:
+        # `Plan:` 后面没有跟 `#E = ...` —— 还没成一步,补上
+        items.append(PlanItem(text=pending_text))
+
+    # 工具名不在我们的工具表里 —— **标出来,但不改内容**。
+    # 调用方（ReWOO 的 Worker）自己决定:是报错,还是当成「这一步该由 Solver 做」。
+    return [
+        item if not item.tool or item.tool in tool_names
+        else PlanItem(text=item.text, evidence_var=item.evidence_var, tool=item.tool,
+                      argument=item.argument, known=False)
+        for item in items
+    ]
+
+
+def _strip_plan_prefix(body: str) -> str:
+    return re.sub(r"^\s*Plan\s*\d*\s*:\s*", "", body, flags=re.I).strip()
+
+
+def render_plan(items: Sequence[PlanItem]) -> str:
+    lines = []
+    for i, item in enumerate(items, start=1):
+        prefix = f"{item.evidence_var} = " if item.evidence_var else ""
+        lines.append(f"{i}. {prefix}{item.text}")
+    return "\n".join(lines)
+
+
+_UNRESOLVED = re.compile(r"#E\d*")
+
+
+def substitute_evidence(text: str, evidence: dict[str, str]) -> tuple[str, list[str]]:
+    """把 `#E1` 换成上一步的真实观察。**返回 (结果, 没解析出来的变量名)。**
+
+    ★ 返回第二个值是关键:ReWOO 的计划是**盲规划**的,它可以引用一个
+    根本不存在的 `#E`。**把 `#E1` 原样传给工具,会变成一次莫名其妙的检索失败** ——
+    而真正的原因是「计划引用了一个不存在的变量」。
+    这一类必须被看见,它是 ReWOO 这一族的固有失败模式。
+    """
+    missing: list[str] = []
+
+    def repl(m: re.Match) -> str:
+        name = m.group(0)
+        if name in evidence:
+            return evidence[name]
+        missing.append(name)
+        return name
+
+    return _UNRESOLVED.sub(repl, text), missing
+
+
 __all__ = [
-    "LoopConfig", "ParsedStep", "parse_step", "extract_answer",
-    "render_tools", "render_history", "render_step", "build_prompt", "run_loop",
-    "REACT_STOP",
+    "LoopConfig", "ParsedStep", "PlanItem", "parse_step", "parse_plan", "render_plan",
+    "substitute_evidence", "extract_answer", "render_tools", "render_exemplars",
+    "render_history", "first_arg_name",
+    "render_step", "build_prompt", "run_loop", "REACT_STOP",
 ]

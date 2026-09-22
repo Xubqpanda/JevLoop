@@ -52,6 +52,18 @@ class Benchmark(Protocol):
         """
         ...
 
+    def check(self, task: Task, answer: str) -> bool:
+        """**可选。** 只回答「这个答案对不对」,不产出完整 Judgment。
+
+        为什么单独有这么一条:Reflexion 的 Evaluator 要的是**环境给的成败信号**
+        （原文就是这么做的）。让 agent 去调完整的 `score()` 会把它和评分管线绑死,
+        而它只需要一个布尔值。
+
+        ★ **实现了它,就等于允许某些臂吃到金标信号。** 谁吃了,谁的名字里必须写清楚
+        （见 `baseline/reflexion.py`）—— 一个吃了答案的臂不能和没吃的同列一张表。
+        """
+        ...
+
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         """判对错。
 

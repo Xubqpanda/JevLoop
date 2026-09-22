@@ -75,6 +75,10 @@ class ToyCapitals:
     def tool_impls(self) -> dict[str, Callable[..., str]]:
         return {"lookup_capital": lambda country: CAPITALS.get(str(country), "(not found)")}
 
+    def check(self, task: Task, answer: str) -> bool:
+        """只回答对不对。Reflexion 的 Evaluator 要的就是这一个布尔值。"""
+        return _normalize(answer) == _normalize(str(task.gold))
+
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         got = _normalize(trajectory.final_answer or "")
         want = _normalize(str(task.gold))

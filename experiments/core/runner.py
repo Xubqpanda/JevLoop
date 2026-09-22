@@ -118,9 +118,14 @@ def run_cell(
                 model=model, max_steps=max_steps, temperature=temperature, max_tokens=max_tokens,
             )
 
+            agent = make_agent(task, tools)
+            if getattr(agent, "needs_success_signal", False):
+                # ★ 只有声明要的臂才接得上 —— 见 core/agent.py 的说明
+                session.check_answer = _make_checker(bench, task)
+
             t0 = time.perf_counter()
             try:
-                outcome: AgentOutcome = make_agent(task, tools).solve(session)
+                outcome: AgentOutcome = agent.solve(session)
             except Exception as exc:  # noqa: BLE001 —— 一题挂掉不许拖垮整轮
                 # ★ 记下异常类型和原文。**不吞**:trace 里留着,失败率进表。
                 outcome = AgentOutcome(error=f"{type(exc).__name__}: {exc}")
@@ -192,6 +197,14 @@ def run_cell(
             }
         )
         return results
+
+
+def _make_checker(bench: Benchmark, task: Task):
+    """把 benchmark 的 `check()` 包成一个布尔判据。**没实现就返回 None。**"""
+    hook = getattr(bench, "check", None)
+    if hook is None:
+        return None
+    return lambda answer: bool(hook(task, answer))
 
 
 def _safe_score(bench: Benchmark, task: Task, trajectory: Trajectory, outcome: AgentOutcome) -> Judgment:
