@@ -20,3 +20,11 @@ experiments/dataset/*
 !experiments/dataset/.gitkeep
 experiments/log/*
 !experiments/log/.gitkeep
+
+# Python：字节码缓存不进仓库。
+# ★ 不只是体积问题 —— .pyc 里**存着注释和 docstring 的原文**，
+#   所以「源码里删干净了」和「仓库里没有」是两件事。
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/

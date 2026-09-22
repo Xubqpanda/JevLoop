@@ -1,0 +1,39 @@
+# 这个文件只管 experiments/ 的 Python 侧,**不是 JevLoop 的包定义**。
+# JevLoop 本身是 TS 包,包定义在 ../package.json。两者互不依赖。
+#
+# 依赖刻意压到最低:`core/` 只用标准库,所以「装不上第三方包」
+# 不会变成别人跑不起来接口自检的理由。数据集和评分器的重依赖按需装,
+# 放在下面的 optional-dependencies 里。
+
+[project]
+name = "jevloop-experiments"
+version = "0.0.0"
+description = "Evaluation harness for JevLoop: benchmark x agent -> log -> result"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# 真跑的时候按数据集装,别一次全装
+datasets = ["datasets", "huggingface_hub", "pyarrow"]
+plots = ["matplotlib"]
+# 各数据集官方评分器的安装方式各不相同,按需装 —— 别一次全装,
+# 它们的依赖会互相打架。装了哪个就写进对应的 loader 文件头。
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["experiments/tests"]
+python_files = ["test_*.py"]
+
+# ⚠️ ruff **还没装**,所以下面这段现在不生效。
+# 七个人的 Python 代码目前没有格式门禁 —— 这是个已知缺口,见 docs/PLAN-*.md §0.8。
+# 定了要装,就先把 `ruff check` 和 `ruff format --check` 跑成绿的,再加进 PROTOCOL 的门禁。
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # 行长由 formatter 管
+    "B008",   # 允许在参数默认值里调用 —— runner 的参数就是这样用的
+]
