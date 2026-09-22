@@ -158,9 +158,40 @@ def _noul_question(node: str, ask: str, *, threshold: float,
 
 
 def _choice_question(node: str, ask: str, options: list[str],
-                     *, threshold: float) -> Question:
+                     *, threshold: float,
+                     criteria: dict[str, str] | None = None) -> Question:
+    """★★★ **候选必须带说明。**
+
+    实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:候选只传了**工具名**,
+    描述是空字符串 —— 于是判定模型只能**光看名字猜**。
+    结果 **82/100 是 `wrong_tool`**,而置信度经常是 **1.000**(判得很果断,只是错了)。
+
+    ★ 这正是 §8.2 那个形状:**帧里没有的,它判不出来**。
+      而且它和 `canDeliver` 那次一样 —— **看起来像判定错,其实是喂少了**。
+
+    `vocab.ts` 对 `choice` 的 `criteria` 的定义就是「键是选项本身,
+    值是**什么条件下该选它**」—— 而 `DECISION.md` 的原文里,
+    每个选项后面都跟着一句说明（`read_file — 需要文件内容才能继续…`）。
+    我们只传了键,没传值。
+    """
     return Question(node=node, kind="choice", ask=ask, options=tuple(options),
-                    threshold=threshold)
+                    threshold=threshold, criteria=dict(criteria or {}))
+
+
+#: ★★★ `pickTool` 候选里的**终止项** —— `DECISION.md` 的 `pick_tool` 原文里就有它:
+#:
+#:     - done — 已有足够证据回答任务,工具循环可以结束了
+#:
+#: **实测没实现它的代价**(2026-09-22,`bfcl-v3-multiple × react-typed`):
+#: 判定**选对了工具**(82 → 25 条 `wrong_tool` 里,剩下的都是这一类),
+#: 但调完之后下一步 `needsTool` 仍说「还要动作」——
+#: 而候选里**已经把做过的删掉了**(§8.4),于是**只剩错的工具可选**。
+#: 结果 `sorted(called) != sorted(gold)` → 判 `wrong_tool`。
+#:
+#: ⇒ **把做过的删掉,就必须同时给一个「不做了」的出口。**
+#:   否则候选集在第一次调对之后**只剩错的选项** —— 这不是模型选错,是我们没给对的选项。
+#:   这是我实现 §8.4 时漏掉的另一半。
+DONE = "__done__"
 
 
 def candidates(session: Session, ctx: AgentCtx) -> list[str]:
@@ -169,12 +200,18 @@ def candidates(session: Session, ctx: AgentCtx) -> list[str]:
     ★ 做过的动作**在这里删掉,不是在帧里提示一句** —— 提示是可以被无视的,
     而候选列表是模型唯一能选的东西。
 
+    ★★ **删掉之后必须补一个 `DONE`** —— 见上面那段。少了它,
+      第一次调对之后候选里**只剩错的选项**,而模型没有别的可挑。
+
     ⚠️ 注意这只是**工具级**的去重。同一个工具做两次常常是合理的
     （读两个不同的文件）,所以删的是**已经做过的那一次动作**,
     而 `pickInput` 会在参数那一层再算一次候选。
     """
     done = {r.tool for r in ctx.records()}
-    return [t.name for t in session.tools if t.name not in done]
+    left = [t.name for t in session.tools if t.name not in done]
+    # ★ 只要**已经做过什么**,就给出口。一次都没做时不给 ——
+    #   那时「不做了」应当由 `needsTool` 回答,而它的帧正是为那个问题准备的。
+    return (left + [DONE]) if done else left
 
 
 @dataclass
@@ -245,12 +282,28 @@ class TypedController:
             picked_choice = options[0]
             tool = next(t for t in view.tools if t.name == picked_choice)
         else:
+            # ★★ 候选**带描述** —— 光给名字等于让判定模型猜（见 `_choice_question`）。
+            #   `Task.tools` 里就有 description,而它此前**根本没进过问题**。
+            by_name = {t.name: t for t in view.tools}
             picked = self._ask(session, batch, ctx, view.step, "pickTool",
-                               _choice_question("pickTool", PICK_TOOL_ASK, options,
-                                                threshold=NODE_THRESHOLDS["pickTool"]))
+                               _choice_question(
+                                   "pickTool", PICK_TOOL_ASK, options,
+                                   threshold=NODE_THRESHOLDS["pickTool"],
+                                   criteria={
+                                       o: (by_name[o].description if o in by_name
+                                           else "there is enough evidence to answer; stop calling tools")
+                                       for o in options}))
             if picked is None:
                 return self._blocked(session, view, "pickTool")
             picked_choice = picked.choice
+            if picked_choice == DONE:
+                # ★ 判定模型说「够了」—— 去生成答案,不再调工具。
+                #   这条出口是 `DECISION.md` 里就有的（`done`）,不是我加的。
+                self.trace.append({"step": view.step, "node": "pickTool",
+                                   "answer": DONE, "top": picked.top(),
+                                   "provider": "typed"})
+                return self._generate(session, view, ctx,
+                                      why="pickTool 判了 done（证据够了）", batch=batch)
             tool = next((t for t in view.tools if t.name == picked_choice), None)
             if tool is None:
                 # 判定模型选了一个**不在候选里**的工具 —— 那是它的错,
@@ -517,6 +570,6 @@ def _wire(question: Question) -> dict:
     return wire
 
 
-__all__ = ["TypedController", "candidates", "NODE_THRESHOLDS",
+__all__ = ["TypedController", "candidates", "DONE", "NODE_THRESHOLDS",
            "NEEDS_TOOL_ASK", "NEEDS_TOOL_CRITERIA", "PICK_TOOL_ASK",
            "PICK_INPUT_ASK"]

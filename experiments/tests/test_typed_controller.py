@@ -299,8 +299,34 @@ def test_candidates_drop_what_was_already_done() -> None:
                             arguments={"country": "France"})
 
     run_loop(session, LoopConfig(name="spy", instruction="x", controller=Spy()))
+    from experiments.jloop.typed import DONE
+
     assert seen[0] == ["lookup_capital"]
-    assert seen[1] == [], "做过的动作必须从候选里消失"
+    assert "lookup_capital" not in seen[1], "做过的动作必须从候选里消失"
+    # ★★★ **但候选不能变空 —— 必须留一个出口。**
+    #
+    #   实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:把做过的删掉之后
+    #   候选**只剩错的工具**,而模型没有「不做了」可挑 → 调了第二个工具 →
+    #   `sorted(called) != sorted(gold)` → 判 `wrong_tool`。
+    #
+    #   `DECISION.md` 的 `pick_tool` 原文里就有 `done` 这一项 ——
+    #   我实现 §8.4 时只做了「删」,漏了「删完要给出口」这另一半。
+    assert seen[1] == [DONE], f"删完必须留出口,而不是留空:{seen[1]}"
+
+
+def test_candidates_do_not_offer_the_exit_before_anything_is_done() -> None:
+    """★ 反面:**一次都没做过时不给出口**。
+
+    「不做了」应当是 `needsTool` 回答的问题,而它的帧正是为那个问题准备的。
+    一上来就给 `done`,等于让判定模型有机会**跳过整个工具循环** ——
+    而那正是 `needsTool` 存在的意义。
+    """
+    from experiments.core.frame import ctx_from_steps
+    from experiments.jloop.typed import DONE
+
+    session = make_session()
+    ctx = ctx_from_steps("t", [])
+    assert DONE not in candidates(session, ctx), "还没做过任何事,不该有出口"
 
 
 def test_the_redo_violation_would_be_caught_if_a_caller_passed_a_stale_list() -> None:
