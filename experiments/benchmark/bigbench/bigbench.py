@@ -71,85 +71,21 @@ from typing import Iterator, Sequence
 
 import numpy as np
 
+# ★ 抽样与判分来自 ReWOO，**逐字**那一份住在 `benchmark/rewoo_port.py`
+#   （不止 BigBench 用它 —— HotpotQA / TriviaQA 也是那一套）。
+from experiments.benchmark.rewoo_port import (
+    REWOO_COMMIT,
+    REWOO_SEED,
+    REWOO_TARBALL,
+    first_token,
+    normalize_answer,
+    rewoo_draw,
+    token_f1,
+)
 from experiments.core.download import DATASET_DIR, DownloadSpec
 from experiments.core.types import Judgment, Task, Trajectory
 
-#: ReWOO 主干的 commit —— `DownloadSpec.revision` 用它,`main` 不算钉住。
-REWOO_COMMIT = "9cd0283043ff4be0c9d614fda2789d143ca6ffd1"
-REWOO_TARBALL = f"https://codeload.github.com/billxbf/ReWOO/tar.gz/{REWOO_COMMIT}"
-
-#: ReWOO `run_eval.py` 的 `--seed` 默认值。**这就是它那一批题。**
-REWOO_SEED = 2024
-
-
-def rewoo_draw(total: int, limit: int | None, seed: int) -> list[int]:
-    """复现 ReWOO 的 `df.sample(limit, random_state=seed)`。
-
-    ★ 实测和 pandas 逐位相同（见模块头）。**不依赖 pandas** —— 少一个重依赖,
-      而且「我们跑的是哪几条」这句话不随 pandas 版本变化。
-    """
-    if limit is None or limit >= total:
-        return list(range(total))
-    return [int(i) for i in np.random.RandomState(seed).permutation(total)[:limit]]
-
-
 # ── 判分：逐字抄 ReWOO 的 `Evaluator.py` ──────────────────────
-
-
-def normalize_answer(s: str) -> str:
-    """ReWOO `normalize_answer`，逐字。
-
-    ★★★ **顺序是有意义的,而且第一版我写反了。**
-
-    ReWOO 的顺序是 `white_space_fix(remove_articles(remove_punc(lower(s))))`
-    —— **先 lower,再去冠词**。而 `re.sub(r"\b(a|an|the)\b", ...)` 没有
-    `IGNORECASE`,所以去冠词必须在 lower **之后**做。
-
-    我先去了冠词再 lower,于是 `"The answer is Paris"` 里的 `The` **去不掉**
-    （大写 T 不匹配）,归一化结果是 `"the answer is paris"` 而不是
-    `"answer is paris"` —— **两条不同的字符串,于是同一批轨迹的 em 会不一样。**
-
-    ★ 抓到它的是 `test_our_scoring_matches_rewoo_verbatim`:那条测试把 ReWOO 的
-      原文抄进来当参照跑。**「我照着抄了」这句话本身是没有保障的** ——
-      抄错一个顺序,分数就变了,而两边都还是「看起来在算 em」。
-    """
-
-    def remove_articles(text: str) -> str:
-        return re.sub(r"\b(a|an|the)\b", " ", text)
-
-    def white_space_fix(text: str) -> str:
-        return " ".join(text.split())
-
-    def remove_punc(text: str) -> str:
-        return "".join(ch for ch in text if ch not in set(string.punctuation))
-
-    def lower(text: str) -> str:
-        return text.lower()
-
-    # ★ 顺序逐字照抄,不要「顺手优化」
-    return white_space_fix(remove_articles(remove_punc(lower(str(s)))))
-
-
-def token_f1(prediction: str, ground_truth: str) -> float:
-    """ReWOO `f1_score`，逐字（含那条 yes/no/noanswer 短路）。
-
-    ★ 那条短路很重要:预测是 `yes` 而金标不是时直接 0 分,
-      不让「yes」这个 token 蹭到部分分。
-    """
-    p, g = normalize_answer(prediction), normalize_answer(ground_truth)
-    if p in ("yes", "no", "noanswer") and p != g:
-        return 0.0
-    if g in ("yes", "no", "noanswer") and p != g:
-        return 0.0
-
-    pt, gt = p.split(), g.split()
-    common = Counter(pt) & Counter(gt)
-    num_same = sum(common.values())
-    if num_same == 0:
-        return 0.0
-    precision = num_same / len(pt)
-    recall = num_same / len(gt)
-    return (2 * precision * recall) / (precision + recall)
 
 
 @dataclass
@@ -250,7 +186,7 @@ class BigBenchTask:
                             detail="没有给出答案", failure_class="no_answer")
 
         want = str(task.gold)
-        got = _first_token(answer) if self._closed() else answer
+        got = first_token(answer) if self._closed() else answer
         em = normalize_answer(got) == normalize_answer(want)
         f1 = token_f1(got, want)
 
@@ -309,13 +245,6 @@ class BigBenchTask:
                   "回原站会引入一个在数字上看不出来的版本差"
                   "（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404）"),
         )]
-
-
-def _first_token(text: str) -> str:
-    """闭集任务取第一个 token。**去标点** —— 模型爱写 `Yes.`。"""
-    stripped = text.strip().strip("*`_ \t")
-    token = re.split(r"[\s,.;:!?()\[\]{}]+", stripped, maxsplit=1)[0]
-    return token or stripped
 
 
 # ═══════════════════════════════════════════════════════════
@@ -614,6 +543,8 @@ def _relative_error(got: Quantity, want: Quantity) -> float:
 
 __all__ = [
     "BigBenchTask", "StrategyQa", "SportsUnderstanding", "PhysicsQuestions",
-    "REWOO_COMMIT", "REWOO_SEED", "REWOO_TARBALL", "NUMERIC_TOL",
-    "normalize_answer", "token_f1", "rewoo_draw", "parse_quantity", "Quantity",
+    "NUMERIC_TOL", "parse_quantity", "Quantity",
+    # 转出去,免得用的人还要知道它们住在 `rewoo_port`
+    "REWOO_COMMIT", "REWOO_SEED", "REWOO_TARBALL",
+    "normalize_answer", "token_f1", "rewoo_draw",
 ]
