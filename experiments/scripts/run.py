@@ -36,6 +36,8 @@ from experiments.core.types import Task, Tool
 
 # 注册表是**显式**的：谁要跑，谁在这里 import。见 core/registry.py 的说明。
 from experiments.benchmark import bfcl as bfcl_bench  # noqa: F401
+# ★ 三个 BigBench 任务**共用一份 ReWOO tarball** —— 一次下载抽三个 CSV。
+from experiments.benchmark import bigbench as bigbench_bench  # noqa: F401
 from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
 from experiments.baseline import act as act_baseline  # noqa: F401
@@ -134,6 +136,10 @@ def build_model(args: argparse.Namespace) -> ModelClient:
 BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
     toy.ToyCapitals.name: toy.ToyCapitals,
     gsm8k_bench.Gsm8k.name: gsm8k_bench.Gsm8k,
+    # ReWOO 那一组（改编自它的 DataLoader,见 benchmark/bigbench/bigbench.py）
+    bigbench_bench.StrategyQa.name: bigbench_bench.StrategyQa,
+    bigbench_bench.SportsUnderstanding.name: bigbench_bench.SportsUnderstanding,
+    bigbench_bench.PhysicsQuestions.name: bigbench_bench.PhysicsQuestions,
 }
 # BFCL 一个数据集两个子集,各自是独立的 `log/<name>/` 目录
 for _sub in bfcl_bench.SUBSETS:

@@ -19,6 +19,9 @@
 | `bfcl-v3-multiple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
 | `bfcl-v3-simple` | hf-file | `gorilla-llm/Berkeley-Function-Calling-Leaderboard` | `2` 个 | ⚠️ **main**（未钉） | ~1 MB（JSONL 散文件） | **JSONL 不是 JSON 数组**；只有题目文件，金标在 possible_answer/ 下 |
 | `gsm8k` | hf-dataset | `openai/gsm8k:main` | — | ⚠️ **main**（未钉） | ~2 MB（7,473 + 1,319 条） | 纯文本，无前置；`revision` 未钉 —— 已用 fingerprint 记进 dataset_version |
+| `physicsquestions` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库） | ReWOO 仓库自带的 BigBench CSV。★ 一次下载抽三个文件。原始出处是 `google/BIG-bench` 的 `benchmark_tasks/<task>/task.json`，但**这里刻意用 ReWOO 那份** —— 我们和它比的就是这三个数，回原站会引入一个在数字上看不出来的版本差（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404） |
+| `sportsunderstanding` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库） | ReWOO 仓库自带的 BigBench CSV。★ 一次下载抽三个文件。原始出处是 `google/BIG-bench` 的 `benchmark_tasks/<task>/task.json`，但**这里刻意用 ReWOO 那份** —— 我们和它比的就是这三个数，回原站会引入一个在数字上看不出来的版本差（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404） |
+| `strategyqa` | http | `https://codeload.github.com/billxbf/ReWOO/tar.gz/9cd0283043ff4be0c9d614fda2789d143ca6ffd1` | `1` 个 | 9cd0283043ff4be0c9d614fda2789d143ca6ffd1 | ~6 MB（整个 ReWOO 仓库） | ReWOO 仓库自带的 BigBench CSV。★ 一次下载抽三个文件。原始出处是 `google/BIG-bench` 的 `benchmark_tasks/<task>/task.json`，但**这里刻意用 ReWOO 那份** —— 我们和它比的就是这三个数，回原站会引入一个在数字上看不出来的版本差（而 `strategy_qa` 在 BigBench 主干上已被移除，实测 404） |
 
 ## 怎么用
 

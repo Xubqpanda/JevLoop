@@ -110,6 +110,12 @@ def is_present(spec: DownloadSpec) -> bool:
     """
     if spec.kind in ("hf-dataset", "hf-file"):
         return hf_cache_dir(spec).exists()
+    if spec.kind == "http":
+        if not spec.files:
+            return False
+        # ★ 判据是**抽出来的那几个文件在不在**,不是「下载过没有」——
+        #   下了一半的 tarball 会让「下载过」为真而数据其实是空的。
+        return all((DATASET_DIR / spec.dataset / Path(f).name).exists() for f in spec.files)
     return False
 
 
@@ -133,6 +139,67 @@ def fetch(spec: DownloadSpec) -> list[Path]:
             Path(hf_hub_download(spec.locator, f, repo_type="dataset", revision=spec.revision))
             for f in spec.files
         ]
+
+    if spec.kind == "http":
+        # ★★ 直链。**实测发现这一类原来没实现** —— 文档的表里写着「手动或 curl」,
+        #   而 `fetch()` 走到最后直接抛。于是 loader 声明了一个**没人能自动跑**
+        #   的下载方式,而那和没声明差不多:别人照 `DOWNLOADS.md` 拿不到数据。
+        #
+        #   用途正是我们最需要的那种:**原论文仓库的 tarball**。
+        #   ReWOO 把三个 BigBench 任务的 CSV 直接放在仓库里,
+        #   一次下载服务三个 loader —— 而 GitHub 的 raw 直连在国内经常不通,
+        #   `codeload` 通(实测 200)。
+        #
+        #   `files` 在 tarball 的场景下是**要抽出来的路径后缀**（`fnmatch` 匹配）,
+        #   不是文件名全等 —— 因为 tarball 里带着一层 `ReWOO-<sha>/` 前缀。
+        dest_dir = DATASET_DIR / spec.dataset
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # ★ **同一个 URL 只下一份。** 实测:ReWOO 那个 tarball 服务三个 loader
+        #   （三个 BigBench 任务）,而按 `dataset` 各存一份就是**同一个 6 MB
+        #   下三遍**。多占 12 MB 不算什么,但「跑一次 --fetch 要等三倍」
+        #   会让人干脆跳过下载 —— 而 `dataset/` 不进 git,跳过的后果是没有数据。
+        #
+        #   所以缓存按 **URL** 存,不按 loader 存;抽出来的文件才按 loader 放。
+        cache_dir = DATASET_DIR / "_tarballs"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / (spec.locator.rsplit("/", 1)[-1] or "download.bin")
+
+        if not target.exists():
+            import urllib.request
+            urllib.request.urlretrieve(spec.locator, target)
+
+        if not spec.files:
+            return [target]
+
+        import fnmatch
+        import tarfile
+
+        if not tarfile.is_tarfile(target):
+            raise RuntimeError(
+                f"{spec.dataset}: 声明了 files 但 {target.name} 不是 tar 包,抽不出来"
+            )
+        wanted = {Path(f).name for f in spec.files}
+        out: list[Path] = []
+        with tarfile.open(target) as tf:
+            for member in tf.getmembers():
+                if not member.isfile():
+                    continue
+                base = Path(member.name).name
+                if not any(fnmatch.fnmatch(base, w) for w in wanted):
+                    continue
+                # ★ 只取**文件名**,丢掉 tarball 的那层前缀目录 ——
+                #   否则路径里会写死一个 commit sha,换个版本整个目录就得重建。
+                member.name = base
+                tf.extract(member, dest_dir, filter="data")
+                out.append(dest_dir / base)
+        missing = wanted - {p.name for p in out}
+        if missing:
+            raise RuntimeError(
+                f"{spec.dataset}: tarball 里找不到 {sorted(missing)}；"
+                f"版本对不上?（locator={spec.locator}）"
+            )
+        return out
 
     if spec.kind == "build":
         raise RuntimeError(
