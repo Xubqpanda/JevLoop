@@ -115,6 +115,18 @@ class Session:
         self._span_stack: list[str] = []
         self._batch_uuid: str | None = None
         self._batch_open_ms: float = 0.0
+        # ★★ **批次耗时 = 这一类判定请求自己的墙钟之和**,不是「两次 next_batch 之间」。
+        #
+        #   实测(2026-09-22,`bfcl-v3-simple × react-typed`):原来按「两次开批之间」
+        #   算,而 `decide()` 里的生成调用和工具执行**都落在那个区间里** ——
+        #   于是 `decision_ms` 记成了整个任务时长(≈ wall),和 `tool_ms`
+        #   双重计算,`framework_ms` 被减成 **−1670ms / −11335ms**。
+        #
+        #   ★ 负的框架时间是**症状**;病是那个数**量的不是它名字说的东西**。
+        #   §8.14/§8.15 修的都是这一个形状:一个数看起来很正常,
+        #   但它量的对象和你以为的不是一回事。
+        self._batch_request_ms: float = 0.0
+        self._batch_requests: int = 0
         self._batch_decisions: list[DecisionRecord] = []
         # 工具执行器把每次调用报回来 —— 见 tools.ToolExecutor.on_call
         self.executor.on_call = self._on_tool_call
@@ -190,7 +202,25 @@ class Session:
         self._close_batch()
         self._batch += 1
         self._batch_open_ms = time.perf_counter()
+        self._batch_request_ms = 0.0
+        self._batch_requests = 0
         return self._batch
+
+    def note_decision_request(self, ms: float) -> None:
+        """**一次判定请求**的墙钟。按请求累加,**不按记录**。
+
+        ★ 两个数在这一层是分开的,而它们的**比值就是论文要量的东西**:
+
+        - **请求数**:一次 HTTP 往返。PLAN 表 2 说「一步 4–6 次请求,
+          这是全项目最大的已知浪费」—— 那个「4–6」就是这个计数器。
+        - **记录数**:几道判定题。一次请求可以判多路（Jev 的性质:
+          一次前向对所有问题并行打分）。
+
+        两个数相等 = 一步一请求（浪费）;请求数远小于记录数 = 合并得对。
+        **合成一个数就永远分不出这两种情况。**
+        """
+        self._batch_request_ms += ms
+        self._batch_requests += 1
 
     def record_decision(
         self,
@@ -288,13 +318,18 @@ class Session:
                 task_id=self.task.task_id,
                 step=self._batch_decisions[0].step,
                 questions_in_batch=len(self._batch_decisions),
-                latency_ms=(time.perf_counter() - self._batch_open_ms) * 1000 if self._batch_open_ms else 0.0,
+                requests_in_batch=self._batch_requests,
+                # ★ 用累加值,**不是** `perf_counter() - _batch_open_ms` ——
+                #   后者把生成调用和工具执行一起算了进来（实测见 __init__ 的说明）。
+                latency_ms=self._batch_request_ms,
                 decisions=[d.__dict__ for d in self._batch_decisions],
                 working_start=working_start,
                 parent=self._span_stack[-1] if self._span_stack else None,
             )
         )
         self._batch_decisions = []
+        self._batch_request_ms = 0.0
+        self._batch_requests = 0
 
     def _on_tool_call(self, name: str, arguments: dict, necessary: bool, ms: float, error: str | None) -> None:
         self.events.append(

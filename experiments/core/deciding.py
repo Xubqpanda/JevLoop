@@ -46,6 +46,28 @@ from typing import Any, Protocol, Sequence
 # 词汇
 # ═══════════════════════════════════════════════════════════
 
+#: 钉住的判定模型版本 —— **不要用 `jev-latest` 之类的别名**。
+#:
+#: ★ 理由抄自 TS 侧 `src/backends.ts`（官方文档 `docs.typesafe.ai/models` 的原话）:
+#:
+#: > An alias moves when a new release ships, so the answers behind it can change
+#: > without a change on your side. **If you have tuned confidence thresholds
+#: > against a specific version, pin that version's ID instead of the alias.**
+#:
+#: 我们**确实调过门限** —— `DECISION.md` 里现在有 8 条
+#: （`prob:needs_tool >= 0.5`、`top >= 0.6`、`prob:ok >= 0.6` …），每一条都是量出来的。
+#: 别名一动,那些数字背后的模型就换了,而**我们这边一处都没改** ——
+#: 于是 bench 的历史数字不再可比,而账面上看不出任何变化。
+#:
+#: 换版本是一次**决定**:改这里,重跑,看数字动不动。
+#:
+#: ⚠️ 我第一版把默认值写成 `jev-1.13`,而正本是 **`jev-1.13.0`** ——
+#: 差一个 `.0` 就是一个不存在的版本号。**照抄要比回忆准。**
+PINNED_JEV_MODEL = "jev-1.13.0"
+
+#: 托管 Jev 的默认地址。★ 和 TS 侧 `backends.ts` 的兜底值一致。
+DEFAULT_JEV_URL = "https://api.typesafe.ai"
+
 
 @dataclass(frozen=True)
 class Answer:
@@ -260,7 +282,7 @@ class HttpJevClient:
     而「墙钟为什么慢」那个结论整个建立在它们分不分得开上（`AGENTS.md` §8.11）。
     """
 
-    def __init__(self, base_url: str, api_key: str, *, model: str = "jev-1.13",
+    def __init__(self, base_url: str, api_key: str, *, model: str = PINNED_JEV_MODEL,
                  timeout_s: float = 60.0) -> None:
         self.base_url = base_url.rstrip("/")
         self._key = api_key
@@ -345,6 +367,6 @@ class FallbackClient:
 
 
 __all__ = [
-    "Answer", "DecideRequest", "DecideResponse", "DecisionClient",
+    "PINNED_JEV_MODEL", "DEFAULT_JEV_URL", "Answer", "DecideRequest", "DecideResponse", "DecisionClient",
     "HttpJevClient", "MockClient", "FallbackClient", "parse_answers",
 ]

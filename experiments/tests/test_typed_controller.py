@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -66,8 +67,10 @@ class ScriptedClient:
         for qid, q in request.questions.items():
             if qid in self.omit:
                 continue
-            if q["kind"] == "choice":
-                opts = list(q["options"])
+            # ★ 读**线协议**的字段名（`type` / `criteria`）—— 这就是
+            #   `vocab.ts` 里那个形状。读错了这套测试就白测。
+            if q["type"] == "choice":
+                opts = list(q["criteria"])
                 chosen = self.pick.get(qid, opts[0])
                 rest = max(1, len(opts) - 1)
                 leftover = max(0.0, 1.0 - self.spread)
@@ -310,10 +313,11 @@ def test_a_fatal_violation_stops_the_request_from_being_sent() -> None:
     # 构造一个「判定依据不在」的帧:空 ctx 让 needsTool 的 task 缺失
     from experiments.core.frame import AgentCtx
 
-    from experiments.jloop.typed import DEFAULT_TOP, _noul_question
+    from experiments.jloop.typed import NODE_THRESHOLDS, _noul_question
 
     blocked = ctrl._ask(session, 0, AgentCtx(), 0, "needsTool",
-                        _noul_question("needsTool", "?", threshold=DEFAULT_TOP))
+                        _noul_question("needsTool", "?",
+                                       threshold=NODE_THRESHOLDS["needsTool"]))
     assert blocked is None, "缺判定依据时必须返回 None"
     assert client.requests == [], "★ 请求不许发出去"
     assert ctrl.trace[-1]["violation"] == "field_missing" and ctrl.trace[-1]["fatal"]
@@ -528,7 +532,7 @@ def test_an_undecided_choice_is_recorded_as_not_correct() -> None:
     全填 True 的话 `correct` 那一列恒为真,于是
     「置信度和正确性同现」这句话**在账面上永远成立** —— 而它本该被检验。
     """
-    from experiments.jloop.typed import DEFAULT_TOP
+    from experiments.jloop.typed import NODE_THRESHOLDS
 
     session = make_session()
     # ★ 只让 **pickInput** 不果断（选中项 0.2,其余 7 个分掉 0.8）——
@@ -541,7 +545,7 @@ def test_an_undecided_choice_is_recorded_as_not_correct() -> None:
     rows = [r for r in session.decision_records() if r.node == "pickInput"]
     assert rows, [r.node for r in session.decision_records()]
     assert rows[-1].confidence == pytest.approx(0.2)
-    assert rows[-1].confidence < DEFAULT_TOP
+    assert rows[-1].confidence < NODE_THRESHOLDS["pickInput"]
     assert rows[-1].correct is False, "没过果断度门限就该记 False"
 
 
@@ -617,13 +621,14 @@ def test_a_violation_reaches_the_event_stream_not_just_memory() -> None:
     所以违规要按「一次没成立的判定」记账,并落进事件流（§8.14 的帧指纹同理）。
     """
     from experiments.core.frame import AgentCtx
-    from experiments.jloop.typed import DEFAULT_TOP, _noul_question
+    from experiments.jloop.typed import NODE_THRESHOLDS, _noul_question
 
     session = make_session()
     ctrl = TypedController(ScriptedClient())
     # 空 ctx ⇒ needsTool 缺「判定依据」⇒ fatal ⇒ 请求不发
     assert ctrl._ask(session, session.next_batch(), AgentCtx(), 0, "needsTool",
-                     _noul_question("needsTool", "?", threshold=DEFAULT_TOP)) is None
+                     _noul_question("needsTool", "?",
+                                    threshold=NODE_THRESHOLDS["needsTool"])) is None
     session.finish_events()
 
     rows = session.decision_records()
@@ -721,14 +726,163 @@ def test_a_typed_arm_needs_a_decider_and_a_plain_arm_does_not() -> None:
     assert isinstance(build_decider(ns()), MockClient), "默认是 mock（离线可跑）"
 
     # 没有 key ⇒ 报错退出，不是静默降级
-    old = os.environ.pop("JEV_API_KEY", None)
+    # ★ 变量名和 TS 侧 `backends.ts` 一致 —— 两边读不同的名字就是一个坑
+    old = os.environ.pop("TYPESAFE_API_KEY", None)
     try:
-        with pytest.raises(SystemExit, match="JEV_API_KEY"):
+        with pytest.raises(SystemExit, match="TYPESAFE_API_KEY"):
             build_decider(ns(decider="http"))
     finally:
         if old is not None:
-            os.environ["JEV_API_KEY"] = old
+            os.environ["TYPESAFE_API_KEY"] = old
 
     # 有 key ⇒ 真的建出 HTTP 客户端，而且**挂着 mock 兜底**（§8.10 每级都报）
     decider = build_decider(ns(decider="http", decider_key="k"))
     assert decider.name == "http:m→mock", decider.name
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★★ 线协议和措辞 —— 两处「照着隔壁抄」而不是「照着自己想」
+# ═══════════════════════════════════════════════════════════
+
+
+def test_the_wire_shape_matches_vocab_ts_exactly() -> None:
+    """★★★ 第一版这三个字段名**全是我猜的**（`kind`/`ask`/`options`）,
+    而正本是 `src/vocab.ts` 的 **`type`/`instructions`/`criteria`**。
+
+    这和 `top()` 那次是同一个毛病:**猜一份已经写在隔壁的协议,而不去读它。**
+    猜错的下场不是报错,是**打到一个真端点上才发现** —— 而那时已经跑了一批。
+
+    ★ 而且 `choice` 的 `criteria` **键就是选项本身**
+    （会原样回到 `answers[id].choice`）,不是另开一个 `options` 列表。
+    """
+    from experiments.core.frame import Question
+    from experiments.jloop.typed import _wire
+
+    n = _wire(Question(node="q", kind="noul", ask="A?", criteria={"true": "t", "false": "f"}))
+    assert set(n) == {"type", "instructions", "criteria"}
+    assert n == {"type": "noul", "instructions": "A?", "criteria": {"true": "t", "false": "f"}}
+
+    c = _wire(Question(node="q", kind="choice", ask="B?", options=("x", "y")))
+    assert c["type"] == "choice" and c["instructions"] == "B?"
+    assert list(c["criteria"]) == ["x", "y"], "选项就是 criteria 的键"
+
+    s = _wire(Question(node="q", kind="score", ask="C?"))
+    assert s["type"] == "score" and "criteria" in s
+
+
+def test_an_absent_noul_criteria_is_omitted_not_sent_empty() -> None:
+    """★ `vocab.ts` 里 `criteria` 对 `noul` 是**可选**的:
+    `criteria ? {type,instructions,criteria} : {type,instructions}`。
+
+    送一个空 `{}` 和「不送」不是一回事 —— 后者才是那个类型声明说的形状。"""
+    from experiments.core.frame import Question
+    from experiments.jloop.typed import _wire
+
+    assert "criteria" not in _wire(Question(node="q", kind="noul", ask="A?"))
+
+
+def test_needs_tool_asks_about_actions_not_about_tool_calls() -> None:
+    """★★★ **这一条钉的是三次事故里的那一次。**
+
+    `DECISION.md` 的 `## needs_tool` 原文:
+
+    > ★ 判据是「任务还有没有没做的动作」,不是「还有没有没拿到的信息」。
+    > 实测:任务「把 alpha.ts 里的 totalOf 抄到新文件 summary.ts 里」,
+    > 读完 alpha.ts 之后这个节点判了 `answer`(0.36) → loop 直接去生成回答,
+    > **文件从没被写出来**。
+
+    我第一版写的措辞是
+    `"Does this task still require a tool call before it can be answered?"`
+    —— 问的是**工具调用**,而事故的教训正是「要问**任务要求的动作**」。
+    「写一个文件」在这个问法下又一次落在问题之外。
+
+    ★ 而且 `vocab.ts` 说「**问题 ID 不会到达模型**」—— 措辞是模型能看到的全部。
+    """
+    from experiments.jloop.typed import NEEDS_TOOL_ASK, NEEDS_TOOL_CRITERIA
+
+    assert "action" in NEEDS_TOOL_ASK.lower(), "问的是动作,不是工具调用"
+    # ★ 判据必须把「写」明说 —— 那正是事故的修法
+    assert "writing" in NEEDS_TOOL_CRITERIA["true"]
+    assert set(NEEDS_TOOL_CRITERIA) == {"true", "false"}
+
+
+def test_the_two_choice_nodes_do_not_share_a_threshold() -> None:
+    """★★ `DECISION.md` 里 `pick_tool` 是 **0.6**、`pick_input` 是 **0.5**。
+
+    我第一版只有一个全局 `top`。用一个常量卡两个节点,
+    **必然改错其中一个,而两边都还是「看起来在卡门限」** ——
+    和那个「死配置」的 bug 是同一个形状。
+
+    ★ 顺带钉住:`needsTool` 的 0.5 是 **`probGte`** 语义（P(true)）,
+    两个 `choice` 是 **`topGte`** 语义（果断程度）。同一批数字,两种含义。
+    """
+    from experiments.jloop.typed import NODE_THRESHOLDS
+
+    assert NODE_THRESHOLDS == {"needsTool": 0.5, "pickTool": 0.6, "pickInput": 0.5}
+    assert NODE_THRESHOLDS["pickTool"] != NODE_THRESHOLDS["pickInput"]
+
+
+# ═══════════════════════════════════════════════════════════
+# ★★★ 批次耗时量的必须是「判定请求」,不是「两次开批之间」
+# ═══════════════════════════════════════════════════════════
+
+
+def test_a_batch_times_its_own_requests_not_the_gap_between_batches() -> None:
+    """★★★ 实测（`bfcl-v3-simple × react-typed`,2026-09-22）:`decision_ms` 记成了**整个任务时长**。
+
+    因为 `next_batch()` 在 `decide()` 开头关上一批,而那一批的开批时间是
+    **上一步 decide 开始时** —— 于是中间的**生成调用**和**工具执行**全落在区间里。
+    后果:`decison_ms ≈ wall`,和 `tool_ms` **双重计算**,
+    `framework_ms = wall − model − decision − tool` 被减成 **−1670ms / −11335ms**。
+
+    ★ **负的框架时间是症状,不是病。** 病是那个数**量的不是它名字说的东西** ——
+    和今天修的其他几个是同一个形状。
+
+    所以批次耗时改成**该批内判定请求自己的墙钟之和**。
+    """
+    session = make_session()
+    ctrl = TypedController(ScriptedClient(noul=0.9, pick={"pickInput": "France"}))
+
+    # 开批 → 判一次 → 中间**假装去生成/调工具**(纯 sleep,不属于判定)
+    batch = session.next_batch()
+    ctrl.decide(session, _view(session))
+    time.sleep(0.05)                     # ← 这 50ms 绝不该进 decision
+    session.finish_events()
+
+    batches = session.decision_batches()
+    assert batches, "一批都没有"
+    for b in batches:
+        if b.requests_in_batch:
+            assert b.latency_ms < 50.0, (
+                f"批次耗时 {b.latency_ms:.1f}ms 把开批之后那 50ms 也算进去了 —— "
+                f"它量的应该是判定请求自己"
+            )
+
+
+def test_requests_and_questions_are_counted_separately() -> None:
+    """★★ **两个数分开记,而它们的比值就是论文要量的东西。**
+
+    - **请求数** = HTTP 往返次数。PLAN 表 2:「一步 4–6 次请求,
+      这是全项目最大的已知浪费」—— 那个「4–6」就是这个计数器。
+    - **题数** = 几道判定题。一次请求可以判多路（Jev 一次前向并行打分）。
+
+    相等 = 一步一请求;请求数远小于题数 = 合并得对。
+    **合成一个数就永远分不出这两种情况** —— 而这两种情况的成本差着几倍。
+    """
+    session = make_session()
+    # 两个工具 ⇒ pickTool 真要判一次;加上 needsTool、pickInput,一步三次请求
+    from experiments.core.types import Tool
+    session.tools = list(session.tools) + [
+        Tool(name="other", description="另一个", parameters={"type": "object", "properties": {}})]
+    session.executor = ToolExecutor(session.tools, {"lookup_capital": lambda country: "Paris",
+                                                    "other": lambda: "ok"})
+
+    TypedController(ScriptedClient(noul=0.9, pick={"pickTool": "lookup_capital"})).decide(
+        session, _view(session))
+    session.finish_events()
+
+    b = session.decision_batches()[0]
+    assert b.requests_in_batch > 0
+    assert b.questions_in_batch == b.requests_in_batch, (
+        "现在每道题各发一次请求 —— 相等是对的,而**它本身就是要量的那个浪费**"
+    )

@@ -193,6 +193,10 @@ class DecisionBatchEvent(Event):
 
     type: str = "decision_batch"
     questions_in_batch: int = 0
+    #: ★ **一次 HTTP 往返算一个。** 和 `questions_in_batch` 分开记 ——
+    #: 两者的比值就是「判定有没有被合并」:相等 = 一步一请求（PLAN 说那是
+    #: 全项目最大的已知浪费）,远小于 = 合并得对。**合成一个数就分不出来。**
+    requests_in_batch: int = 0
     latency_ms: float = 0.0
     decisions: list[dict[str, Any]] = field(default_factory=list)
 

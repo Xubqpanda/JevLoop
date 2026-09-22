@@ -65,22 +65,77 @@ from experiments.core.frame import (
 )
 from experiments.core.models import Message
 
-#: **「是」的概率**门限（TS 的 `probGte`）。`needsTool` 用它:
-#: 「还要不要动作」—— 一个果断的「否」就该去生成答案。
-DEFAULT_YES = 0.5
-#: **果断程度**门限（TS 的 `topGte`）。`choice` 用它,判的是「答得确定吗」——
-#: `noul` 上是 `max(p, 1-p)`,**不是** `p`。
-#: ★ 这两个数是两件事,而 §8.3 那条「别用 `confidence` 卡 choice」说的是
-#: **别用归一化熵**,两个都不是它。
-DEFAULT_TOP = 0.5
+# ★ `DEFAULT_YES` / `DEFAULT_TOP` 两个全局常量**已删** —— 见下面的
+#   `NODE_THRESHOLDS`:`DECISION.md` 里 `pick_tool` 是 0.6 而 `pick_input` 是 0.5,
+#   用一个全局值会把其中一个改错,而**两边都还是「看起来在卡门限」**。
 
 #: 生成答案时的格式要求。★ **不是 ReAct 的 `Action:` 格式** —— 那要求模型吐一个
 #: 动作行,而这里要的是最终答案本身。
 ANSWER_FORMAT = "Reply with the final answer only. Do not emit an action."
 
 
-def _noul_question(node: str, ask: str, *, threshold: float) -> Question:
-    return Question(node=node, kind="noul", ask=ask, threshold=threshold)
+# ═══════════════════════════════════════════════════════════
+# ★★★ 问题和门限 —— **逐字抄 `DECISION.md`,不许自己写**
+#
+# 为什么这么重:第一版我按自己的理解给这三个节点写了措辞,结果
+# **`needsTool` 那一句正好是 `DECISION.md` 里记着的那次事故的写法**。
+#
+# `DECISION.md` 的原文（`## needs_tool`）:
+#
+#   ★ 判据是「任务还有没有没做的动作」,不是「还有没有没拿到的信息」。
+#   这两个在只读任务上恰好一致,而在**写任务**上分道扬镳 ——
+#   实测:任务「把 alpha.ts 里的 totalOf 抄到一个新文件 summary.ts 里」,
+#   读完 alpha.ts 之后这个节点判了 `answer`(0.36),于是 loop 直接去生成回答,
+#   **文件从没被写出来**。
+#
+# 我写的是 `"Does this task still require a tool call before it can be answered?"`
+# —— 问的是**工具调用**,而事故的教训正是「要问**任务要求的动作**」。
+# 「写一个文件」在这个问法下又一次落在问题之外。
+#
+# ★ 而且 `vocab.ts` 说「**问题 ID 不会到达模型**」—— 所以措辞是模型能看到的全部,
+#   写错了没有任何别的东西兜得住。**这是照抄比回忆准的第三个例子**（前两个:
+#   `top()` 的语义、`.env` 的变量名）。
+#
+# 门限也一起抄。★ `pickTool` 是 **0.6**、`pickInput` 是 **0.5** —— 两个不一样,
+# 而我第一版只有一个全局 `top`。
+# ═══════════════════════════════════════════════════════════
+
+#: `needs_tool`:`prob:needs_tool >= 0.5 → use_tool`（`DECISION.md`）
+NEEDS_TOOL_ASK = (
+    "The agent still has work to do before it can answer the task — "
+    "an action the task requires that has not been taken yet"
+)
+#: ★ 判据**必须给**:`vocab.ts` 说 noul 的 `criteria` 「显著提升判定质量」,
+#: 而且它正是上面那次事故的修法 —— 把「写」明确写进 true 那一侧。
+NEEDS_TOOL_CRITERIA = {
+    "true": ("the task still requires an action that has not happened: "
+             "reading something, listing something, writing something, running something"),
+    "false": ("every action the task asks for has already been taken, "
+              "and there is enough information to answer"),
+}
+
+PICK_TOOL_ASK = "Which tool should the agent call next?"
+PICK_INPUT_ASK = "Which file should this tool call target?"
+
+#: 每个节点的门限,**逐条注明出处**。
+#:
+#: ⚠️ 两个 `choice` 的门限**不一样**（0.6 vs 0.5）—— 这不是笔误,
+#: 是 `DECISION.md` 里就写着两个数。用一个全局常量会把其中一个改错,
+#: 而**两边都还是「看起来在卡门限」**。
+NODE_THRESHOLDS: dict[str, float] = {
+    # prob:needs_tool >= 0.5 → use_tool   （probGte 语义:P(true)）
+    "needsTool": 0.5,
+    # top >= 0.6 → call / else → escalate （topGte 语义:果断程度）
+    "pickTool": 0.6,
+    # top >= 0.5 → use  / else → escalate （topGte 语义:果断程度）
+    "pickInput": 0.5,
+}
+
+
+def _noul_question(node: str, ask: str, *, threshold: float,
+                   criteria: dict[str, str] | None = None) -> Question:
+    return Question(node=node, kind="noul", ask=ask, threshold=threshold,
+                    criteria=criteria or {})
 
 
 def _choice_question(node: str, ask: str, options: list[str],
@@ -113,8 +168,10 @@ class TypedController:
     """
 
     client: DecisionClient
-    yes: float = DEFAULT_YES
-    top: float = DEFAULT_TOP
+    #: 「还要不要动作」的门限（`probGte` 语义）。
+    #: ★ 默认值取自 `NODE_THRESHOLDS`,**不是另一个常量** ——
+    #:   两处各写一个数,改了其中一个就是「配了没生效」那个坑。
+    yes: float = NODE_THRESHOLDS["needsTool"]
     name: str = "typed"
     #: 每一步的判定轨迹（节点 / 答案 / 置信度）。**进日志用,不是给 policy 读的。**
     trace: list[dict] = field(default_factory=list)
@@ -133,14 +190,13 @@ class TypedController:
         # ① 还要不要动作
         batch = session.next_batch()
         need = self._ask(session, batch, ctx, view.step, "needsTool",
-                         _noul_question("needsTool",
-                                        "Does this task still require a tool call "
-                                        "before it can be answered?",
-                                        threshold=self.top))
+                         _noul_question("needsTool", NEEDS_TOOL_ASK,
+                                        criteria=NEEDS_TOOL_CRITERIA,
+                                        threshold=NODE_THRESHOLDS["needsTool"]))
         if need is None:
             return self._blocked(session, view, "needsTool")
 
-        if need.prob_true() < self.yes:
+        if need.prob_true() < self.yes:  # noqa: SIM201 —— 刻意留成可覆盖的
             # ★ 用 `prob_true()`（「是」的概率）,不是 `top()`（果断程度）——
             #   这里问的是「还要不要动作」,答案本身是「是/否」。
             #   一个**果断的「否」**（noul=0.05）在 `top()` 上是 0.95,
@@ -171,9 +227,8 @@ class TypedController:
             tool = next(t for t in view.tools if t.name == picked_choice)
         else:
             picked = self._ask(session, batch, ctx, view.step, "pickTool",
-                               _choice_question("pickTool",
-                                                "Which tool should be called next?",
-                                                options, threshold=self.top))
+                               _choice_question("pickTool", PICK_TOOL_ASK, options,
+                                                threshold=NODE_THRESHOLDS["pickTool"]))
             if picked is None:
                 return self._blocked(session, view, "pickTool")
             picked_choice = picked.choice
@@ -230,9 +285,8 @@ class TypedController:
             return {first: options[0]}, None
 
         picked = self._ask(session, batch, ctx, view.step, "pickInput",
-                           _choice_question("pickInput",
-                                            f"Which {first} should `{tool.name}` be called with?",
-                                            options, threshold=self.top))
+                           _choice_question("pickInput", PICK_INPUT_ASK, options,
+                                            threshold=NODE_THRESHOLDS["pickInput"]))
         if picked is None:
             return {}, "pickInput"
         if picked.choice not in options:
@@ -325,9 +379,14 @@ class TypedController:
             # ★ 不发。为什么发不出去已经记在账上了 —— 否则调用方只知道「没判定」。
             return None
 
+        t_req = time.perf_counter()
         resp = self.client.decide(DecideRequest(
             state={"frame": req.frame.render()}, questions={node: _wire(question)},
         ))
+        # ★ 把**这一次请求**的墙钟报给 session —— 批次耗时按请求累加。
+        #   不报的话 `decision_ms` 会退化成「两次开批之间」,把那之间的
+        #   生成调用和工具执行一起算进来（实测把框架时间减成了负数）。
+        session.note_decision_request((time.perf_counter() - t_req) * 1000)
         answer = resp.answers.get(node)
         if answer is None:
             # 后端没给 / 给了畸形的 —— §8.10:报出来,不假装
@@ -408,13 +467,33 @@ class TypedController:
 
 
 def _wire(question: Question) -> dict:
-    """`Question` → 线协议的问题形状。"""
+    """`Question` → 线协议的问题形状。**逐字抄 `src/vocab.ts`。**
+
+    ★★ 第一版这三个字段名**全是我猜的**（`kind` / `ask` / `options`）,
+    而正本是 **`type` / `instructions` / `criteria`**。这和 `top()` 那次是同一个毛病:
+    **猜一份已经写在隔壁的协议,而不去读它。**
+
+    形状（`vocab.ts`）::
+
+        noul   {type, instructions, criteria?: {true, false}}
+        choice {type, instructions, criteria: {选项: "什么条件下该选它"}}
+        score  {type, instructions, criteria: [档位, 从低到高]}
+
+    ★ `choice` 的 `criteria` 键**就是选项本身**（会原样回到 `answers[id].choice`）,
+    不是选项列表 —— 我之前写成 `options` 一个 map。
+    """
     if question.kind == "choice":
-        return {"kind": "choice", "ask": question.ask,
-                "options": {o: 0.0 for o in question.options}}
+        return {"type": "choice", "instructions": question.ask,
+                "criteria": {o: question.criteria.get(o, "") for o in question.options}}
     if question.kind == "score":
-        return {"kind": "score", "ask": question.ask}
-    return {"kind": "noul", "ask": question.ask}
+        return {"type": "score", "instructions": question.ask,
+                "criteria": list(question.criteria.values())}
+    wire = {"type": "noul", "instructions": question.ask}
+    if question.criteria:
+        wire["criteria"] = dict(question.criteria)
+    return wire
 
 
-__all__ = ["TypedController", "candidates", "DEFAULT_YES", "DEFAULT_TOP", "ANSWER_FORMAT"]
+__all__ = ["TypedController", "candidates", "NODE_THRESHOLDS",
+           "NEEDS_TOOL_ASK", "NEEDS_TOOL_CRITERIA", "PICK_TOOL_ASK",
+           "PICK_INPUT_ASK", "ANSWER_FORMAT"]

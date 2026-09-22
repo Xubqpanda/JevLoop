@@ -17,9 +17,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from experiments.core.agent import Agent
+from experiments.core.env import load_env
 from experiments.core.deciding import (
+    DEFAULT_JEV_URL,
+    PINNED_JEV_MODEL,
     DecisionClient,
     FallbackClient,
     HttpJevClient,
@@ -151,10 +155,12 @@ def build_decider(args: argparse.Namespace) -> DecisionClient:
         return MockClient()
 
     if args.decider == "http":
-        key = args.decider_key or os.environ.get("JEV_API_KEY")
+        # ★ 和 TS 侧 `backends.ts` 读同一个变量名 —— 两边读不同的名字,
+        #   就是一个「配了一边另一边没生效」的坑。
+        key = args.decider_key or os.environ.get("TYPESAFE_API_KEY")
         if not key:
             raise SystemExit(
-                "缺判定后端的 key：给 --decider-key，或设 JEV_API_KEY。\\n"
+                "缺判定后端的 key：给 --decider-key，或设 TYPESAFE_API_KEY。\n"
                 "（想离线验接口就用 --decider mock —— 那是默认值）"
             )
         return FallbackClient([
@@ -214,6 +220,23 @@ def resolve_agent(name: str, decider: DecisionClient | None = None) -> "type[Age
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ★★ **先读 `.env`,再解析参数。**
+    #
+    #   实测:Python 侧原来没有加载器,只读 `os.environ` —— 而 key 就躺在
+    #   仓库根的 `.env` 里。于是 `--model deepseek-chat` 报「缺 API key」,
+    #   把人指向「去设一个环境变量」,而真正该做的是**读仓库自己那份**。
+    #
+    #   ★ 顺序有要求:`--decider-url` 之类的默认值要从环境取,
+    #     所以这一步必须在 `parse_args` **之前** —— TS 侧踩过同一个坑
+    #     （`resolveProvider()` 在 `loadEnv()` 之前调用,读到的永远是空）。
+    env = load_env(Path(__file__).resolve().parents[1])
+    if env.skipped:
+        # ★ 认不出来的行**要说出来**（§8.10）—— 静默跳过会让人以为 key 设上了
+        print(f"⚠️  {env.path} 里有 {len(env.skipped)} 行认不出来，已跳过：",
+              file=sys.stderr)
+        for line in env.skipped:
+            print(f"     {line}", file=sys.stderr)
+
     parser = argparse.ArgumentParser(description="跑一个格子:benchmark × agent × seed")
     parser.add_argument("--benchmark", required=True, help=f"数据集名。已注册: {sorted(BENCHMARKS) or '无'}")
     parser.add_argument("--agent", required=True, help="arm 名，如 direct / react / jevloop")
@@ -234,11 +257,15 @@ def main(argv: list[str] | None = None) -> int:
     # ── 判定后端 —— **和生成模型分开**（§8.9）────────────────────
     parser.add_argument("--decider", default="mock", choices=("mock", "http"),
                         help="判定后端。mock = 保守答案、离线可跑（默认）")
-    parser.add_argument("--decider-url", default="https://jev.example/v1",
-                        help="--decider http 时的 base url")
+    # ★ 默认值从环境取 —— 这就是 `load_env()` 必须在 `parse_args()` **之前**的原因。
+    #   写死默认值的话,`.env` 里那份配置永远读不到（TS 侧踩过同一个坑:
+    #   `resolveProvider()` 在 `loadEnv()` 之前调用,读到的永远是空）。
+    parser.add_argument("--decider-url", default=os.environ.get("JEVOS_JEV_URL")
+                        or DEFAULT_JEV_URL, help="--decider http 时的 base url")
     parser.add_argument("--decider-key", default=None,
-                        help="判定后端的 key。也给 JEV_API_KEY（**不进仓库**）")
-    parser.add_argument("--decider-model", default="jev-1.13")
+                        help="判定后端的 key。缺省读 TYPESAFE_API_KEY（**不进仓库**）")
+    parser.add_argument("--decider-model", default=PINNED_JEV_MODEL,
+                        help=f"钉住版本,**不要用别名**（默认 {PINNED_JEV_MODEL}）")
     args = parser.parse_args(argv)
 
 

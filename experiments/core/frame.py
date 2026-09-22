@@ -418,11 +418,23 @@ class Question:
     kind: str
     ask: str
     options: tuple[str, ...] = ()
+    #: ★ **判据**（`vocab.ts` 的 `criteria`）。
+    #:
+    #: - `noul` → `{"true": "什么条件下算 true", "false": "什么条件下算 false"}`
+    #: - `choice` → 由 `options` 生成（键是选项本身,值是「什么条件下该选它」）
+    #:
+    #: ★ `vocab.ts` 的原话:「**问题 ID 不会到达模型**」—— 所以措辞和判据
+    #: 是模型能看到的全部,写错了没有别的东西兜得住。
+    #: 而且 `noul` 的判据「显著提升判定质量」,不给是白丢的。
+    criteria: dict[str, str] = field(default_factory=dict)
     #: **答得果不果断**的门限 —— 逐字对应 TS 的 `topGte`。
     #:
     #: ⚠️ `noul` 上判的是 `max(p, 1-p)`,**不是** `p`:一个果断的「否」也算果断。
     #: 要「答是的概率」那个门限是另一件事（TS 的 `probGte`）——
     #: `TypedController.yes` 就是它。**一道题有两个数、两个门限,别混。**
+    #:
+    #: ★ **每个节点可以不同** —— `DECISION.md` 里 `pick_tool` 是 0.6、
+    #: `pick_input` 是 0.5。用一个全局常量会把其中一个改错。
     threshold: float = 0.5
 
     def option_labels(self) -> tuple[str, ...]:
