@@ -86,6 +86,10 @@ class Session:
 
         self.model_calls: list[UsageRecord] = []
         self.decisions: list[DecisionRecord] = []
+        # ★ 每一步真正发出去的 prompt。
+        #   两个臂的差别如果只能靠读代码确认,那「baseline 含义一致」就没有证据。
+        #   而 ReAct 每步重发整个 scratchpad,所以这一份会长得很快 —— 它是 log,不进 git。
+        self.prompts: list[dict] = []
         self._retry_ms = 0.0
         self._batch = 0
 
@@ -93,6 +97,16 @@ class Session:
 
     def call_model(self, messages: list[Message]) -> ModelReply:
         """一次对话补全,并记账。"""
+        self.prompts.append(
+            {
+                "run_id": self.run_id,
+                "task_id": self.task.task_id,
+                "call": len(self.model_calls),
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": m.role, "content": m.content} for m in messages],
+            }
+        )
         t0 = time.perf_counter()
         reply = self.model.chat(messages, max_tokens=self.max_tokens, temperature=self.temperature)
         elapsed = (time.perf_counter() - t0) * 1000

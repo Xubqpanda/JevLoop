@@ -57,11 +57,16 @@ class Action:
 
 @dataclass(frozen=True)
 class Step:
-    """一步 = 一个动作 + 它的观察。`decision_ms` / `model_ms` 逐层留,理由见 PROTOCOL §3.4。"""
+    """一步 = 一个动作 + 它的观察。`decision_ms` / `model_ms` 逐层留,理由见 PROTOCOL §3.4。
 
+    ★ `thought` 是 ReAct 的 `Thought:` 那一行。**它必须存在这个类型里**,
+    否则 scratchpad 渲染不出来,而「ReAct 的 thought 到底有没有用」这个消融
+    就无从做起 —— 我们现有的 `bench/react.ts` 正是漏了它,于是跑出来的是 act。
+    """
     index: int
     action: Action
     observation: str = ""
+    thought: str = ""
     model_ms: float = 0.0
     decision_ms: float = 0.0
     tool_ms: float = 0.0

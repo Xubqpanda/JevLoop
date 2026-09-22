@@ -112,6 +112,7 @@ class ModelClient(Protocol):
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
+        stop: list[str] | None = None,
     ) -> ModelReply:
         ...
 
@@ -145,6 +146,7 @@ class ScriptedModel:
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
+        stop: list[str] | None = None,
     ) -> ModelReply:
         text = self._replies[self._i] if self._i < len(self._replies) else ""
         self._i += 1
@@ -220,6 +222,7 @@ class OpenAICompatModel:
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: Thinking | None = None,
+        stop: list[str] | None = None,
     ) -> ModelReply:
         """一次补全。
 
@@ -238,6 +241,10 @@ class OpenAICompatModel:
         }
         if tools is not None:
             body_fields["tools"] = tools
+        if stop:
+            # ★ ReAct 靠这个截断。**没有 stop,模型会一路把 `Observation:` 也编出来** ——
+            #   那不是模型的幻觉,是我们没告诉它该停在哪。
+            body_fields["stop"] = list(stop)
         if thinking is not None:
             # DeepSeek 的 OpenAI 兼容格式：开关在 extra_body，强度是一等参数
             body_fields["reasoning_effort"] = thinking.effort
@@ -319,6 +326,7 @@ class CallableModel:
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
+        stop: list[str] | None = None,
     ) -> ModelReply:
         text = self._responder(messages)
         return ModelReply(

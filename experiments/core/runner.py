@@ -135,6 +135,8 @@ def run_cell(
                 log.append_jsonl("trace.jsonl", record)
             for record in session.usage_records():
                 log.append_jsonl("usage.jsonl", record)
+            for prompt in session.prompts:
+                log.append_jsonl("prompts.jsonl", prompt)
 
             results.append(
                 Result(
@@ -171,7 +173,8 @@ def run_cell(
                     failure_class=judgment.failure_class or ("none" if judgment.correct else "unclassified"),
                     cost=aggregate_cost(session),
                     timing=aggregate_timing(session, wall_ms=wall_ms),
-                    artifacts=("cmd.txt", "meta.json", "exit.json"),
+                    artifacts=("cmd.txt", "meta.json", "exit.json", "results.jsonl",
+                               "usage.jsonl", "prompts.jsonl"),
                 )
             )
 

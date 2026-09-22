@@ -26,23 +26,45 @@ from experiments.core.types import Task, Tool
 
 # 注册表是**显式**的：谁要跑，谁在这里 import。见 core/registry.py 的说明。
 from experiments.benchmark import toy  # noqa: F401  —— 自检用
+from experiments.baseline import act as act_baseline  # noqa: F401
 from experiments.baseline import direct as direct_baseline  # noqa: F401
+from experiments.baseline import react as react_baseline  # noqa: F401
 
 
 def offline_demo_model() -> CallableModel:
-    """自检用的假模型:**只知道 `CAPITALS` 里前一半的国家**。
+    """自检用的假模型:**只知道 `CAPITALS` 里前一半的国家**,而且**会说 ReAct 格式**。
 
     它刻意答错一半,这样「判对」和「判错」两条路都会走到 ——
     一个全对的假模型验不出 `failure_class` 有没有被写进结果。
+
+    ★ 它还会看 prompt 里要的是哪种格式:循环臂（act/react）要求 `Action:` 时,
+    它就按 ReAct 的写法回 —— 这样离线自检才真的走到
+    「解析 → 调工具 → 看观察 → finish」这条完整路径,
+    而不是一步就弃答。（后者也测得到,但那是另一件事。）
     """
     known_half = set(sorted(toy.CAPITALS)[: len(toy.CAPITALS) // 2])
 
+    def country_in(text: str) -> str | None:
+        for country in toy.CAPITALS:
+            if f"capital of {country}" in text:
+                return country
+        return None
+
     def responder(messages: list[Message]) -> str:
         text = messages[-1].content
-        for country, capital in toy.CAPITALS.items():
-            if f"capital of {country}" in text:
-                return capital if country in known_half else "I don't know."
-        return "I don't know."
+        country = country_in(text)
+        if country is None:
+            return "I don't know."
+
+        wants_react = "Action:" in text and "finish[" in text
+        if not wants_react:
+            # direct 那一臂:直接给答案
+            return toy.CAPITALS[country] if country in known_half else "I don't know."
+
+        # 循环臂:第一轮查工具,看到观察后收尾
+        if "Observation:" not in text:
+            return f"Thought: I should look up {country}.\nAction: lookup_capital[{country}]"
+        return f"Thought: I have the answer.\nAction: finish[{toy.CAPITALS[country]}]"
 
     return CallableModel(responder, model_id="offline-demo")
 
@@ -67,9 +89,18 @@ def build_model(args: argparse.Namespace) -> ModelClient:
     )
 
 
+# arm 名 → 构造器。**名字必须和 docs/PLAN-*.md 的 baseline 清单一致。**
+_BUILTIN_ARMS = {
+    "direct": direct_baseline.Direct,
+    "direct-oracle": lambda: direct_baseline.Direct(with_evidence=True),
+    "act": act_baseline.Act,
+    "react": react_baseline.ReAct,
+}
+
+
 def resolve_agent(name: str) -> "type[Agent] | callable":
-    if name in ("direct", "direct-oracle"):
-        return lambda: direct_baseline.Direct(with_evidence=(name == "direct-oracle"))
+    if name in _BUILTIN_ARMS:
+        return _BUILTIN_ARMS[name]
     factory = AGENTS.get(name)
     if factory is None:
         raise SystemExit(f"没有这个 agent: {name!r}\n{known()}")
