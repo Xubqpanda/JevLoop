@@ -28,3 +28,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# ★ 论文插图：**版权不属于我们，不进公开仓库。**
+#   arXiv 的授权因文而异（有的 CC-BY 可以带署名转载，有的不是），
+#   而这些图是**我们的读书材料**，不是代码的一部分。
+#   放在本地 `baseline/<arm>/figures/` 里看就行。
+experiments/baseline/*/figures/

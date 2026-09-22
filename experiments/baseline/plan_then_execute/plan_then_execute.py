@@ -1,12 +1,18 @@
 """`plan-then-execute` —— 先规划,再照着计划执行。
 
-**出处**:两处,都标出来,因为「plan-then-execute」在文献里指过两样东西:
+**出处**:两条,都标出来。⚠️ **`baseline/README.md` 里记了一处引用更正,别引错。**
 
 1. **Plan-and-Solve prompting** —— Wang, Xu, Fang, Liu, Zhang, Yang.
    *Plan-and-Solve Prompting: Improving Zero-Shot Chain-of-Thought Reasoning*.
    ACL 2023, arXiv:2305.04091。「先理解问题并制定计划,然后按计划执行」。
 2. **Plan-and-Execute 的工程写法**（LangChain 等）—— planner 出计划,
    executor 逐步执行并**看得到每步的观察**,必要时重新规划。
+
+⚠️ **不是** CHI 2025 那篇 *Plan-Then-Execute: An Empirical Study of User Trust and
+Team Performance...*（arXiv:2502.01390）。那是 **cs.HC 的实证用户研究**,
+它自己写的是「we **adopted** LLM agents in a plan-then-execute manner」——
+**采用这个范式做实验,不是提出它**。那一篇可以引成「有人用它做过人机协作研究」,
+不能引成方法出处。
 
 ★ **它和 `rewoo` 的区别,是这两条臂必须分开的理由**:
 
@@ -30,7 +36,6 @@ from dataclasses import dataclass
 
 from experiments.baseline.common import (
     LoopConfig,
-    extract_answer,
     parse_plan,
     render_plan,
     render_tools,
@@ -119,4 +124,4 @@ class PlanThenExecute:
         )
 
 
-__all__ = ["PlanThenExecute", "PLANNER_INSTRUCTION", "EXECUTOR_INSTRUCTION", "extract_answer"]
+__all__ = ["PlanThenExecute", "PLANNER_INSTRUCTION", "EXECUTOR_INSTRUCTION"]
