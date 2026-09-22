@@ -34,6 +34,9 @@
     "tests/**/*.ts",
     "bench/**/*.ts",
     "scripts/**/*.ts",
+    /* 实验台的脚本也要被类型检查 —— 七个人写的东西如果只有自己能跑，
+       那和没有门禁一样。见 experiments/README.md。 */
+    "experiments/**/*.ts",
     "web/**/*.js"
   ]
 }
