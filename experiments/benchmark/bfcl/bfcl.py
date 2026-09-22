@@ -236,6 +236,55 @@ class Bfcl:
     #   不实现它,`reflexion` 臂会**明确报错**并告诉你要么实现 `check()`,
     #   要么改用 `reflexion-selfeval`（见 core/agent.py 的说明）。
 
+    def score_variants(self) -> dict[str, Callable[[Task, Trajectory], Judgment]]:
+        """★ **换官方判分器 = 换一个参数,不是重跑一遍。**
+
+        | 口径 | 判什么 | 状态 |
+        |---|---|---|
+        | `function-name` | **函数名**选对没有（+ 该不该调）| ✅ 现在用的 |
+        | `official` | 完整调用,**含参数值** | ⏳ **声明的接缝,还没实现** |
+
+        ## 为什么 `official` 现在是一个**会明确报错的接缝**,不是一个实现
+
+        官方评分器要**完整调用**:函数名 + 参数值 + 类型。而参数的格式是::
+
+            {"calculate_triangle_area": {"base": [10], "height": [5], "unit": ["units", ""]}}
+
+        —— **「可接受值列表」,形状自由**。要跑官方评分器,需要:
+
+        1. `pip install bfcl-eval`（**钉版本**,见模块头的版本说明）
+        2. 用**它自己的解码器**把模型输出解析成它的调用格式（不能用我们的 `Action:` 解析器 ——
+           那是我们的协议,不是它的)
+        3. 拿它的 AST / 状态检查做判分
+        4. **`relevance` / `irrelevance` 两类要分别处理**,权重按它的口径
+
+        **没做第 2–4 步之前,这里不写一个看起来能用的假实现** ——
+        那比没有更糟:它会让人以为已经对齐了官方口径。
+
+        ★ 而「接进来之后旧日志可以重判、不用重跑」这条之所以成立,
+        靠的是 `scripts/rescore.py` + `AnswerEvent`（日志自足）。
+        那一半**已经建好了**。
+        """
+        return {"function-name": self.score, "official": self._score_official}
+
+    def _score_official(self, task: Task, trajectory: Trajectory) -> Judgment:
+        """接缝。**缺什么、下一步做什么,写清楚**,不假装能跑。"""
+        try:
+            import bfcl_eval  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "official 口径还没接上。需要:\n"
+                "  1. pip install bfcl-eval（**钉版本**,见 bfcl.py 模块头）\n"
+                "  2. 用它自己的解码器解析模型输出（不能用我们的 `Action:` 解析器）\n"
+                "  3. 接 AST / 状态检查,并按它的权重处理 relevance / irrelevance\n"
+                "  ★ 在那之前**不要**报「官方 BFCL 分数」—— 现在的数是**函数名口径**,\n"
+                "    两者不可比（换判分器就是换了一把尺子）。"
+            ) from exc
+        raise RuntimeError(
+            "bfcl_eval 装上了,但适配还没写。见 `_score_official` 的文档字符串第 2–4 步。\n"
+            "  上半句很重要:**装包不等于对齐口径。**"
+        )
+
     def score(self, task: Task, trajectory: Trajectory) -> Judgment:
         gold = task.gold if isinstance(task.gold, list) else []
         called = [s.action.name for s in trajectory.steps if s.action.kind == "tool"]

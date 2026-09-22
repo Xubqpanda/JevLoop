@@ -311,37 +311,39 @@ def run_loop(session: Session, cfg: LoopConfig) -> AgentOutcome:
     retries = 0
 
     while len(steps) < session.max_steps:
-        prompt = build_prompt(session, cfg, steps)
-        reply = session.call_model([Message(role="user", content=prompt)])
-        parsed = parse_step(reply.text, tool_names, first_arg=first_arg.get(parsed_tool_guess(reply.text)))
+        # ★ 每一步包一个 span —— **步级耗时不用手写计时**。
+        #   移植自 Inspect 的 `SpanBeginEvent` / `SpanEndEvent`
+        #   （见 core/events.py；探针记录在 docs/PROBE-inspect-2026-09-22.md）。
+        #   有了它，「第几步慢」这种问题从日志里直接读得出,而不是靠各臂自己加计时器。
+        with session.span(f"{cfg.name}/step-{len(steps)}"):
+            prompt = build_prompt(session, cfg, steps)
+            reply = session.call_model([Message(role="user", content=prompt)])
+            parsed = parse_step(reply.text, tool_names,
+                                first_arg=first_arg.get(parsed_tool_guess(reply.text)))
+            if parsed.kind == "unparsed":
+                retries += 1
+                # ★ 重试也要留下痕迹 —— 不然后面分不清「一次就对」和「纠了两次才对」
+                session.note_retry(0.0)
+                if retries <= cfg.max_parse_retries:
+                    steps.append(Step(index=len(steps), action=action_tool("__parse_error__", {}),
+                                      observation=PARSE_NUDGE))
+                    continue
+                return AgentOutcome(
+                    steps=steps, final_answer=None, escalated=True,
+                    error=f"连续 {retries} 步解析不出动作（最后一段: {parsed.raw[-200:]!r}）",
+                )
 
-        if parsed.kind == "unparsed":
-            retries += 1
-            # ★ 重试也要留下痕迹 —— 不然后面分不清「一次就对」和「纠了两次才对」
-            session.note_retry(0.0)
-            if retries <= cfg.max_parse_retries:
-                steps.append(Step(index=len(steps), action=action_tool("__parse_error__", {}),
-                                  observation=PARSE_NUDGE))
-                continue
-            return AgentOutcome(
-                steps=steps, final_answer=None, escalated=True,
-                error=f"连续 {retries} 步解析不出动作（最后一段: {parsed.raw[-200:]!r}）",
-            )
+            if parsed.kind == "answer":
+                steps.append(Step(index=len(steps), action=action_answer(parsed.answer),
+                                  thought=parsed.thought))
+                return AgentOutcome(steps=steps, final_answer=parsed.answer)
 
-        if parsed.kind == "answer":
-            steps.append(Step(index=len(steps), action=action_answer(parsed.answer),
-                              thought=parsed.thought))
-            return AgentOutcome(steps=steps, final_answer=parsed.answer)
-
-        # 工具
-        try:
+            # 工具（异常在 ToolExecutor 里已经转成观察 + 错误事件 —— 不再吞第二遍）
             observation = session.call_tool(parsed.tool, parsed.arguments)
-        except Exception as exc:  # noqa: BLE001 —— 工具自己抛了,当观察喂回去让模型改
-            observation = f"Tool error: {type(exc).__name__}: {exc}"
-        steps.append(
-            Step(index=len(steps), action=action_tool(parsed.tool, parsed.arguments),
-                 observation=observation, thought=parsed.thought, model_ms=reply.model_ms)
-        )
+            steps.append(
+                Step(index=len(steps), action=action_tool(parsed.tool, parsed.arguments),
+                     observation=observation, thought=parsed.thought, model_ms=reply.model_ms)
+            )
 
     # 步数用完 —— ★ 弃答,不是硬答
     return AgentOutcome(

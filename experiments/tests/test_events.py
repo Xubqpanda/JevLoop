@@ -186,3 +186,71 @@ def test_rescore_script_is_runnable() -> None:
     )
     assert out.returncode == 0, out.stderr[-400:]
     assert "strict" in out.stdout and "flexible" in out.stdout
+
+
+# ═══════════════════════════════════════════════════════════
+# span 用起来 + 判分口径的接缝
+# ═══════════════════════════════════════════════════════════
+
+
+def test_run_loop_emits_a_span_per_step(tmp_path: Path) -> None:
+    """★ **步级耗时不用手写计时** —— 每步一个 span,从日志直接读。
+
+    这是 `Session.span()` 存在的理由（移植自 Inspect 的 span 事件）。
+    在它之前,「第几步慢」只能靠各臂自己加计时器 —— 而六个臂各加一遍,
+    就是六种口径。
+    """
+    from experiments.baseline.act import Act
+
+    run_cell(bench=ToyCapitals(), make_agent=lambda t, tools: Act(),
+             model=model_that_answers("Action: lookup_capital[Peru]"),
+             cell=Cell(dataset="toy", arm="act", seed=0), log_root=tmp_path)
+    spans = [e for e in read_events(tmp_path, "toy/act") if e["type"] == "span"]
+    ends = [e for e in spans if e["phase"] == "end"]
+    assert ends, "每一步都要留下结束的 span"
+    assert all(e["name"].startswith("act/step-") for e in ends)
+    assert all(e["working_time"] >= 0 for e in ends)
+
+
+def test_bfcl_offers_the_migration_path_as_a_variant() -> None:
+    """★ 换官方判分器 = **换一个参数**,不是重跑一遍。"""
+    from experiments.benchmark.bfcl.bfcl import Bfcl
+
+    v = Bfcl(subset="v3-irrelevance", rows={"BFCL_v3_irrelevance.json": []}).score_variants()
+    assert set(v) == {"function-name", "official"}
+
+
+def test_official_bfcl_variant_refuses_instead_of_pretending() -> None:
+    """★★ **装包不等于对齐口径。**
+
+    官方评分器要完整调用（含参数值）,而参数是「可接受值列表」,形状自由。
+    在用它自己的解码器 + AST 检查接上之前,这里**必须明确报错** ——
+    一个看起来能用的假实现比没有更糟:它会让人以为已经对齐了官方口径,
+    而那时候报出来的数**和官方分不可比**。
+    """
+    from experiments.benchmark.bfcl.bfcl import Bfcl
+    from experiments.core.types import Trajectory
+
+    rows = {"BFCL_v3_irrelevance.json": [
+        {"id": "irrelevance_0", "question": [[{"role": "user", "content": "q"}]],
+         "function": [{"name": "f", "description": "d",
+                       "parameters": {"type": "dict", "properties": {"x": {"type": "integer"}}}}]}]}
+    b = Bfcl(subset="v3-irrelevance", rows=rows)
+    task = next(iter(b.tasks(split="test", limit=None, seed=0)))
+    with pytest.raises(RuntimeError) as exc:
+        b.score_variants()["official"](task, Trajectory(task_id=task.task_id, arm="x"))
+    msg = str(exc.value)
+    assert "bfcl-eval" in msg, "报错要说清装什么"
+    assert "不可比" in msg, "报错要说清为什么不能就这么报这个数"
+
+
+def test_working_time_is_derived_not_independently_set() -> None:
+    """★ `Event.working_time` 对模型调用是**派生值**（= timing 的三段和）。
+
+    同一个量存两个字段是重复,而重复就会分叉。这里把它钉成断言:
+    谁改了计时,`working_time` 必须跟着走。
+    """
+    e = E.ModelCallEvent()
+    e.timing = E.Timing(handshake_ms=10.0, ttft_ms=20.0, after_ttft_ms=30.0)
+    e.working_time = e.timing.total_ms
+    assert e.working_time == 60.0

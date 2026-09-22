@@ -106,7 +106,8 @@ class ReWOO:
             session.task.prompt,
         ] if p is not None).strip()
 
-        reply = session.call_model([Message(role="user", content=plan_prompt)])
+        with session.span("rewoo/plan"):
+            reply = session.call_model([Message(role="user", content=plan_prompt)])
         items = parse_plan(reply.text, [t.name for t in session.tools])
 
         if not items:
@@ -122,54 +123,56 @@ class ReWOO:
         # ── Worker：逐步执行，`#E` 换成真实观察 ────────────────
         evidence: dict[str, str] = {}
         unresolved: list[str] = []
-        for item in items:
-            if not item.tool:
-                continue
-            tool_names = [t.name for t in session.tools]
-            if not item.known:
-                # ★ 分两种,别混:
-                #
-                # ① **伪工具**（`LLM[...]` / `finish[...]`）—— 原文里就有,
-                #    我们在 prompt 里明确说过 `LLM[<question>]` 可用。
-                #    **它不是失败**,它的活由 Solver 干。早先把这类记成 unresolved,
-                #    于是 error 被置上,而 runner 一看到 error 就把答案判否 ——
-                #    **一个正确答案就这么丢了**（实测)。
-                # ② **我们不认识的工具名** —— 那才是计划错了,要记。
-                if item.tool.lower() not in PSEUDO_TOOLS:
-                    unresolved.append(f"{item.evidence_var or '?'}={item.tool}")
-                if item.evidence_var:
-                    evidence[item.evidence_var] = (
-                        f"(not executed here: {item.tool}[...] is handled by the solver)"
-                    )
-                steps.append(Step(
-                    index=len(steps),
-                    action=action_answer(f"plan step {item.evidence_var or ''}: {item.tool}[...]"),
-                    observation=f"skipped: {item.tool} 不是工具,交给 Solver",
-                ))
-                continue
+        # ★ Worker 阶段 —— 三段各自一个 span,于是「Plan 慢还是 Work 慢」从日志直接读得出
+        with session.span("rewoo/work"):
+            for item in items:
+                if not item.tool:
+                    continue
+                tool_names = [t.name for t in session.tools]
+                if not item.known:
+                    # ★ 分两种,别混:
+                    #
+                    # ① **伪工具**（`LLM[...]` / `finish[...]`）—— 原文里就有,
+                    #    我们在 prompt 里明确说过 `LLM[<question>]` 可用。
+                    #    **它不是失败**,它的活由 Solver 干。早先把这类记成 unresolved,
+                    #    于是 error 被置上,而 runner 一看到 error 就把答案判否 ——
+                    #    **一个正确答案就这么丢了**（实测)。
+                    # ② **我们不认识的工具名** —— 那才是计划错了,要记。
+                    if item.tool.lower() not in PSEUDO_TOOLS:
+                        unresolved.append(f"{item.evidence_var or '?'}={item.tool}")
+                    if item.evidence_var:
+                        evidence[item.evidence_var] = (
+                            f"(not executed here: {item.tool}[...] is handled by the solver)"
+                        )
+                    steps.append(Step(
+                        index=len(steps),
+                        action=action_answer(f"plan step {item.evidence_var or ''}: {item.tool}[...]"),
+                        observation=f"skipped: {item.tool} 不是工具,交给 Solver",
+                    ))
+                    continue
 
-            argument, missing = substitute_evidence(item.argument, evidence)
-            if missing:
-                # ★ ReWOO 固有的失败模式:盲计划引用了一个不存在的变量。
-                #   原样把 `#E9` 传给工具会变成一次莫名其妙的检索失败,
-                #   而真正的原因是计划错了。
-                unresolved.extend(missing)
-                if item.evidence_var:
-                    evidence[item.evidence_var] = f"(unresolved: {' '.join(missing)})"
-                continue
+                argument, missing = substitute_evidence(item.argument, evidence)
+                if missing:
+                    # ★ ReWOO 固有的失败模式:盲计划引用了一个不存在的变量。
+                    #   原样把 `#E9` 传给工具会变成一次莫名其妙的检索失败,
+                    #   而真正的原因是计划错了。
+                    unresolved.extend(missing)
+                    if item.evidence_var:
+                        evidence[item.evidence_var] = f"(unresolved: {' '.join(missing)})"
+                    continue
 
-            tool = next(t for t in session.tools if t.name == item.tool)
-            first = first_arg_name(tool)
-            if first is None:
-                unresolved.append(f"{item.evidence_var or item.tool}: 工具没有可用的参数名")
-                continue
-            observation = session.call_tool(item.tool, {first: argument})
-            if item.evidence_var:
-                evidence[item.evidence_var] = observation
-            steps.append(
-                Step(index=len(steps), action=action_tool(item.tool, {first: argument}),
-                     observation=observation)
-            )
+                tool = next(t for t in session.tools if t.name == item.tool)
+                first = first_arg_name(tool)
+                if first is None:
+                    unresolved.append(f"{item.evidence_var or item.tool}: 工具没有可用的参数名")
+                    continue
+                observation = session.call_tool(item.tool, {first: argument})
+                if item.evidence_var:
+                    evidence[item.evidence_var] = observation
+                steps.append(
+                    Step(index=len(steps), action=action_tool(item.tool, {first: argument}),
+                         observation=observation)
+                )
 
         # ── Solver：任务 + 计划 + 证据 → 答案 ──────────────────
         evidence_block = "\n".join(f"{k} = {v}" for k, v in evidence.items()) or "(no evidence)"
@@ -185,7 +188,8 @@ class ReWOO:
             "# Evidence",
             evidence_block,
         ])
-        solved = session.call_model([Message(role="user", content=solver_prompt)])
+        with session.span("rewoo/solve"):
+            solved = session.call_model([Message(role="user", content=solver_prompt)])
         answer = extract_answer(solved.text) or solved.text.strip()
 
         steps.append(Step(index=len(steps), action=action_answer(answer), thought=solved.text))
