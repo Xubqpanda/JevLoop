@@ -32,6 +32,7 @@
 | `tau2-bench` | http | `https://codeload.github.com/sierra-research/tau2-bench/tar.gz/refs/tags/v0.1.0` | `9` 个 | 37199f36924c | ~56 MB（整个仓库；本数据集约 25 MB） | ★ **必须钉 v0.1.0** —— 仓库 HEAD 已经是 τ³-bench v1.0.1,而它自己的 README 写着 `<1.0.1` 的结果不能和 `>=1.0.1` 比。
   ★ 而 v0.1.0 的 `tasks.json` **就是 base 划分**（278 条）;HEAD 上多了 `split_tasks.json`,base 要从里面挑 —— 换版本连哪 278 条都会变。
   ★ `test` 那一列在排行榜口径下要跑 **pass^k = 4 次/任务**（`comb(success,k)/comb(trials,k)`） |
+| `terminal-bench` | http | `https://codeload.github.com/laude-institute/terminal-bench/tar.gz/91e10457b5410f16c44364da1a34cb6de8c488a5` | `3` 个 | 91e10457b5410f16c44364da1a34cb6de8c488a5 | ~14 MB（repo @ v0.1.1，不含 docker 镜像） | ★ **terminal-bench-core==0.1.1** —— registry.json 里 publish 的 lock entry:commit 91e10457 / branch dataset/terminal-bench-core/v0.1.x。解压到 `dataset/terminal_bench/v0.1.1/`（顶层名是 codeloud 的前缀）。docker 镜像**不在**这份里,每题 Dockerfile 现场 build。task_id_subset 80 个 id (含 .easy/.hard 变体) 的 unique base = 70 dir。 |
 | `triviaqa` | hf-dataset | `trivia_qa:rc.nocontext` | — | ⚠️ **main**（未钉） | ~700 MB（138,384 + 17,944 + 17,210） | ★ config 必须是 `rc.nocontext` —— ReWOO 用的就是它。★ 答案带**别名集**,官方口径与 ReWOO 口径不同,见本文件头部。`revision` 未钉,已用 fingerprint 记进 dataset_version |
 
 ## 怎么用

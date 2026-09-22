@@ -39,6 +39,7 @@ from experiments.benchmark import bfcl as bfcl_bench  # noqa: F401
 # ★ 三个 BigBench 任务**共用一份 ReWOO tarball** —— 一次下载抽三个 CSV。
 from experiments.benchmark import bigbench as bigbench_bench  # noqa: F401
 from experiments.benchmark import alfworld as alfworld_bench  # noqa: F401
+from experiments.benchmark import terminal_bench as terminal_bench_bench  # noqa: F401
 from experiments.benchmark import fever as fever_bench  # noqa: F401
 from experiments.benchmark import gsm8k as gsm8k_bench  # noqa: F401
 from experiments.benchmark import hotpotqa as hotpotqa_bench  # noqa: F401
@@ -153,6 +154,8 @@ BENCHMARK_FACTORIES: dict[str, Callable[[], object]] = {
     sotuqa_bench.SotuQa.name: sotuqa_bench.SotuQa,
     # ★ 交互式环境:需要 textworld,而且要用 `on_task` 绑定每题的环境
     alfworld_bench.AlfWorld.name: alfworld_bench.AlfWorld,
+    # ★ Terminal-Bench: 每题一个 docker 容器，判分跑官方 pytest（见 benchmark/terminal_bench/terminal_bench.py 头部）
+    terminal_bench_bench.TerminalBench.name: terminal_bench_bench.TerminalBench,
     # ★ 两方任务:还需要一个 LLM 用户模拟器（见它文件头的说明）
     tau2_bench.Tau2Bench.name: tau2_bench.Tau2Bench,
 }
