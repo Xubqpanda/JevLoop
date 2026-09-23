@@ -101,7 +101,7 @@ def run_cell(
     limit: int | None = None,
     max_steps: int = 20,
     temperature: float = 0.0,
-    max_tokens: int = 1024,
+    max_tokens: int | None = None,
     region: str = "unknown",
     cold_start: bool = False,
     log_root: Path | None = None,

@@ -269,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="只跑前 N 条（筛选阶段用）")
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="不传 = **不发这个字段**,用服务端的默认。默认不传 —— 我们自己钉一个上限曾经咬过 ALFWorld")
     parser.add_argument("--dump-requests", default="",
                         help="把每次判定**发出去的正文**落到这个目录（一题一个 jsonl）")
     parser.add_argument("--tasks", default="",

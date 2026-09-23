@@ -90,7 +90,7 @@ class Session:
         model: ModelClient,
         max_steps: int,
         temperature: float,
-        max_tokens: int,
+        max_tokens: int | None,
         dump_requests: Path | None = None,
     ) -> None:
         # ★ 判定请求的**正文**往哪落（`None` = 不落）。

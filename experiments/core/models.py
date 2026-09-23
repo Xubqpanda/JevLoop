@@ -119,7 +119,7 @@ class ModelClient(Protocol):
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
@@ -153,7 +153,7 @@ class ScriptedModel:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
@@ -229,7 +229,7 @@ class OpenAICompatModel:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: Thinking | None = None,
@@ -246,10 +246,16 @@ class OpenAICompatModel:
         body_fields: dict[str, Any] = {
             "model": self.model_id,
             "messages": payload_messages,
-            "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        # ★ **`max_tokens` 不给就不发。**
+        #   原来无条件发 1024 —— 那是**我们替服务端定了一个上限**,而不是
+        #   「模型能说多少」。实测被它咬到的地方:ALFWorld 一步要输出一条命令 +
+        #   Thought,而 1024 是**按 BFCL 那种一行的动作挑的**。
+        #   `None` = 不写这个字段,由服务端用它自己的默认。
+        if max_tokens is not None:
+            body_fields["max_tokens"] = max_tokens
         if tools is not None:
             body_fields["tools"] = tools
         if stop:
@@ -341,7 +347,7 @@ class CallableModel:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[dict[str, Any]] | None = None,
         thinking: "Thinking | None" = None,
