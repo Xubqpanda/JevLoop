@@ -314,6 +314,56 @@ def test_candidates_drop_what_was_already_done() -> None:
     assert seen[1] == [DONE], f"删完必须留出口,而不是留空:{seen[1]}"
 
 
+def _field_line(frame: str, label: str) -> str:
+    """从渲染好的帧里取一行。**按字段名取,不做子串匹配** ——
+    工具名也会出现在 `already_done` 和 `task` 里,子串断言会假绿。"""
+    for line in frame.splitlines():
+        if line.startswith(f"{label}:"):
+            return line
+    raise AssertionError(f"帧里没有 {label!r} 这一行:\n{frame}")
+
+
+def test_the_needs_tool_frame_lists_the_actions_that_are_left() -> None:
+    """★★★ §8.2 最直接的一次应用:**问「还有没有动作」的帧里必须装着动作。**
+
+    `needsTool` 问的是「这个任务还有没有没做的动作?」,而它的帧原来只有
+    `already_done`（**做过什么**）—— 只给「做过的」,却问「还剩哪些」,
+    模型只能反推,而反推在「做过的那个恰好就是唯一合适的工具」时**给出错的答案**。
+
+    实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:调对了唯一合适的工具之后,
+    `needsTool` 仍判「还要动作」（0.73）→ 又调了一个语义邻居
+    （`battle_details` → `war_details`、`currency_conversion` → `unit_conversion`）
+    → `sorted(called) != sorted(gold)` → 判 `wrong_tool`。
+    **剩下的 10 条 `wrong_tool` 全是这个形状,没有一条是选错了。**
+
+    ★ 这不是判定模型的错,也不是题面的错（题面一个字没动）——
+      是**帧里没有它要判的那个东西**。§8.14 三次事故,加这次是第四次,都在帧上。
+    """
+    session = make_session()
+    client = ScriptedClient(noul=[0.9, 0.1])
+    ctrl = TypedController(client)
+    run_loop(session, LoopConfig(name="react-typed", instruction="x", controller=ctrl))
+
+    # ★ 断言**上线的那段正文**（`state["frame"]`）,不是某个中间对象 ——
+    #   中间对象对了而线上少了,测试照样绿。
+    frames = [r.state["frame"] for r in client.requests if "needsTool" in r.questions]
+    assert len(frames) >= 2, f"这道题至少要走两步:{frames}"
+
+    # ① 还没动手:唯一的动作必须列在帧里
+    assert "lookup_capital" in _field_line(frames[0], "actions_left"), \
+        f"问「还有没有动作」却没给「有哪些」:\n{frames[0]}"
+
+    # ② 做完了:**同一个动作必须从「还剩」里消失**,而且不能渲染成空白
+    left = _field_line(frames[1], "actions_left")
+    assert "lookup_capital" not in left, f"做过的动作不该还算「还剩」:{left}"
+    assert left.strip() == "actions_left: (none)", \
+        f"空列表要明说是「没有」,不能留白（§8.15 那条「还没有 vs 忘了喂」）:{left!r}"
+
+    # ③ ★ **哨兵不是动作。** `DONE` 是 `pickTool` 的选项键,不是一件可做的事;
+    #    漏进这里会把「已经做完了」显示成「还剩 __done__ 可做」。
+    assert "__done__" not in "".join(frames), "`DONE` 哨兵不该出现在 `needsTool` 的帧里"
+
+
 def test_candidates_do_not_offer_the_exit_before_anything_is_done() -> None:
     """★ 反面:**一次都没做过时不给出口**。
 

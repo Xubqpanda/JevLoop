@@ -91,6 +91,16 @@ class AgentCtx:
     candidates: dict[str, list[str]] = field(default_factory=dict)
     # 候选被窗口截断时**必须明说**（TS 的 `MAX_FILE_OPTIONS = 20` 那条）
     candidate_notes: dict[str, str] = field(default_factory=dict)
+    #: ★★★ **还剩哪些动作没做** —— 工具名的列表，由调用方每步重算。
+    #:
+    #: `needsTool` 问的是「这个任务还有没有没做的动作?」，
+    #: 而它的帧原来只有 `already_done`（**做过什么**）——
+    #: **问「还有没有」却不给「有哪些」**，模型只能从「做过的」反推，那是猜。
+    #:
+    #: 实测（2026-09-22,`bfcl-v3-multiple × react-typed`）：调对了唯一合适的工具之后，
+    #: `needsTool` 仍判「还要动作」（0.73），于是又调了一个语义邻居 ——
+    #: 10 条 `wrong_tool` 全是这个形状。
+    remaining: tuple[str, ...] = ()
 
     def records(self) -> list[StepRecord]:
         return list(self.history)
@@ -249,7 +259,12 @@ def compile_frame(spec: FrameSpec, ctx: AgentCtx) -> Frame:
                 # ★ 截断候选**必须明说** —— 模型会以为「就这些」
                 truncations[spec_field.name] = (len(items), MAX_LISTED_CANDIDATES)
                 items = items[:MAX_LISTED_CANDIDATES]
-            body = ", ".join(str(x) for x in items)
+            # ★ **空的列表是一个事实,不是一处空白。**
+            #   `actions_left:` 后面什么都没有,和「这个字段没喂上」在渲染上
+            #   长得一模一样 —— 而判定模型分不出,它会当成「这里没东西」。
+            #   这正是 §8.15 那条 `Frame.missing` 的形状:报不出「没有」和
+            #   「忘了喂」的检查,等于没有检查。
+            body = ", ".join(str(x) for x in items) if items else "(none)"
         else:
             body = str(raw)
 
@@ -285,6 +300,10 @@ NODE_FRAMES: dict[str, FrameSpec] = {
             # ★ 是一份**清单**,不是一个计数 —— `steps_done: 2` 那种写法分不出
             #   「读过了」和「写过了」（实测：写任务里文件从没被写出来）
             FrameField("history", 300, "already_done", clip="list"),
+            # ★★★ **「还剩哪些动作」和「做过什么」是两件事,两个都要给。**
+            #   它问的是「还有没有没做的动作」——只给「做过的」等于让它反推,
+            #   而反推在「做过的工具恰好就是唯一合适的那个」时给出错的答案（实测）。
+            FrameField("remaining", 200, "actions_left", clip="list"),
         ),
         excluded=(("draft", "还没生成,这时没有 draft"),),
     ),

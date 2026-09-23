@@ -236,6 +236,15 @@ class TypedController:
 
     def decide(self, session: Session, view: DecisionView) -> Decision:
         ctx = ctx_from_steps(view.task_prompt, list(view.history))
+        # ★★★ **每步重算「还剩哪些动作」并放进帧。**
+        #   `needsTool` 问「还有没有没做的动作」—— 而它的帧必须**装着动作**,
+        #   否则模型只能从「做过什么」反推（§8.2:帧里没有的,它判不出来）。
+        #   和 `candidates()` 同一个来源,所以两处不会分叉。
+        #   ⚠️ **`DONE` 不算动作** —— 它是「没有动作了」的出口,不是一件事。
+        #   `pickTool` 需要它当**选项**（选项键),`needsTool` 需要的是
+        #   「还剩哪些**事**」,两者差这一个哨兵。混进来会让一个已经做完的
+        #   任务在帧里显示成「还剩 `__done__` 可做」。
+        ctx.remaining = tuple(a for a in candidates(session, ctx) if a != DONE)
         self.trace = []
 
         if not view.tools:
