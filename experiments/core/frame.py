@@ -67,6 +67,28 @@ class StepRecord:
     input: str
     result: str
 
+    def __str__(self) -> str:
+        """★★★ **帧里的人话版** —— 不这样,模型看到的是 dataclass 的 repr。
+
+        实测（2026-09-23,`multiple_68`）:`clip="list"` 走
+        `", ".join(str(x) for x in items)`,于是 `already_done` 那一行是::
+
+            already_done: StepRecord(step=0, tool='library.search_books', input='',
+                          result='(BFCL scores the call itself rather than...')
+
+        **204 个字符,主体是 Python 语法,而且把 `last_result` 逐字重复了一遍。**
+        可帧要回答的是「**任务要求的事做完没有**」—— 交给模型的却是对象 dump。
+
+        ★ 分工:**这里给形状**(调过什么、按什么顺序),**`last_result` 给细节**
+          (最近一次到底返回了什么)。所以每条的结果在这里截短 ——
+          两份都全给,等于同一段话在帧里出现两遍,白占预算。
+        """
+        arg = f"({self.input})" if self.input else "()"
+        res = " ".join(self.result.split())
+        if len(res) > 60:
+            res = res[:57] + "..."
+        return f"{self.tool}{arg} -> {res}" if res else f"{self.tool}{arg}"
+
 
 @dataclass
 class AgentCtx:
@@ -300,10 +322,6 @@ NODE_FRAMES: dict[str, FrameSpec] = {
             # ★ 是一份**清单**,不是一个计数 —— `steps_done: 2` 那种写法分不出
             #   「读过了」和「写过了」（实测：写任务里文件从没被写出来）
             FrameField("history", 300, "already_done", clip="list"),
-            # ★★★ **「还剩哪些动作」和「做过什么」是两件事,两个都要给。**
-            #   它问的是「还有没有没做的动作」——只给「做过的」等于让它反推,
-            #   而反推在「做过的工具恰好就是唯一合适的那个」时给出错的答案（实测）。
-            FrameField("remaining", 200, "actions_left", clip="list"),
         ),
         excluded=(("draft", "还没生成,这时没有 draft"),),
     ),
