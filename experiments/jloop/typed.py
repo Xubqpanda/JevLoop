@@ -48,6 +48,7 @@ decide()
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 
@@ -551,7 +552,11 @@ class TypedController:
             #   而落盘在 `record_decision`。第一次接的时候接到了 `trace` 上,
             #   于是 `--dump-requests` 静默地一个文件都不写（跑完才发现目录不存在）。
             #   和 §8.15 那条「要求写在文档里、没写在代码里」是同一个病。
-            request_text=req.render(),
+            # ★★★ **`req.render()` 不是线上的东西** —— 它的 `# Options` 只有选项名,
+            #   而真正发出去的 `questions[node].criteria` 是**选项 → 判据**的映射。
+            #   「给 Jev 看的 choice 是什么」问的正是后者,所以两段都落。
+            request_text=(req.render() + "\n\n# 线上的 questions（真正发出去的那一份）\n"
+                          + json.dumps(_wire(question), ensure_ascii=False, indent=1)),
         )
         if not decided:
             self.trace.append({
