@@ -274,6 +274,46 @@ def test_run_loop_actually_fills_the_task_prompt() -> None:
 # ═══════════════════════════════════════════════════════════
 
 
+def test_the_same_frame_is_not_the_same_request() -> None:
+    """★★★ **比「两次跑的是不是同一个判定」,要比请求的指纹,不是帧的。**
+
+    实测踩过（2026-09-23）:我拿 `frame_digest` 相同当成了「请求相同」,
+    于是把两批跑里同一次判定的差别读成了**判定后端随机**,还写进了文档。
+
+    **后端是确定的**:同一个请求原样发 12 次,12 次都是 `top=1.0000`。
+
+    真因是 `choice` 的**选项不在帧里** —— `pickTool` 的帧只有
+    `task` + `last_result`（`excluded` 里明写着候选不占帧的字段,§8.4）。
+    于是**换掉候选集而帧指纹一动不动**,实测同一个帧指纹 `bb30c546d43b63cd`:
+
+        [war, leader]           -> war_details      top=1.00
+        [war, leader, battle]   -> battle_details   top=0.99   ← 换了答案
+        [war, leader, done]     -> war_details      top=0.71   ← 差 0.29
+
+    ★ 而 `top=0.71` 离 `pickTool` 的 0.6 门限只有 0.11 ——
+      这正是「判定贴在门限边上」的来源:**帧给的证据薄,不是后端乱。**
+    """
+    from experiments.core.frame import (AgentCtx, Question, Request,
+                                        compile_frame, frame_for)
+
+    ctx = AgentCtx(task="Who won the battle?")
+    frame = compile_frame(frame_for("pickTool"), ctx)
+
+    def request(options: list[str]) -> Request:
+        return Request(frame=frame, question=Question(
+            node="pickTool", kind="choice", ask="Which tool next?",
+            options=tuple(options), threshold=0.6,
+            criteria={o: "" for o in options}))
+
+    two, three = request(["a", "b"]), request(["a", "b", "c"])
+
+    # 前提:帧**一模一样** —— 这就是当初骗过我的那个同一性
+    assert two.frame.digest() == three.frame.digest(), "前提不成立,这个测试就没意义了"
+    # ★ 而请求**不一样**,指纹必须分得开
+    assert two.digest() != three.digest(), (
+        "换了候选集而请求指纹不变 —— 那么「指纹相同」又会骗下一个人一次")
+
+
 def test_candidates_drop_what_was_already_done() -> None:
     """★★ §8.4:**固定的候选会让模型去选一个已经不适用的动作。**
 

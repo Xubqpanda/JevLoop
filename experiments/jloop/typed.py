@@ -474,7 +474,8 @@ class TypedController:
             session.record_decision(
                 step=step, node=node, answer=f"({v.code})", confidence=0.0,
                 correct=False, latency_ms=0.0, batch=batch,
-                frame_digest=req.frame.digest(), note=v.detail,
+                frame_digest=req.frame.digest(),
+                request_digest=req.digest(), note=v.detail,
             )
             if not v.fatal:
                 continue
@@ -498,7 +499,8 @@ class TypedController:
             session.record_decision(
                 step=step, node=node, answer="(answer_unusable)", confidence=0.0,
                 correct=False, latency_ms=(time.perf_counter() - t0) * 1000, batch=batch,
-                frame_digest=req.frame.digest(), note=detail,
+                frame_digest=req.frame.digest(), request_digest=req.digest(),
+                note=detail,
             )
             return None
 
@@ -527,6 +529,10 @@ class TypedController:
             # ★ 帧的指纹进日志（§8.14）—— 两次运行帧不一样而没人发现,
             #   「同一个方法」这句话就不成立。
             frame_digest=req.frame.digest(),
+            # ★★★ **请求的指纹也进**（§8.17）—— 判「两次跑的是不是同一个判定」
+            #   要比的是这个,不是 `frame_digest`:那个只覆盖帧,
+            #   而 `choice` 的**选项不在帧里**,换了候选帧指纹一动不动。
+            request_digest=req.digest(),
             # ★ `correct` 是「这次判定**成立**吗」,不是「护身符」。
             #   全填 True 的话,`correct` 那一列恒为真,
             #   于是「置信度和正确性同现」这句话**在账面上永远成立** —— 而它本该被检验。

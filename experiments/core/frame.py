@@ -498,6 +498,33 @@ class Request:
             parts.extend(f"{i}. {o}" for i, o in enumerate(self.question.options, start=1))
         return "\n".join(parts)
 
+    def digest(self) -> str:
+        """★★★ **整个请求的指纹** —— 帧 + 问题 + **选项**。
+
+        ⚠️ 这里踩过一次,值得记:**`frame_digest` 只覆盖帧,而帧不等于请求。**
+
+        `pickTool` 的帧只有 `task` + `last_result`（候选**故意不占帧的字段**,
+        见 §8.4「每步重建」）—— 于是**换了候选集而帧指纹一动不动**。
+        实测（2026-09-23,同一帧指纹 `bb30c546d43b63cd`）:
+
+        ====================== ==================== ========
+        候选                    判定                  top
+        ====================== ==================== ========
+        `[war, leader]`         `war_details`        **1.00**
+        `[leader, war]`         `war_details`        1.00
+        `[war, leader, battle]` **`battle_details`** 0.99
+        `[war, leader, done]`   `war_details`        **0.71**
+        ====================== ==================== ========
+
+        ★ 我拿「帧指纹相同」当成了「请求相同」,于是把第 1 行和第 4 行的差别
+        （1.00 vs 0.71）读成了**判定后端随机**,还写进了文档。
+        **后端是确定的**:同一个请求原样发 12 次,12 次都是 `top=1.0000`。
+
+        ⇒ **比「两次跑的是不是同一个判定」,要比这个,不是比 `frame_digest`。**
+          帧的指纹回答的是「它看到了什么」;请求的指纹才回答「它被问了什么」。
+        """
+        return hashlib.sha256(self.render().encode("utf-8")).hexdigest()[:16]
+
     def chars(self) -> int:
         return len(self.render())
 

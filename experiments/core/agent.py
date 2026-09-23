@@ -233,6 +233,7 @@ class Session:
         latency_ms: float,
         batch: int | None = None,
         frame_digest: str = "",
+        request_digest: str = "",
         note: str = "",
     ) -> None:
         """★ `confidence` 和 `correct` **记在同一行**。RQ2 全靠这一对。
@@ -253,6 +254,7 @@ class Session:
                 batch=self._batch if batch is None else batch,
                 latency_ms=latency_ms,
                 frame_digest=frame_digest,
+                request_digest=request_digest,
                 note=note,
             )
         )
