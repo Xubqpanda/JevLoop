@@ -547,6 +547,11 @@ class TypedController:
             #   所以原因写在**同一行的 `note` 里**,不是另起一行。
             note="" if decided else f"top={answer.top():.3f} < {question.threshold}",
             latency_ms=(time.perf_counter() - t0) * 1000, batch=batch,
+            # ★★ **正文落在这里,不是 `trace` 里** —— `trace` 是内存里的调试列表,
+            #   而落盘在 `record_decision`。第一次接的时候接到了 `trace` 上,
+            #   于是 `--dump-requests` 静默地一个文件都不写（跑完才发现目录不存在）。
+            #   和 §8.15 那条「要求写在文档里、没写在代码里」是同一个病。
+            request_text=req.render(),
         )
         if not decided:
             self.trace.append({
