@@ -470,7 +470,9 @@ Everything else is plumbing. The parts you are most likely to want to replace:
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. It says what we merge, what we close without discussion, and where the open work actually is.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first — it says what we merge and what we close without discussion.
+
+[`TODO.md`](TODO.md) is what is left to build, ordered by what blocks the claim rather than by difficulty: the tool surface is four tools wide, decision frames have no cache policy, and the loop does not run long. Each entry says why it matters and where to start.
 
 ## License
 

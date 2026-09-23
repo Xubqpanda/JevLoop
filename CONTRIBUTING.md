@@ -57,16 +57,9 @@ None of this is about skill level. A two-line fix with a failing test in front o
 
 ## Where the work actually is
 
-The repo keeps its own list of open work. These are the real ones — each already has something decided about it, which is what makes them startable:
+[`TODO.md`](TODO.md) is the list. It is ordered by what blocks the project's central claim rather than by difficulty, and every entry says why it matters and where to start — the tool surface, a cache policy for decision frames, and running long are the three that carry weight; the rest is hygiene.
 
-| Work | Where it is described | Rough size |
-|---|---|---|
-| **Split the `Tool` seam.** `tools.ts` is the only capability seam in the repo with all three corners in one file, and it is the one that produces real side effects — the hardest to replace and the easiest to get wrong. The intended shape (`act.ts` for the interface, `act-local.ts` for the local-filesystem implementation) is sketched in `docs/CODE-STYLE.md` §10. | `CODE-STYLE.md` §10 | medium |
-| **The five files in the 待拆 queue** — `src/agent.ts`, `src/context.ts`, `src/decisiondoc.ts`, `web/app.js`, `web/app.css`. Each has a named seam; split along it, not along a line count. | `CODE-STYLE.md` §12 | medium |
-| **Anything in the issue tracker** labelled `good first issue` | GitHub issues | small |
-| **Your own itch.** Something the loop does badly on your workload is more interesting to us than anything on this list. | — | — |
-
-Every one of those needs the same three things: register a new `src/*.ts` in `scripts/check.ts`'s `LAYER` table in the same change, keep the module JSDoc honest about why the file cannot be split further, and run the four commands.
+Whatever you take on needs the same three things: register a new `src/*.ts` in `scripts/check.ts`'s `LAYER` table in the same change, keep the module JSDoc honest about why the file cannot be split further, and run the four commands.
 
 If you want to take one on, open an issue saying so and we will scope it with you before you write code. That is cheaper for both of us than a large PR that has to be reshaped.
 

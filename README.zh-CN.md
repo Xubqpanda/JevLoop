@@ -393,7 +393,9 @@ CWD_ROOT=./你的项目 PORT=7800 npm run serve
 
 ## 参与贡献
 
-先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（英文）。里面写了我们收什么样的改动、什么样的会直接关掉，以及现在真正开着的活在哪。
+先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（英文）—— 里面写了我们收什么样的改动、什么样的会直接关掉。
+
+[`TODO.md`](TODO.md)（英文）是还没做完的部分，按「什么卡住了那个主张」排序，不按难度：工具面只有四个工具、判定帧没有缓存策略、循环跑不长。每一项都写了为什么重要、从哪里下手。
 
 ## License
 
