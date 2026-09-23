@@ -357,3 +357,44 @@ def test_a_noul_threshold_actually_fires_end_to_end() -> None:
         srv.shutdown()
 
     assert resp.answers["needs"].top() >= 0.5, "过不了门限的话这条路永远是死的"
+
+
+def test_the_request_carries_a_normal_user_agent() -> None:
+    """★★★ **不带正常 UA 会被 Cloudflare 拦,而 403 看起来像「key 过期」。**
+
+    实测（2026-09-23）:同一份代码 20 分钟前 88/100,之后**全部 403**。
+    原因不是 key、不是额度 —— 403 的 body 里写着 **`error code: 1010`**,
+    那是 Cloudflare 的「按客户端指纹封禁」,**拦的是 `Python-urllib/3.x`**。
+
+    ★ **只看状态码会指向完全错误的结论。** 我第一反应是去问额度,
+      而真相在**响应体**里。这和今天修的其他几处是同一个形状 ——
+      一个信号看起来像一件事,实际说的是另一件。
+
+    ★ TS 侧没这个问题,因为 `fetch` 自己会发一个正常 UA。
+    """
+    seen: dict = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            seen["ua"] = self.headers.get("User-Agent", "")
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = json.dumps({"answers": {"q": {"noul": 0.9}}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a: object) -> None:
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        HttpJevClient(f"http://127.0.0.1:{srv.server_port}", "k",
+                      timeout_s=5).decide(_req({"q": {"kind": "noul"}}))
+    finally:
+        srv.shutdown()
+
+    ua = seen.get("ua", "")
+    assert ua and "urllib" not in ua.lower(), f"UA 会被 Cloudflare 拦:{ua!r}"

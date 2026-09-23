@@ -298,7 +298,24 @@ class HttpJevClient:
         }).encode()
         req = urllib.request.Request(
             f"{self.base_url}/v1/systemone", data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._key}",
+                # ★★★ **必须带一个正常的 User-Agent —— 否则会被 Cloudflare 拦。**
+                #
+                #   实测（2026-09-23）:同一份代码 20 分钟前还是 88/100,之后**全部 403**。
+                #   而 403 的 body 里写着 **`error code: 1010`**,那是 Cloudflare 的
+                #   「按客户端指纹封禁」—— **它拦的是 `Python-urllib/3.x` 这个 UA**,
+                #   跟 key、额度、模型都没有关系。
+                #
+                #   ★ 而**只看状态码会指向完全错误的结论**:403 看起来像
+                #     「key 过期 / 没权限」,我第一反应就是去问额度。
+                #     **响应体里才有真相。** 这和今天修的其他几处是同一个形状:
+                #     一个信号看起来像一件事,实际说的是另一件。
+                #
+                #   ★ TS 侧没这个问题是因为 `fetch` 自己会发一个正常 UA。
+                "User-Agent": "jevloop/0.1 (+https://github.com/zjunlp/JevLoop)",
+            },
         )
 
         t0 = time.perf_counter()
