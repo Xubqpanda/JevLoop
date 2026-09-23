@@ -124,6 +124,21 @@ class AgentCtx:
     #: 10 条 `wrong_tool` 全是这个形状。
     remaining: tuple[str, ...] = ()
 
+    #: ★★ **调过的工具各自是干什么的** —— 已经渲染成文本,直接进帧。
+    #:
+    #: 为什么需要它:`needsTool` 要判「任务要求的事做完没有」,
+    #: 而它原来只拿到工具**名字**::
+    #:
+    #:     already_done: library.search_books({'location': 'New York public library'})
+    #:
+    #: `library.search_books` 是一个光秃秃的标识符 —— **它不知道这个工具能做什么**,
+    #: 只能从名字猜「search_books 够不够回答『找一本历史小说』」。
+    #: 而 `pickTool` 那边**有**描述（`criteria` 的值）。
+    #:
+    #: ★ 这是**通用**的,不是 BFCL 特有的:任何数据集上,判「覆盖了没有」
+    #:   都需要知道那个工具**做什么**,而不只是它**叫什么**。
+    done_tools: str = ""
+
     def records(self) -> list[StepRecord]:
         return list(self.history)
 
@@ -322,6 +337,9 @@ NODE_FRAMES: dict[str, FrameSpec] = {
             # ★ 是一份**清单**,不是一个计数 —— `steps_done: 2` 那种写法分不出
             #   「读过了」和「写过了」（实测：写任务里文件从没被写出来）
             FrameField("history", 300, "already_done", clip="list"),
+            # ★ 「调过的工具能做什么」—— 判「任务被满足了吗」的依据。
+            #   名字 + 历史只说明**调过什么**,说明不了**覆没覆盖**。
+            FrameField("done_tools", 400, "done_tools"),
         ),
         excluded=(("draft", "还没生成,这时没有 draft"),),
     ),

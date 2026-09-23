@@ -246,6 +246,14 @@ class TypedController:
         #   「还剩哪些**事**」,两者差这一个哨兵。混进来会让一个已经做完的
         #   任务在帧里显示成「还剩 `__done__` 可做」。
         ctx.remaining = tuple(a for a in candidates(session, ctx) if a != DONE)
+        # ★★ **调过的工具带上它们的说明。**
+        #   `needsTool` 判的是「任务要求的事做完没有」,而工具**名字**答不了这个 ——
+        #   `library.search_books` 得配上「Search for a book in a given library」
+        #   才判得出「找一本历史小说」覆盖了没有。
+        #   `pickTool` 一直有描述（`criteria` 的值）,`needsTool` 这边漏了。
+        called = {r.tool for r in ctx.records()}
+        docs = {t.name: t.description for t in session.tools}
+        ctx.done_tools = "\n".join(f"{n} — {docs.get(n, '')}" for n in sorted(called))
         self.trace = []
 
         if not view.tools:
