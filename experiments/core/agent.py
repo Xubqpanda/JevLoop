@@ -21,6 +21,7 @@
 """
 
 from __future__ import annotations
+import json
 
 import time
 from dataclasses import dataclass, field
@@ -90,7 +91,15 @@ class Session:
         max_steps: int,
         temperature: float,
         max_tokens: int,
+        dump_requests: Path | None = None,
     ) -> None:
+        # ★ 判定请求的**正文**往哪落（`None` = 不落）。
+        #
+        #   为什么要有它:`results.jsonl` 里只有 `frame_digest` / `request_digest`,
+        #   而**指纹没法拿来读**。2026-09-23 连着栽了两次 —— 改完帧之后我
+        #   「重放」出请求来量效果,量到的却是**真实循环里不会出现的帧**上的数,
+        #   两次都是事后才发现的。**没有正文,就没有办法核对重放对不对。**
+        self.dump_requests = dump_requests
         self.run_id = run_id
         self.task = task
         self.arm = arm
@@ -234,6 +243,7 @@ class Session:
         batch: int | None = None,
         frame_digest: str = "",
         request_digest: str = "",
+        request_text: str = "",
         note: str = "",
     ) -> None:
         """★ `confidence` 和 `correct` **记在同一行**。RQ2 全靠这一对。
@@ -258,6 +268,18 @@ class Session:
                 note=note,
             )
         )
+
+        # ★ 正文落盘（opt-in）—— 一个 task 一个文件,按 `task_id` 命名。
+        #   写的是**原样发出去的那段字**,不是重构出来的:重放对不上真实帧
+        #   这件事已经连着骗过我两次,而唯一能核对的办法就是把真的存下来。
+        if self.dump_requests is not None and request_text:
+            self.dump_requests.mkdir(parents=True, exist_ok=True)
+            safe = self.task.task_id.replace("/", "__")
+            with open(self.dump_requests / f"{safe}.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(
+                    {"step": step, "node": node, "answer": answer,
+                     "confidence": confidence, "request_digest": request_digest,
+                     "text": request_text}, ensure_ascii=False) + "\n")
 
     def note_retry(self, ms: float) -> None:
         """重试/退避的耗时。**单独攒着** —— 混进模型时间里会让失败的臂看起来更慢。"""

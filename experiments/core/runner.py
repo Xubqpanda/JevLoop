@@ -107,6 +107,7 @@ def run_cell(
     log_root: Path | None = None,
     argv: Sequence[str] = (),
     only: Sequence[str] = (),
+    dump_requests: Path | None = None,
 ) -> list[Result]:
     """跑一个格子。**一个格子一个 log 目录,永不覆盖。**"""
     # ★ `only` 是**定点重跑**:给一批 task_id 的后缀,只跑那些。
@@ -196,6 +197,7 @@ def run_cell(
             session = Session(
                 run_id=log.run_id, task=task, arm=cell.arm, tools=tools, executor=executor,
                 model=model, max_steps=max_steps, temperature=temperature, max_tokens=max_tokens,
+                dump_requests=dump_requests,
             )
 
             # 每题查一次「树还是不是那个」。★ 用 `repo_commit` 而不是逐文件 stat ——

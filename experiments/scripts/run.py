@@ -270,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--dump-requests", default="",
+                        help="把每次判定**发出去的正文**落到这个目录（一题一个 jsonl）")
     parser.add_argument("--tasks", default="",
                         help="定点重跑:逗号分隔的 task_id **后缀**,只跑这些"
                              "（给了它就不抽样,先取全部再筛）")
@@ -319,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         split=args.split,
         limit=args.limit,
         only=tuple(x for x in (args.tasks or "").split(",") if x.strip()),
+        dump_requests=Path(args.dump_requests) if args.dump_requests else None,
         max_steps=args.max_steps,
         temperature=args.temperature,
         max_tokens=args.max_tokens,

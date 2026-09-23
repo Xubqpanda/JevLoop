@@ -475,7 +475,8 @@ class TypedController:
                 step=step, node=node, answer=f"({v.code})", confidence=0.0,
                 correct=False, latency_ms=0.0, batch=batch,
                 frame_digest=req.frame.digest(),
-                request_digest=req.digest(), note=v.detail,
+                request_digest=req.digest(), request_text=req.render(),
+                note=v.detail,
             )
             if not v.fatal:
                 continue
@@ -500,7 +501,7 @@ class TypedController:
                 step=step, node=node, answer="(answer_unusable)", confidence=0.0,
                 correct=False, latency_ms=(time.perf_counter() - t0) * 1000, batch=batch,
                 frame_digest=req.frame.digest(), request_digest=req.digest(),
-                note=detail,
+                request_text=req.render(), note=detail,
             )
             return None
 
