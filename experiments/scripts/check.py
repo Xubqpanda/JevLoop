@@ -118,6 +118,13 @@ def check_arm_names() -> list[str]:
     for arm_dir in sorted(LOG.glob("*/*")):
         if SUPERSEDED in arm_dir.parts or not arm_dir.is_dir():
             continue
+        # ★ **`rescore` 产生的目录不是臂。**
+        #   `scripts/rescore.py` 落盘时用 `<臂>-rescore-<口径>` 当目录名,
+        #   所以它**必然**不是注册过的臂名 —— 那是**工具的副作用,不是命名漂移**。
+        #   ★ 记进基线是错的:换一次口径就多一条,基线会一直长,
+        #     而「只能变小」那条就成了空话。**能机械识别的规则不该记成清单。**
+        if "-rescore-" in arm_dir.name:
+            continue
         if arm_dir.name not in arms:
             problems.append(
                 f"{arm_dir.relative_to(EXPERIMENTS)}/ 不是已知的臂名。\n"

@@ -1,6 +1,6 @@
 {
   "_why": "2026-09-22 之前跑的 run 的 meta.json 只有一个 wrapper（那时的 runner 就是这么写的），缺 dataset_version / split / generator / task_count —— 它们**确实不可引用**。那是一个**已经修好**的问题的存量，不是新问题，所以基线化而不是让门禁常红：一个永远红的检查等于没有检查（同 verify:port 与 file-focus-baseline.json 的做法）。★ **只能变小**：重跑一个就从这里删一个。数字不用它们，但它们是历史证据，所以不删目录。",
-  "_kind": "① meta.json 不完整的历史 run   ② 重判产生的伪臂名（rescore 写的是新目录，不是新臂）",
+  "_kind": "① meta.json 不完整的历史 run   ② rescore 的伪臂名由 check ③ 的规则识别,不记清单",
   "meta_incomplete": [
     "gsm8k/direct/2026-09-22T02-58-49Z-seed0",
     "gsm8k/direct/2026-09-22T02-59-45Z-seed0",
@@ -58,8 +58,5 @@
     "toy/rewoo/2026-09-22T02-16-36Z-seed0",
     "toy/rewoo/2026-09-22T02-36-17Z-seed0"
   ],
-  "unknown_arms": [
-    "gsm8k/direct-rescore-flexible",
-    "gsm8k/direct-rescore-strict"
-  ]
+  "unknown_arms": []
 }
