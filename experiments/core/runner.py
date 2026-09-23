@@ -106,9 +106,30 @@ def run_cell(
     cold_start: bool = False,
     log_root: Path | None = None,
     argv: Sequence[str] = (),
+    only: Sequence[str] = (),
 ) -> list[Result]:
     """跑一个格子。**一个格子一个 log 目录,永不覆盖。**"""
-    tasks = list(bench.tasks(split=split, limit=limit, seed=cell.seed))
+    # ★ `only` 是**定点重跑**:给一批 task_id 的后缀,只跑那些。
+    #   为什么需要它:整批 100 题里往往只有十几题是坏的,而全量一批要几分钟、
+    #   还带着 ±9 的噪声（§8.17）——**盯着已知坏的那几题看,信噪比高得多**。
+    #
+    # ⚠️ 给了 `only` 就**不抽样**:先把全部题取回来再筛。
+    #   否则「筛出来的 16 题」取决于 `limit` 和 `seed` 怎么抽的,
+    #   而调用方以为自己指定的是**确切的那些题**。
+    if only:
+        tasks = [t for t in bench.tasks(split=split, limit=None, seed=cell.seed)
+                 if any(t.task_id.endswith(x) for x in only)]
+        # ★ 点名要的题**必须真的存在** —— 打错一个后缀而静默少跑一题,
+        #   和 §8.10 那条「少返回答案不报」是同一个病。
+        missing = [x for x in only
+                   if not any(t.task_id.endswith(x) for t in tasks)]
+        if missing:
+            raise SystemExit(f"★ `--tasks` 里有对不上的: {missing}\n"
+                             f"  现有的题样例: {[t.task_id for t in tasks[:3]]}")
+        print(f"\n★ 定点重跑 {len(tasks)} 题: "
+              f"{', '.join(t.task_id.split('/')[-1] for t in tasks)}\n")
+    else:
+        tasks = list(bench.tasks(split=split, limit=limit, seed=cell.seed))
     commit, dirty = repo_commit(EXPERIMENTS_DIR.parent)
 
     # ★★★ **脏工作区要在开跑之前就说,不是在跑完之后记。**

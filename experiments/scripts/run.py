@@ -270,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--tasks", default="",
+                        help="定点重跑:逗号分隔的 task_id **后缀**,只跑这些"
+                             "（给了它就不抽样,先取全部再筛）")
     parser.add_argument("--region", default=os.environ.get("JEV_REGION", "unknown"))
     parser.add_argument("--cold-start", action="store_true", help="这一轮包含冷连接（DNS/TCP/TLS）")
     # 模型
@@ -315,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         model=model,
         split=args.split,
         limit=args.limit,
+        only=tuple(x for x in (args.tasks or "").split(",") if x.strip()),
         max_steps=args.max_steps,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
