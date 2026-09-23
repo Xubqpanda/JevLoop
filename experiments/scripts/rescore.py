@@ -51,7 +51,8 @@ from pathlib import Path
 from experiments.core.events import AnswerEvent, from_json
 from experiments.core.runlog import LOG_DIR, RunLog
 from experiments.core.runner import Cell, _safe_score  # noqa: PLC2701 —— 判分口径要完全一致
-from experiments.core.types import Trajectory
+from experiments.core.agent import action_tool
+from experiments.core.types import Step, Trajectory
 
 
 def find_run(spec: str) -> Path:
@@ -90,6 +91,35 @@ def rebuild_trajectory(arm: str, task_id: str, events: list) -> Trajectory:
             f"  （`answer` 事件是写重判时才发现缺的,见 events.py 的说明）"
         )
     a = answers[-1]
+
+    # ★★★ **工具调用的轨迹必须重建出来,不能留空。**
+    #
+    #   实测（2026-09-22）:`steps=()` 让 `bfcl-v3-multiple × react-typed`
+    #   重判时报出 **「翻转 85」** —— 而 85 恰好是原来判对的条数。
+    #   原因:BFCL 的判分器读的是
+    #
+    #       called = [s.action.name for s in trajectory.steps if is_tool_call(...)]
+    #
+    #   而 `steps=()` ⇒ `called = []` ⇒ **凡是有金标的题全判 `needs_tool_missed`**。
+    #
+    #   ★ 它**静默**:报出来是「翻转 85」,看起来像一个巨大的口径差异,
+    #     **而不像一个坏掉的工具**。差点让我得出「换了判分器,85 条变了」这个错结论。
+    #
+    #   ★ 而这份文档的上一段**本来就写着**「只需要三样:最终答案、
+    #     **工具调用的轨迹**、有没有弃答」—— **代码做的是另一回事。**
+    #     文档和代码说的不一致时,相信代码在做什么,别相信它说要做什么。
+    #
+    #   ⚠️ 重建不出来的一样东西:**`__parse_error__` 那种伪步骤**。
+    #     它不过 executor,所以**不发 `ToolCallEvent`** —— 事件里没有它。
+    #     ⇒ 重判出来的轨迹里只有**真实调用**,而判分器要的正是这个
+    #       （见 `core/types.py::is_tool_call`）。**这个「丢」是对的。**
+    steps = tuple(
+        Step(index=int(getattr(e, "step", i) or i),
+             action=action_tool(e.name, dict(e.arguments or {})),
+             observation=getattr(e, "observation", "") or "")
+        for i, e in enumerate(tools)
+    )
+
     return Trajectory(
         task_id=task_id,
         arm=arm,
@@ -97,7 +127,7 @@ def rebuild_trajectory(arm: str, task_id: str, events: list) -> Trajectory:
         escalated=a.escalated,
         error=a.error,
         usage=(),
-        steps=(),  # 重判只看答案与工具名;步级细节要的话从事件里另取
+        steps=steps,
     )
 
 
