@@ -178,35 +178,40 @@ def _choice_question(node: str, ask: str, options: list[str],
                     threshold=threshold, criteria=dict(criteria or {}))
 
 
-# ★★★ `DONE` **已删** —— 它和 `needsTool` 是同一个问题问了两次。
-#
-#   原来的链条（实测，2026-09-22,`bfcl-v3-multiple × react-typed`）:
-#
-#       needsTool → 「还有没有没做的动作？」→ 判「有」（0.73）
-#       pickTool  → 「Which tool should the agent call next?」
-#                    候选 = [剩下的工具...] + [DONE]
-#                  → **模型选了工具，没选 DONE**
-#
-#   ⇒ **两个节点问的是同一件事**（`needsTool`=「还有吗」/ `DONE`=「或者停？」），
-#     而它们会互相矛盾:`needsTool` 刚说「**还有**」，紧接着就问「**要哪个工具**」。
-#
-#   ★ 模型面对矛盾时相信前一个 —— 因为:
-#     ① `pickTool` 的措辞是「**该调哪个工具**」，**这个问题预设了要调一个**;
-#     ② `DONE` 摆在**一堆工具中间**，读起来像「以上都不是」。
-#
-#   ⇒ 后果:调对了第一个工具之后，又调了一个**语义邻居**
-#     （`battle_details`→`war_details`、`currency_conversion`→`unit_conversion`、
-#       `museum_info`→`tourist_spot_info`），10 条 `wrong_tool` 全是这个形状。
-#
-#   ★ 而**去掉它之后**，第一次调对 → 候选自然变空 → 走「候选已空」那条路去生成
-#     ⇒ **只调了一次** ⇒ 判对。**不是打补丁，是让一个问题只有一个归属。**
-#
-#   ⇒ 「停不停」**只归 `needsTool`**，那是它本来该干的。
+#: ★★★ `pickTool` 候选里的**终止项** —— `DECISION.md` 的 `pick_tool` 原文里就有它:
+#:
+#:     - done — 已有足够证据回答任务,工具循环可以结束了
+#:
+#: **实测没实现它的代价**(2026-09-22,`bfcl-v3-multiple × react-typed`):
+#: 判定**选对了工具**(82 → 25 条 `wrong_tool` 里,剩下的都是这一类),
+#: 但调完之后下一步 `needsTool` 仍说「还要动作」——
+#: 而候选里**已经把做过的删掉了**(§8.4),于是**只剩错的工具可选**。
+#: 结果 `sorted(called) != sorted(gold)` → 判 `wrong_tool`。
+#:
+#: ⇒ **把做过的删掉,就必须同时给一个「不做了」的出口。**
+#:   否则候选集在第一次调对之后**只剩错的选项** —— 这不是模型选错,是我们没给对的选项。
+#:   这是我实现 §8.4 时漏掉的另一半。
+DONE = "__done__"
 
 
 def candidates(session: Session, ctx: AgentCtx) -> list[str]:
+    """**这一步**能选的工具。§8.4 的落点。
+
+    ★ 做过的动作**在这里删掉,不是在帧里提示一句** —— 提示是可以被无视的,
+    而候选列表是模型唯一能选的东西。
+
+    ★★ **删掉之后必须补一个 `DONE`** —— 见上面那段。少了它,
+      第一次调对之后候选里**只剩错的选项**,而模型没有别的可挑。
+
+    ⚠️ 注意这只是**工具级**的去重。同一个工具做两次常常是合理的
+    （读两个不同的文件）,所以删的是**已经做过的那一次动作**,
+    而 `pickInput` 会在参数那一层再算一次候选。
+    """
     done = {r.tool for r in ctx.records()}
-    return [t.name for t in session.tools if t.name not in done]
+    left = [t.name for t in session.tools if t.name not in done]
+    # ★ 只要**已经做过什么**,就给出口。一次都没做时不给 ——
+    #   那时「不做了」应当由 `needsTool` 回答,而它的帧正是为那个问题准备的。
+    return (left + [DONE]) if done else left
 
 
 @dataclass
@@ -270,6 +275,23 @@ class TypedController:
             return self._generate(session, view, ctx, why="候选已空（做过的都做过了）",
                                   batch=batch)
 
+        # ★★★ **`DONE` 必须在「唯一候选」捷径之前处理。**
+        #
+        #   实测（2026-09-22）:加 `DONE` 出口之后 `bfcl-v3-simple × react-typed`
+        #   **从 97/100 掉到 0/100** —— 因为那个子集只有 **1 个工具**,
+        #   工具做完之后 `candidates()` 返回 `[DONE]`,而捷径把 `DONE`
+        #   当成了**工具名**去 `view.tools` 里找。
+        #
+        #   ★ 这是**加出口时引入的回归**,而且只打在「工具数 = 1」的子集上 ——
+        #     另一个子集（2–4 个工具）走的是 `else` 分支,完全没受影响。
+        #     **同一处改动在两个子集上一好一坏,是「只在有工具的数据集上测」
+        #     这条纪律的又一个例子 —— 但还得再加一条:两个子集都要测。**
+        if options == [DONE]:
+            self.trace.append({"step": view.step, "node": "pickTool",
+                               "answer": DONE, "top": 1.0, "provider": "typed"})
+            return self._generate(session, view, ctx,
+                                  why="候选只剩 done（工具都做过了）", batch=batch)
+
         if len(options) == 1:
             # ★ 只有一个候选就**不问** —— 「要不要用工具」刚由 `needsTool` 判过,
             #   再问「要哪一个（而只有一个）」是白花一次判定。
@@ -284,11 +306,21 @@ class TypedController:
                                _choice_question(
                                    "pickTool", PICK_TOOL_ASK, options,
                                    threshold=NODE_THRESHOLDS["pickTool"],
-                                   criteria={o: by_name[o].description
-                                             for o in options if o in by_name}))
+                                   criteria={
+                                       o: (by_name[o].description if o in by_name
+                                           else "there is enough evidence to answer; stop calling tools")
+                                       for o in options}))
             if picked is None:
                 return self._blocked(session, view, "pickTool")
             picked_choice = picked.choice
+            if picked_choice == DONE:
+                # ★ 判定模型说「够了」—— 去生成答案,不再调工具。
+                #   这条出口是 `DECISION.md` 里就有的（`done`）,不是我加的。
+                self.trace.append({"step": view.step, "node": "pickTool",
+                                   "answer": DONE, "top": picked.top(),
+                                   "provider": "typed"})
+                return self._generate(session, view, ctx,
+                                      why="pickTool 判了 done（证据够了）", batch=batch)
             tool = next((t for t in view.tools if t.name == picked_choice), None)
             if tool is None:
                 # 判定模型选了一个**不在候选里**的工具 —— 那是它的错,
@@ -555,6 +587,6 @@ def _wire(question: Question) -> dict:
     return wire
 
 
-__all__ = ["TypedController", "candidates", "NODE_THRESHOLDS",
+__all__ = ["TypedController", "candidates", "DONE", "NODE_THRESHOLDS",
            "NEEDS_TOOL_ASK", "NEEDS_TOOL_CRITERIA", "PICK_TOOL_ASK",
            "PICK_INPUT_ASK"]

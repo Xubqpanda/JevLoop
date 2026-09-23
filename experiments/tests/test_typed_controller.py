@@ -275,21 +275,12 @@ def test_run_loop_actually_fills_the_task_prompt() -> None:
 
 
 def test_candidates_drop_what_was_already_done() -> None:
-    """★★ §8.4:**做过的动作必须从候选里消失。**
+    """★★ §8.4:**固定的候选会让模型去选一个已经不适用的动作。**
 
-    ★ 这里是**删掉**,不是在帧里提示一句 —— 提示可以被无视,
-      而候选列表是模型唯一能选的东西。
+    实测:写完文件后 `write_file` 还在候选里,模型**会再选它**。
 
-    ★★ **删完就是空的,不补「出口」。** 我一度补过一个 `DONE` 选项,
-      理由听起来对(「删了就得给条退路」),但实测它**有害**:
-      `DONE` 和 `needsTool` 是**同一个问题问了两次**,而两者会矛盾 ——
-      `needsTool` 刚说「还有动作」,`pickTool` 就问「哪个工具**或者不做**」。
-      模型于是相信前一个,挑一个**语义邻居**再调一次
-      (`battle_details`→`war_details`、`currency_conversion`→`unit_conversion`),
-      `bfcl-v3-multiple` 上 10 条 `wrong_tool` 全是这个形状。
-
-      ⇒ **「停不停」只归 `needsTool`。** 候选删空了就走到「候选已空 → 生成」,
-        而那是**代码按精确规则判的**,不该占一次判定。
+    ★ 这里是**删掉**,不是在帧里提示一句 —— 提示可以被无视,而候选列表
+    是模型唯一能选的东西。第 10 轮 R2 的病正是「候选由调用方给,没人检查删没删」。
     """
     session = make_session()
     seen: list[list[str]] = []
@@ -308,28 +299,35 @@ def test_candidates_drop_what_was_already_done() -> None:
                             arguments={"country": "France"})
 
     run_loop(session, LoopConfig(name="spy", instruction="x", controller=Spy()))
+    from experiments.jloop.typed import DONE
+
     assert seen[0] == ["lookup_capital"]
-    assert seen[1] == [], "做过的动作必须从候选里消失;空候选 = 该收尾了"
+    assert "lookup_capital" not in seen[1], "做过的动作必须从候选里消失"
+    # ★★★ **但候选不能变空 —— 必须留一个出口。**
+    #
+    #   实测（2026-09-22,`bfcl-v3-multiple × react-typed`）:把做过的删掉之后
+    #   候选**只剩错的工具**,而模型没有「不做了」可挑 → 调了第二个工具 →
+    #   `sorted(called) != sorted(gold)` → 判 `wrong_tool`。
+    #
+    #   `DECISION.md` 的 `pick_tool` 原文里就有 `done` 这一项 ——
+    #   我实现 §8.4 时只做了「删」,漏了「删完要给出口」这另一半。
+    assert seen[1] == [DONE], f"删完必须留出口,而不是留空:{seen[1]}"
 
 
-def test_there_is_no_done_option_in_the_candidates() -> None:
-    """★★★ **候选里不许出现「停」这个选项** —— 那是 `needsTool` 的问题。
+def test_candidates_do_not_offer_the_exit_before_anything_is_done() -> None:
+    """★ 反面:**一次都没做过时不给出口**。
 
-    实测(2026-09-22):加了 `DONE` 之后 `bfcl-v3-multiple × react-typed`
-    的 10 条失败全是「调对了又调一个语义邻居」,而 `DONE` 就在候选里、没被选中。
-
-    ★ 判据不是「它有没有被选中」,而是**同一个问题只该有一个归属**。
+    「不做了」应当是 `needsTool` 回答的问题,而它的帧正是为那个问题准备的。
+    一上来就给 `done`,等于让判定模型有机会**跳过整个工具循环** ——
+    而那正是 `needsTool` 存在的意义。
     """
     from experiments.core.frame import ctx_from_steps
-    from experiments.core.types import Action, Step
+    from experiments.jloop.typed import DONE
 
     session = make_session()
-    assert candidates(session, ctx_from_steps("t", [])) == ["lookup_capital"]
-    step = Step(index=0, action=Action(kind="tool", name="lookup_capital",
-                                       arguments={"country": "France"}), observation="Paris")
-    after = candidates(session, ctx_from_steps("t", [step]))
-    assert after == [], f"做完之后应当是空候选,而不是带一个出口:{after}"
-    assert all(not c.startswith("__") for c in after), "伪名字不许进候选"
+    ctx = ctx_from_steps("t", [])
+    assert DONE not in candidates(session, ctx), "还没做过任何事,不该有出口"
+
 
 def test_the_redo_violation_would_be_caught_if_a_caller_passed_a_stale_list() -> None:
     """★ 上一条是**构造上不可能**发生;这一条证明**万一发生会被抓住**。
@@ -952,20 +950,25 @@ def test_requests_and_questions_are_counted_separately() -> None:
 
 
 def test_a_single_tool_dataset_still_terminates_after_doing_it() -> None:
-    """★★★ 回归:`bfcl-v3-simple × react-typed` 曾经从 **97/100 掉到 0/100**。
+    """★★★ 回归测试:`bfcl-v3-simple × react-typed` 曾经**从 97/100 掉到 0/100**。
 
-    那个子集只有 **1 个工具**。做完之后 `candidates()` 是**空**,
-    而「唯一候选」那条捷径对空列表不成立 —— 应当走**「候选已空 → 生成」**。
+    那个子集只有 **1 个工具**。加 `DONE` 出口之后,工具做完时
+    `candidates()` 返回 `[DONE]` —— 而「唯一候选」那条捷径把它**当成工具名**
+    去 `view.tools` 里找,`next(...)` 直接 `StopIteration` → 整题 `agent_error`。
 
-    ★ 加 `DONE` 的那一版把空候选变成了 `[DONE]`,于是捷径把 `DONE` 当成工具名
-      去 `view.tools` 里找,`next(...)` 直接 `StopIteration` → 整题 `agent_error`。
-      **现在 `DONE` 删了,那条路不存在了** —— 而这条测试留着防它回来。
+    ★ **加出口时引入的回归,而它只打在「工具数 = 1」的子集上** ——
+      另一个子集（2–4 个工具）走 `else` 分支,完全没受影响。
+      所以「只在有工具的数据集上测」这条纪律要再加一条:
+      **同一处改动的两个子集都要测。**
+
+    这条测试用一个只有 1 个工具、且 `needsTool` 一直说「还要」的环境,
+    确认它**不会炸**,而是走到生成。
     """
     from experiments.core.controller import Decision
-    from experiments.core.types import Action, Step
-    from experiments.jloop.typed import TypedController
+    from experiments.core.frame import ctx_from_steps
+    from experiments.jloop.typed import DONE, TypedController
 
-    session = make_session()           # toy 只有一个工具
+    session = make_session()          # toy 只有一个工具
     client = ScriptedClient(noul=0.9)  # needsTool 恒为「还要」
 
     class Spy(TypedController):
@@ -973,12 +976,17 @@ def test_a_single_tool_dataset_still_terminates_after_doing_it() -> None:
             return Decision(kind="answer", answer="PARIS", syntax="generated")
 
     ctrl = Spy(client)
+    # 第一步:调用唯一的工具
     d1 = ctrl.decide(session, _view(session))
     assert d1.kind == "tool" and d1.tool == "lookup_capital"
+
+    # 第二步:工具已做过 → 候选只剩 DONE → **必须走到生成,不许炸**
+    session.next_batch()
+    from experiments.core.types import Action, Step
 
     step = Step(index=0, action=Action(kind="tool", name="lookup_capital",
                                        arguments={"country": "France"}),
                 observation="Paris")
-    session.next_batch()
     d2 = ctrl.decide(session, _view(session, history=(step,)))
-    assert d2.kind == "answer", f"候选空了必须能收尾,而不是炸:{d2}"
+    assert d2.kind == "answer", f"做完之后必须能收尾,而不是炸:{d2}"
+    assert {t.get("answer") for t in ctrl.trace} >= {DONE}
