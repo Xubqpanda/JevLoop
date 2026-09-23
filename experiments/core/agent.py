@@ -331,7 +331,9 @@ class Session:
         self._batch_request_ms = 0.0
         self._batch_requests = 0
 
-    def _on_tool_call(self, name: str, arguments: dict, necessary: bool, ms: float, error: str | None) -> None:
+    def _on_tool_call(self, name: str, arguments: dict, necessary: bool, ms: float,
+                      error: str | None, observation: str) -> None:
+        """★ `observation` 也要进事件 —— **它以前没进来**（见 `tools.py::call`）。"""
         self.events.append(
             ToolCallEvent(
                 run_id=self.run_id,
@@ -341,6 +343,7 @@ class Session:
                 arguments=dict(arguments),
                 necessary=necessary,
                 error=error,
+                observation=observation,
                 working_start=self.clock.elapsed(),
                 working_time=ms,
                 parent=self._span_stack[-1] if self._span_stack else None,

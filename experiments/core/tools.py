@@ -18,7 +18,12 @@ ToolImpl = Callable[..., str]
 # ★ 每次调用报一次:`(名字, 参数, 是否必要, 耗时ms, 错误)`。
 #   形状**对齐 Inspect 的 ToolEvent** —— 由 `Session` 转成事件落盘。
 #   为什么不在这里直接写文件:执行器不知道 run 的时钟、也拿不到 span 栈。
-OnCall = Callable[[str, dict, bool, float, "str | None"], None]
+#: 每次工具调用的回报。**参数顺序就是事件的字段顺序。**
+#:
+#: ⚠️ 第 6 个 `observation` 是补上的 —— 见 `call()` 里那段说明。
+#: 它是**位置参数**,改签名前先 `grep -rn on_call experiments/`:
+#: 少传一个参数不会报错,只会让日志里那一栏永远是空的。
+OnCall = Callable[[str, dict, bool, float, "str | None", str], None]
 
 
 @dataclass(frozen=True)
@@ -84,7 +89,21 @@ class ToolExecutor:
         else:
             self._exploratory += 1
         if self.on_call is not None:
-            self.on_call(name, arguments, necessary, elapsed, error)
+            # ★★★ **`observation` 必须一起报出去 —— 它曾经被漏在这里,而没人发现。**
+            #
+            #   实测（2026-09-23）:`ToolCallEvent` 有 `observation` 字段,
+            #   而这条回调**没有那个参数**,于是它永远取默认值 `""`。
+            #   后果不是报错,是**日志里那一栏一直是空的** ——
+            #   于是「agent 当时看到了什么」这件事**从任何一批跑里都查不到**。
+            #
+            #   ★ 我因此差点写下一个错的结论:看到 BFCL 的 observation 全是 `""`,
+            #     以为「BFCL 的工具不返回任何东西」。**其实返回了一整句话**
+            #     （见 `benchmark/bfcl/bfcl.py::_not_executed` 那段 —— 那句话的措辞
+            #     本身就是一次修好的事故）。**是日志漏了,不是工具空。**
+            #
+            #   ⇒ §8.10 那个形状的又一例:**一个字段静默地永远是默认值,
+            #     和这个字段不存在,在读数的人眼里完全一样。**
+            self.on_call(name, arguments, necessary, elapsed, error, observation)
         return observation
 
     def total_ms(self) -> float:

@@ -98,6 +98,41 @@ def test_tool_events_carry_necessary_and_exploratory(tmp_path: Path) -> None:
             assert "necessary" in e
 
 
+def test_tool_events_record_what_the_agent_actually_saw(tmp_path: Path) -> None:
+    """★★★ **`observation` 必须和工具真正返回的东西一模一样。**
+
+    实测（2026-09-23）:`ToolCallEvent` 一直有 `observation` 字段,而
+    `ToolExecutor` 那条回调 `on_call(...)` **没有这个参数** —— 于是它
+    永远取默认值 `""`,而且**没有任何东西会因此报错**。
+
+    后果不是某一批判错,是**「agent 当时看到了什么」这件事从所有批次里都查不到**:
+
+    - §6.1 要求的「贴真实响应」在工具这一侧**做不到**;
+    - `rescore` 重建出来的 `steps` 每一条 `observation` 都是空的;
+    - ★ 我自己差点据此写下一个错结论:看到 BFCL 的 observation 全是 `""`,
+      以为「BFCL 的工具不返回任何东西」—— 其实它返回了一整句话,
+      而**那句话的措辞本身就是一次修好的事故**（`bfcl.py::_not_executed`）。
+
+    ⇒ 一个字段静默地永远是默认值,和这个字段不存在,在读日志的人眼里完全一样。
+
+    ★ 断言写成「等于实现真正返回的值」,不是「非空」——
+      `"Tool error: ..."` 也是非空,而它正是这条回调**最不该**悄悄替掉的东西。
+    """
+    from experiments.baseline.act import Act
+
+    run_cell(bench=ToyCapitals(), make_agent=lambda t, tools: Act(),
+             model=model_that_answers("Action: lookup_capital[Peru]"),
+             cell=Cell(dataset="toy", arm="act", seed=0), log_root=tmp_path)
+
+    calls = [e for e in read_events(tmp_path, "toy/act") if e["type"] == "tool"]
+    assert calls, "这条题必须真的调一次工具,否则这个测试什么也没测"
+    expected = ToyCapitals().tool_impls()["lookup_capital"](country="Peru")
+    for e in calls:
+        assert e["observation"] == expected, (
+            f"工具返回了 {expected!r},而事件里记的是 {e['observation']!r} —— "
+            "日志漏了 agent 看到的东西")
+
+
 def test_events_round_trip_through_disk(tmp_path: Path) -> None:
     """写下去能读回来,而且**认不出的类型要炸** —— 静默丢会让流看起来是完整的。"""
     run_cell(bench=ToyCapitals(), make_agent=lambda t, tools: Direct(),
